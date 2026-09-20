@@ -1,6 +1,6 @@
 {
   "name": "usetriage",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "type": "module",
   "description": "Ranked work inbox for engineers — every item arrives with its action drafted, dispatch straight into your local Claude Code",
   "repository": {
