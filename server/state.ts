@@ -47,7 +47,7 @@ export function pkgVersion(): string {
   for (const dir of [path.join(here, '..'), path.join(here, '..', '..')]) {
     try {
       const pkg = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'))
-      if (pkg.name === '@hey-triage/triage') return pkg.version
+      if (pkg.name === 'usetriage') return pkg.version
     } catch {
       // keep walking up
     }

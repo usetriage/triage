@@ -435,7 +435,7 @@ const infoPlist = () => `<?xml version="1.0" encoding="UTF-8"?>
 <dict>
   <key>CFBundleName</key><string>Triage</string>
   <key>CFBundleDisplayName</key><string>Triage</string>
-  <key>CFBundleIdentifier</key><string>com.heytriage.app</string>
+  <key>CFBundleIdentifier</key><string>sh.usetriage.app</string>
   <key>CFBundleVersion</key><string>${pkgVersion()}</string>
   <key>CFBundleShortVersionString</key><string>${pkgVersion()}</string>
   <key>CFBundlePackageType</key><string>APPL</string>

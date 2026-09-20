@@ -7,13 +7,13 @@
   <a href="#what-feeds-it">Sources</a> ·
   <a href="#watches">Watches</a> ·
   <a href="#development">Development</a> ·
-  <a href="https://heytriage.com">Website</a>
+  <a href="https://usetriage.sh">Website</a>
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@hey-triage/triage"><img src="https://img.shields.io/npm/v/@hey-triage/triage?color=fcfdff&labelColor=000" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/usetriage"><img src="https://img.shields.io/npm/v/usetriage?color=fcfdff&labelColor=000" alt="npm"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A5%2022.5-fcfdff?labelColor=000" alt="node ≥ 22.5">
-  <a href="https://github.com/hey-triage/triage/commits/main"><img src="https://img.shields.io/github/last-commit/hey-triage/triage?color=fcfdff&labelColor=000" alt="last commit"></a>
+  <a href="https://github.com/usetriage/triage/commits/main"><img src="https://img.shields.io/github/last-commit/usetriage/triage?color=fcfdff&labelColor=000" alt="last commit"></a>
 </p>
 
 **triage** is a ranked work inbox for engineers that dispatches straight into your local Claude Code.
@@ -51,7 +51,7 @@ It runs on your machine, uses your existing Claude Code login, and never holds a
 ## Install
 
 ```sh
-npm i -g @hey-triage/triage
+npm i -g usetriage
 triage
 ```
 
@@ -131,7 +131,7 @@ claude.ai connectors. Watch runs and briefs spend your Claude tokens; the app sh
 ## Development
 
 ```sh
-git clone https://github.com/hey-triage/triage && cd triage
+git clone https://github.com/usetriage/triage && cd triage
 npm install
 npm run dev          # server on :5188, Vite on :5189 — open the Vite URL
 ```
@@ -149,6 +149,6 @@ the end-to-end check against a running server.
 
 ## Links
 
-- Website: [heytriage.com](https://heytriage.com)
-- Issues: [github.com/hey-triage/triage/issues](https://github.com/hey-triage/triage/issues)
-- npm: [@hey-triage/triage](https://www.npmjs.com/package/@hey-triage/triage)
+- Website: [usetriage.sh](https://usetriage.sh)
+- Issues: [github.com/usetriage/triage/issues](https://github.com/usetriage/triage/issues)
+- npm: [usetriage](https://www.npmjs.com/package/usetriage)

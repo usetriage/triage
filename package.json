@@ -1,13 +1,13 @@
 {
-  "name": "@hey-triage/triage",
+  "name": "usetriage",
   "version": "0.8.1",
   "type": "module",
   "description": "Ranked work inbox for engineers — every item arrives with its action drafted, dispatch straight into your local Claude Code",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hey-triage/triage.git"
+    "url": "git+https://github.com/usetriage/triage.git"
   },
-  "homepage": "https://heytriage.com",
+  "homepage": "https://usetriage.sh",
   "publishConfig": {
     "access": "public"
   },
