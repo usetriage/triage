@@ -29,7 +29,7 @@ export type TranscriptItem =
   | { key: string; kind: 'thinking'; text: string }
   | { key: string; kind: 'error'; text: string }
   | { key: string; kind: 'meta'; text: string; /** 1-based turn this marker ends, for the changeset line */ turn?: number }
-  | { key: string; kind: 'init'; model?: string; toolCount: number; servers: McpServerInfo[] }
+  | { key: string; kind: 'init'; model?: string; toolCount: number; servers: McpServerInfo[]; mcpTools: string[] }
   /** What a local command (`/usage`, `/context`) printed — not the model talking. */
   | { key: string; kind: 'command'; text: string }
   | {
@@ -110,6 +110,12 @@ export function buildTranscript(events: readonly SessionEvent[]): TranscriptItem
               model: m.model,
               toolCount: m.tools?.length ?? 0,
               servers: m.mcp_servers ?? [],
+              // Which servers actually put tools on the table. The status a
+              // server reports and the tools a session got can disagree: the
+              // in-process triage server always wins its name, so a same-named
+              // entry from ~/.claude that failed is the status being shown
+              // while the working tools are right there in the list.
+              mcpTools: (m.tools ?? []).filter((t) => t.startsWith('mcp__')),
             })
           }
         } else if (m.type === 'system' && m.subtype === 'local_command_output') {
