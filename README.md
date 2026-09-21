@@ -76,14 +76,13 @@ triage logs        # tail the server log
 
 > Early software. Expect rough edges and breaking changes between minor versions.
 
-## What's new in 0.8
+## What's new in 0.9
 
-- Type **`/`** in the composer for the commands and skills this folder actually has — Claude Code's own, yours, the project's, and every plugin's.
-- The `/` list narrows as you type, and a name that **resolves lights up** in the box, so a typo doesn't slip through to the model as prose.
-- A **changes drawer** per session: git snapshots around every turn, so you can see what each one touched.
-- Diff **hunks inline** in the transcript, at the tool call that made them.
-- Sessions **know what triage is** — shared context and their own identity ride in the system prompt.
-- `get_work_item` and `get_session_context` let a chat look up the item it was dispatched for.
+- **Connect from anywhere with a URL**: the daemon serves its tools at `POST /mcp`, so Claude Code, Codex and Cursor point at `http://localhost:5178/mcp` instead of spawning a process.
+- The **workspace rides in that URL** (`?workspace=<id>`) — an id that matches nothing is refused at connect time, not quietly resolved to the default inbox.
+- A **MCP tab in settings** with the URL for the workspace you are in, and the one command or one file each client needs.
+- A chat **keeps its triage tools** when another session in the same workspace is live.
+- The init card **reads a server as working when its tools are there**, so a same-named entry in `~/.claude` can no longer make a healthy session look broken.
 
 ## What feeds it
 
