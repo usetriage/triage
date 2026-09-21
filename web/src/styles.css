@@ -2188,3 +2188,37 @@ dialog.briefDialog .knobs select { width: auto; }
   min-width: 0; overflow: hidden; text-overflow: ellipsis;
 }
 .meta .turnChange .warn { color: var(--yellow); }
+
+/* Settings → MCP: copyable connection snippets. Code wells, per the design
+   system: mono on the card surface, hairline border, no shadow. */
+.mcpSnip { margin-top: 8px; }
+.mcpSnip .cap { display: block; font-family: var(--mono); font-size: 0.7692rem; color: var(--stone); margin-bottom: 4px; }
+.mcpSnip .row {
+  display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px 9px 12px;
+  background: var(--card); border: 1px solid var(--hair); border-radius: var(--r);
+}
+.mcpSnip code {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 0.9231rem; line-height: 1.5;
+  color: var(--body); overflow-wrap: anywhere; white-space: pre-wrap;
+}
+.mcpSnip .iconBtn { flex: none; margin-top: -1px; }
+.mcpBody { margin-top: 14px; }
+.mcpStep { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--hair-soft); }
+.mcpStep:first-child { border-top: none; }
+.mcpStep .n {
+  flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: var(--r-full);
+  border: 1px solid var(--hair-strong); font-family: var(--mono); font-size: 0.7692rem; color: var(--ash);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.mcpStep .b { flex: 1; min-width: 0; color: var(--body); font-size: 0.9615rem; line-height: 1.55; }
+.mcpStep .b b { font-weight: 500; color: var(--ink); }
+.mcpNote { margin-top: 12px; color: var(--ash); font-size: 0.9231rem; line-height: 1.55; }
+.mcpNote + .mcpNote { margin-top: 10px; }
+.mcpNote b { color: var(--body); font-weight: 500; }
+.mcpNote code, .mcpStep .b code { font-family: var(--mono); font-size: 0.9231rem; color: var(--ink); }
+.mcpWarn {
+  display: flex; gap: 9px; padding: 10px 12px; margin-bottom: 4px;
+  background: var(--tint-yellow); border: 1px solid var(--edge-yellow);
+  border-radius: var(--r); color: var(--body); font-size: 0.9231rem; line-height: 1.55;
+}
+.mcpWarn svg { flex: none; margin-top: 3px; color: var(--yellow); }

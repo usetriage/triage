@@ -12,6 +12,7 @@ import * as Switch from '@radix-ui/react-switch'
 import * as Tabs from '@radix-ui/react-tabs'
 import {
   Activity,
+  Cable,
   Folder,
   Gauge,
   Info,
@@ -61,6 +62,7 @@ import { store } from '../store.js'
 import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
 import { ConnectorsPanel } from './Connectors.js'
+import { McpTab } from './McpTab.js'
 import { ProjectsTab } from './ProjectsTab.js'
 import { RepoScopeEditor } from './RepoScope.js'
 import { UsageTab } from './UsageTab.js'
@@ -74,6 +76,7 @@ const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
   projects: Folder,
   briefs: Sparkles,
   connectors: Plug,
+  mcp: Cable,
   activity: Activity,
   usage: Wallet,
   logs: ScrollText,
@@ -184,6 +187,9 @@ export function SettingsModal({ workspace, onOpenSystem }: Props) {
                   </Tabs.Content>
                   <Tabs.Content value="connectors" className="settingsFill">
                     <ConnectorsPanel refreshNonce={nonce} />
+                  </Tabs.Content>
+                  <Tabs.Content value="mcp">
+                    <McpTab workspace={workspace} />
                   </Tabs.Content>
                   <Tabs.Content value="activity" className="settingsFill">
                     <ActivityTab key={nonce} />
