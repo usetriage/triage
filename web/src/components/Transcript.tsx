@@ -27,6 +27,20 @@ type Props = {
   onRespond: (requestId: string, behavior: PermissionBehavior, answers?: QuestionAnswers) => void
 }
 
+/**
+ * Who else was touching the repo during this turn, in the width a one-line
+ * turn marker has. A session's title is the first line of its first message
+ * (up to 80 chars), which is far too long to sit inline, so a single one is
+ * clamped and several collapse to a count — the full list is in the tooltip.
+ */
+const MAX_OVERLAP_CHARS = 32
+
+function overlapLabel(titles: readonly string[]): string {
+  if (titles.length > 1) return `${titles.length} other sessions`
+  const t = titles[0]
+  return t.length > MAX_OVERLAP_CHARS ? `${t.slice(0, MAX_OVERLAP_CHARS - 1).trimEnd()}…` : t
+}
+
 export function Transcript({ sessionId, events, turns, onRespond }: Props) {
   const items = useMemo(() => buildTranscript(events), [events])
   const { ref, scrollToBottom } = useStickToBottom()
@@ -145,7 +159,7 @@ const Item = memo(function Item({
       // below answers "in total", this answers "in this turn".
       return (
         <div className="meta">
-          {item.text}
+          <span className="metaText">{item.text}</span>
           {turn && turn.files > 0 && (
             <span className="turnChange">
               {turn.files} {turn.files === 1 ? 'file' : 'files'} <span className="pl">+{turn.insertions}</span>{' '}
@@ -153,7 +167,7 @@ const Item = memo(function Item({
               {turn.overlapped.length > 0 && (
                 <span className="warn" title={`Ran at the same time as ${turn.overlapped.join(', ')}`}>
                   {' '}
-                  · concurrent with {turn.overlapped.join(', ')}
+                  · concurrent with {overlapLabel(turn.overlapped)}
                 </span>
               )}
             </span>
