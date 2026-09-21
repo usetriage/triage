@@ -2073,38 +2073,55 @@ dialog.briefDialog .knobs select { width: auto; }
 .changesDrawer .dbar .sp { margin-left: auto; }
 .changesDrawer .segBtn { gap: 6px; }
 
-/* one chip per changed file; the strip scrolls rather than wraps */
-.changesDrawer .ftabs {
-  flex: none; display: flex; gap: 3px; padding: 6px 10px; overflow-x: auto; overflow-y: hidden;
-  border-bottom: 1px solid var(--hair); scrollbar-width: thin;
+/* files down the left, diff on the right — a row per file stays readable at
+   any count, where a chip strip across the top scrolls them out of reach */
+.changesDrawer .dmain { flex: 1; min-height: 0; display: flex; }
+.changesDrawer .flist {
+  flex: none; width: 236px; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 1px; padding: 6px;
+  border-right: 1px solid var(--hair);
 }
-.ftab {
-  display: inline-flex; align-items: center; gap: 6px; flex: none; height: 24px; padding: 0 9px;
+.frow {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0 7px; padding: 5px 8px; text-align: left;
   border: 1px solid transparent; border-radius: var(--r-sm); background: transparent;
-  color: var(--ash); font-family: var(--mono); font-size: 0.8462rem; white-space: nowrap;
+  color: var(--ash); font-family: var(--mono); font-size: 0.8462rem;
 }
-.ftab:hover { color: var(--ink); background: var(--wash-1); }
-.ftab.on { background: var(--elev); border-color: var(--hair); color: var(--ink); }
-.ftab .st { width: 8px; text-align: center; }
-.ftab .st.modified { color: var(--yellow); }
-.ftab .st.added { color: var(--green); }
-.ftab .st.deleted { color: var(--red); }
-.ftab .warnIcon { color: var(--yellow); }
+.frow:hover { color: var(--ink); background: var(--wash-1); }
+.frow.on { background: var(--elev); border-color: var(--hair); color: var(--ink); }
+.frow .st { flex: none; width: 8px; text-align: center; }
+.frow .st.modified { color: var(--yellow); }
+.frow .st.added { color: var(--green); }
+.frow .st.deleted { color: var(--red); }
+.frow .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frow .warnIcon { flex: none; color: var(--yellow); }
+.frow .num { flex: none; }
+/* the folder wraps to its own line, indented under the name it qualifies */
+.frow .dir {
+  flex: 0 0 100%; margin-left: 15px; color: var(--stone); font-size: 0.7692rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
-.changesDrawer .dbody { flex: 1; min-height: 0; overflow: auto; background: var(--deep); }
+.changesDrawer .dbody { flex: 1; min-width: 0; min-height: 0; overflow: auto; background: var(--deep); }
 .changesDrawer .dnote { margin: 0; padding: 18px 16px; color: var(--stone); font-size: 0.9231rem; }
 .changesDrawer .dnote.err { color: var(--red-ink); font-family: var(--mono); }
 
+/* one line, always: everything here is untrusted length (paths, and session
+   titles that are whole prompts), so each part clips rather than wraps */
 .changesDrawer .dfoot {
   flex: none; display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 14px;
-  border-top: 1px solid var(--hair); color: var(--ash); font-size: 0.8462rem;
+  border-top: 1px solid var(--hair); color: var(--ash); font-size: 0.8462rem; overflow: hidden;
 }
-.changesDrawer .dfoot .path { color: var(--body); font-size: 0.9231rem; }
+.changesDrawer .dfoot > * { white-space: nowrap; }
+.changesDrawer .dfoot .path {
+  color: var(--body); font-size: 0.9231rem; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+}
 .changesDrawer .dfoot .path .dir { color: var(--stone); }
-.changesDrawer .dfoot .warn { display: inline-flex; align-items: center; gap: 5px; color: var(--yellow); }
-.changesDrawer .dfoot .ok { color: var(--stone); }
+.changesDrawer .dfoot .warn { display: inline-flex; align-items: center; gap: 5px; color: var(--yellow); min-width: 0; }
+.changesDrawer .dfoot .warn svg { flex: none; }
+.changesDrawer .dfoot .warn .tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.changesDrawer .dfoot .ok { color: var(--stone); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .changesDrawer .dfoot .sp { margin-left: auto; }
-.changesDrawer .dfoot .hint { color: var(--stone); }
+.changesDrawer .dfoot .hint { color: var(--stone); flex: none; }
 
 /* --- the diff primitive: one renderer for git patches and tool inputs ----- */
 .diffView { position: relative; }
