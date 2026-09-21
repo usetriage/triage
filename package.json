@@ -1,8 +1,8 @@
 {
   "name": "usetriage",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "type": "module",
-  "description": "Ranked work inbox for engineers \u2014 every item arrives with its action drafted, dispatch straight into your local Claude Code",
+  "description": "Ranked work inbox for engineers — every item arrives with its action drafted, dispatch straight into your local Claude Code",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/usetriage/triage.git"
