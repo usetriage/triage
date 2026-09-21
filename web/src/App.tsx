@@ -249,6 +249,11 @@ export function App() {
   const currentDraft = drafts.find((d) => d.id === currentDraftId) ?? null
   // Drafts are per workspace; bind before anything reads them.
   useEffect(() => draftStore.bind(workspaceId), [workspaceId])
+  // Name the workspace in the tab title — with one tab per workspace, the
+  // favicon alone cannot tell them apart.
+  useEffect(() => {
+    document.title = activeWorkspace ? `triage • ${activeWorkspace.name}` : 'triage'
+  }, [activeWorkspace?.name])
   // The old home route: the inbox is the product's home now.
   useEffect(() => {
     if (route.page === 'home') navigate('/inbox')

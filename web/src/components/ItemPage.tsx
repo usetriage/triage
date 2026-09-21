@@ -27,6 +27,7 @@ import type {
   WatchesResponse,
 } from '../../../shared/protocol.js'
 import { itemImageUrl } from '../../../shared/protocol.js'
+import { withWorkspace } from '../workspaceUrl.js'
 import { MAX_SERIES, OTHER, OTHER_KEY, SERIES, modelLabel, money, tokens } from '../usageFormat.js'
 import { useAttachments } from '../attachments.js'
 import { AttachmentStrip } from './AttachmentStrip.js'
@@ -444,7 +445,7 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
               />
               <AttachmentStrip
                 images={[
-                  ...(imgDraft ?? []).map((i) => ({ id: i.id, url: itemImageUrl(item.id, i.id), name: i.name })),
+                  ...(imgDraft ?? []).map((i) => ({ id: i.id, url: withWorkspace(itemImageUrl(item.id, i.id)), name: i.name })),
                   ...attach.images,
                 ]}
                 error={attach.error}
@@ -500,12 +501,12 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
                     <a
                       key={img.id}
                       className="shot"
-                      href={itemImageUrl(item.id, img.id)}
+                      href={withWorkspace(itemImageUrl(item.id, img.id))}
                       target="_blank"
                       rel="noreferrer"
                       title={img.name ?? 'Open full size'}
                     >
-                      <img src={itemImageUrl(item.id, img.id)} alt={img.name ?? 'Attached screenshot'} />
+                      <img src={withWorkspace(itemImageUrl(item.id, img.id))} alt={img.name ?? 'Attached screenshot'} />
                     </a>
                   ))}
                 </div>

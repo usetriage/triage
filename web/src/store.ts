@@ -20,6 +20,7 @@ import type { BriefJob,
   Workspace,
   WorkspacesResponse,
 } from '../../shared/protocol.js'
+import { adoptWorkspace, boundWorkspace, gotoWorkspace } from './workspaceUrl.js'
 
 export type ConnState = 'connecting' | 'connected' | 'disconnected'
 
@@ -33,9 +34,10 @@ export class Store {
   #sessions: readonly SessionSummary[] = []
   #events = new Map<string, readonly SessionEvent[]>()
 
-  // Workspace picture, from `hello`. The socket (and every fetch, via the
-  // triage_ws cookie) is bound to one workspace; switching = set the cookie
-  // and reload, so every page remounts against the new scope.
+  // Workspace picture, from `hello`. The socket and every fetch are bound to
+  // the workspace in this tab's URL (`/w/<id>/`, see workspaceUrl.ts), so two
+  // tabs can hold two workspaces; switching = navigate, so every page remounts
+  // against the new scope.
   #workspaceId = ''
   #workspaces: readonly Workspace[] = []
   #onboarded = true
@@ -93,7 +95,11 @@ export class Store {
   connect() {
     if (this.#ws) return
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${proto}://${location.host}/ws`)
+    // The upgrade carries the tab's workspace the same way fetches do; the
+    // cookie only decides when the URL is unprefixed.
+    const bound = boundWorkspace()
+    const scope = bound ? `?workspace=${encodeURIComponent(bound)}` : ''
+    const ws = new WebSocket(`${proto}://${location.host}/ws${scope}`)
     this.#ws = ws
 
     ws.onopen = () => {
@@ -158,13 +164,14 @@ export class Store {
   // -- workspaces -------------------------------------------------------------
 
   /**
-   * Bind this browser to a workspace and reload. The cookie rides on every
-   * fetch and on the WS upgrade, so one write scopes the whole app; the reload
-   * remounts every page against the new scope (they all fetch on mount).
+   * Move this tab to a workspace. The URL is what binds it, so this is a
+   * navigation — every page remounts against the new scope (they all fetch on
+   * mount). The cookie is still written as the fallback for a bare, unprefixed
+   * URL: a plain `localhost:5178` bookmark should reopen the last workspace.
    */
   switchWorkspace(id: string) {
     document.cookie = `triage_ws=${encodeURIComponent(id)}; path=/; max-age=31536000; samesite=lax`
-    location.reload()
+    gotoWorkspace(id)
   }
 
   /** Re-pull the workspace list after a create/edit/delete. */
@@ -199,6 +206,9 @@ export class Store {
   #handle(msg: ServerMessage) {
     switch (msg.type) {
       case 'hello':
+        // Pin the tab to whatever the daemon actually resolved — canonicalises
+        // a bare URL and repairs one naming a workspace that no longer exists.
+        adoptWorkspace(msg.workspaceId)
         this.#sessions = msg.sessions
         this.#workspaceId = msg.workspaceId
         this.#workspaces = msg.workspaces

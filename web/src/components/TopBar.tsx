@@ -1,8 +1,10 @@
 import { Activity, Check, ChevronsUpDown, CircleHelp, Gauge, Plus, Settings, Settings2 } from 'lucide-react'
+import { useRef } from 'react'
 import { MOD_LABEL } from '../keys.js'
 import type { Workspace } from '../../../shared/protocol.js'
 import type { ConnState } from '../store.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
+import { basePath } from '../workspaceUrl.js'
 import { TriageLogo } from './Logo.js'
 
 type Props = {
@@ -81,10 +83,15 @@ function WorkspaceSwitcher({
   onNew: () => void
   onSettings: () => void
 }) {
+  // A tab is bound to its workspace by its URL, so a workspace row is really a
+  // link: ⌘/Ctrl-click opens it in a second tab instead of moving this one.
+  // Radix drives rows through `onSelect`, which does not carry the modifier —
+  // the pointer event that preceded it does, so stash it there.
+  const newTab = useRef(false)
   const active = workspaces.find((w) => w.id === workspaceId)
   if (!active) return null // hello not in yet
   return (
-    <Menu>
+    <Menu onOpenChange={() => (newTab.current = false)}>
       <MenuTrigger asChild>
         <button type="button" className="wsPill" title={`Workspace: ${active.name}`}>
           <span className="wsDot" style={{ background: active.color }} aria-hidden="true" />
@@ -94,7 +101,16 @@ function WorkspaceSwitcher({
       </MenuTrigger>
       <MenuContent align="start" className="wsMenu">
         {workspaces.map((w) => (
-          <MenuItem key={w.id} onSelect={() => w.id !== workspaceId && onSwitch(w.id)}>
+          <MenuItem
+            key={w.id}
+            title={`${w.name} — ${MOD_LABEL}-click to open in a new tab`}
+            onPointerDown={(e) => (newTab.current = e.metaKey || e.ctrlKey || e.button === 1)}
+            onSelect={() => {
+              if (newTab.current) window.open(basePath(w.id), '_blank', 'noopener')
+              else if (w.id !== workspaceId) onSwitch(w.id)
+              newTab.current = false
+            }}
+          >
             <span className="wsDot" style={{ background: w.color }} aria-hidden="true" />
             <span className="wsMenuName">
               {w.name}

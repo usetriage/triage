@@ -37,6 +37,7 @@ import type {
   WatchesResponse,
 } from '../../../shared/protocol.js'
 import { itemImageUrl } from '../../../shared/protocol.js'
+import { withWorkspace } from '../workspaceUrl.js'
 import { useAttachments } from '../attachments.js'
 import { AttachmentStrip } from './AttachmentStrip.js'
 import { inboxStore, useInbox } from '../inboxStore.js'
@@ -921,7 +922,7 @@ function ItemComposer({
   // One tray, two origins: what the item already holds and what is being
   // pasted now. The strip does not care which is which; removal does.
   const thumbs = [
-    ...kept.map((i) => ({ id: i.id, url: editing ? itemImageUrl(editing.id, i.id) : '', name: i.name })),
+    ...kept.map((i) => ({ id: i.id, url: editing ? withWorkspace(itemImageUrl(editing.id, i.id)) : '', name: i.name })),
     ...attach.images,
   ]
   const removeThumb = (id: string) => {
