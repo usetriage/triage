@@ -14,7 +14,7 @@ import {
   X,
   type LucideProps,
 } from 'lucide-react'
-import { useEffect, useState, type ComponentType, type MouseEvent } from 'react'
+import { useEffect, useRef, useState, type ComponentType, type MouseEvent, type RefObject } from 'react'
 import type { Project, ProjectsResponse } from '../../../shared/protocol.js'
 import {
   CtxMenu,
@@ -85,6 +85,38 @@ type Props = {
   terminalCwd?: string
 }
 
+/**
+ * Which edges still have tabs past them, as a `data-fade` value. The band
+ * scrolls once the tabs stop fitting, and a scrolling strip with no edge
+ * treatment reads as a clipped one — the fade is the only thing saying
+ * "there is more this way".
+ */
+function useEdgeFade(ref: RefObject<HTMLDivElement | null>, count: number) {
+  const [fade, setFade] = useState<'left' | 'right' | 'both' | 'none'>('none')
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const read = () => {
+      const left = el.scrollLeft > 1
+      // Sub-pixel layout means scrollWidth can sit a hair above clientWidth
+      // with nothing actually hidden; a 1px deadband keeps the fade off.
+      const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+      setFade(left && right ? 'both' : left ? 'left' : right ? 'right' : 'none')
+    }
+    read()
+    el.addEventListener('scroll', read, { passive: true })
+    // Resizing the window changes what fits; opening or closing a tab changes
+    // what there is to fit, and re-runs this effect through `count`.
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => {
+      el.removeEventListener('scroll', read)
+      ro.disconnect()
+    }
+  }, [ref, count])
+  return fade
+}
+
 /** The tab band: Inbox pinned, one closable tab per open session or terminal, + for a new session. */
 export function TabBand({
   activeKey,
@@ -99,37 +131,60 @@ export function TabBand({
   onNewTerminal,
   terminalCwd,
 }: Props) {
+  const strip = useRef<HTMLDivElement>(null)
+  const count = tabs.length + (preview ? 1 : 0) + (pageTab ? 1 : 0)
+  const fade = useEdgeFade(strip, count)
+  const pageRef = useKeepInView(!!pageTab)
+
   return (
     <div className="tabband" role="tablist">
+      {/* Inbox and the + sit outside the scroller: the way out of a crowded
+          band must never be the thing that scrolled off it. */}
       <button
         type="button"
         role="tab"
         aria-selected={activeKey === 'inbox'}
-        className={`tab${activeKey === 'inbox' ? ' active' : ''}`}
+        className={`tab lead${activeKey === 'inbox' ? ' active' : ''}`}
         onClick={onInbox}
       >
         <Inbox size={13} aria-hidden="true" />
         <span className="t">Inbox</span>
       </button>
 
-      {tabs.map((t) => (
-        <Tab key={t.key} tab={t} active={activeKey === t.key} onSelect={onSelect} onClose={onClose} onPin={onPin} />
-      ))}
+      <div className="strip" ref={strip} data-fade={fade} role="presentation">
+        {tabs.map((t) => (
+          <Tab key={t.key} tab={t} active={activeKey === t.key} onSelect={onSelect} onClose={onClose} onPin={onPin} />
+        ))}
 
-      {preview && (
-        <Tab tab={preview} active={activeKey === preview.key} onSelect={onSelect} onClose={onClose} onPin={onPin} />
-      )}
+        {preview && (
+          <Tab tab={preview} active={activeKey === preview.key} onSelect={onSelect} onClose={onClose} onPin={onPin} />
+        )}
 
-      {pageTab && (
-        <button type="button" role="tab" aria-selected className="tab active">
-          <pageTab.icon size={13} aria-hidden="true" />
-          <span className="t">{pageTab.label}</span>
-        </button>
-      )}
+        {pageTab && (
+          <button type="button" role="tab" aria-selected className="tab active" ref={pageRef}>
+            <pageTab.icon size={13} aria-hidden="true" />
+            <span className="t">{pageTab.label}</span>
+          </button>
+        )}
+      </div>
 
       <NewTabMenu onNew={onNew} onNewTerminal={onNewTerminal} terminalCwd={terminalCwd} />
     </div>
   )
+}
+
+/**
+ * Hold the selected tab on screen. Selecting happens from the inbox, the
+ * command palette and the rail as well as from the band itself, so a tab can
+ * become active while sitting well outside the scrolled strip.
+ */
+function useKeepInView(active: boolean) {
+  const ref = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!active) return
+    ref.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [active])
+  return ref
 }
 
 /**
@@ -156,11 +211,13 @@ function Tab({
   }
   const Icon = ICON[tab.kind]
   const dotted = tab.kind === 'session' || tab.kind === 'terminal'
+  const ref = useKeepInView(active)
   return (
     <CtxMenu>
       <CtxMenuTrigger asChild>
         <button
           type="button"
+          ref={ref}
           role="tab"
           aria-selected={active}
           className={`tab${active ? ' active' : ''}${tab.preview ? ' preview' : ''}`}

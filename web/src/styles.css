@@ -481,14 +481,35 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 /* main + tab band */
 #main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; overflow: hidden; background: var(--canvas); }
 .tabband {
+  --tab-min: 132px;
   display: flex; align-items: stretch; height: var(--bar-h); flex: none; overflow: hidden;
   border-bottom: 1px solid var(--hair); background: var(--canvas); position: relative; z-index: 1;
+}
+/* Only the tabs between Inbox and the + scroll. Tabs squeeze to --tab-min
+   first and the strip starts scrolling only once even that stops fitting,
+   so a crowded band degrades in two steps rather than clipping. */
+.tabband > .tab.lead { flex: none; }
+.tabband .strip {
+  display: flex; align-items: stretch; flex: 0 1 auto; min-width: 0;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain;
+  scroll-behavior: smooth;
+}
+.tabband .strip::-webkit-scrollbar { display: none; }
+/* The fade is the affordance — without it a scrolled strip reads as clipped. */
+.tabband .strip[data-fade="right"] { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+.tabband .strip[data-fade="left"] { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
+.tabband .strip[data-fade="both"] {
+  mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
 }
 .tab {
   display: flex; align-items: center; gap: 7px; height: var(--bar-h); max-width: 240px; padding: 0 12px;
   color: var(--charcoal); font-size: 1rem; white-space: nowrap; border: 0; border-right: 1px solid var(--hair);
   background: transparent; cursor: pointer; transition: color 0.1s ease, background 0.1s ease;
 }
+/* nowrap text would otherwise hold every tab at its full width. The tab you
+   are actually in keeps a wider floor: the others can go unreadable, it can't. */
+.tabband .strip .tab { flex: 0 1 auto; min-width: var(--tab-min); }
+.tabband .strip .tab.active { min-width: 176px; }
 .tab:hover { color: var(--ink); background: var(--hair-soft); }
 .tab.active { background: var(--card); color: var(--ink); box-shadow: inset 0 1px 0 var(--hair-strong); }
 .tab.dim { color: var(--ash); }
@@ -1417,6 +1438,7 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
   .uiMenu[data-state="open"] { animation: none; }
   .settings, .settingsOverlay, .mermaidModal, .setActions .saved { animation: none; }
   .selBar { animation: none; }
+  .tabband .strip { scroll-behavior: auto; }
 }
 
 /* late additions */
