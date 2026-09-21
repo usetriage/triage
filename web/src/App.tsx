@@ -779,8 +779,6 @@ export function App() {
           inboxCount={inbox.items.length}
           runningCount={runningCount}
           terminalCount={terminals.filter((t) => t.status === 'running').length}
-          workspaceColor={activeWorkspace?.color}
-          conn={conn}
           onGo={goTo}
         />
 
