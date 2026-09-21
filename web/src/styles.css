@@ -363,7 +363,6 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
   color: var(--charcoal); font-size: 0.6923rem; line-height: 12px; text-align: center; font-family: var(--mono);
 }
 .railBtn.active .railBadge { background: var(--canvas); }
-.railFoot { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px 0; width: var(--rail-w); }
 
 /* context panel */
 .panel {

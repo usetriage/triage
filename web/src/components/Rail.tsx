@@ -1,6 +1,5 @@
 import { Eye, FileText, Inbox, MessagesSquare, Terminal, type LucideProps } from 'lucide-react'
 import type { ComponentType } from 'react'
-import type { ConnState } from '../store.js'
 
 export type RailSection = 'inbox' | 'sessions' | 'artifacts' | 'terminals' | 'watches'
 
@@ -9,8 +8,6 @@ type Props = {
   inboxCount: number
   runningCount: number
   terminalCount: number
-  workspaceColor?: string
-  conn: ConnState
   onGo: (section: RailSection) => void
 }
 
@@ -23,7 +20,7 @@ const ITEMS: Array<{ id: RailSection; label: string; icon: ComponentType<LucideP
 ]
 
 /** The labelled 64px rail — one button per destination, counts as small badges. */
-export function Rail({ active, inboxCount, runningCount, terminalCount, workspaceColor, conn, onGo }: Props) {
+export function Rail({ active, inboxCount, runningCount, terminalCount, onGo }: Props) {
   return (
     <nav className="rail" aria-label="Sections">
       {ITEMS.map(({ id, label, icon: Icon }) => {
@@ -43,11 +40,6 @@ export function Rail({ active, inboxCount, runningCount, terminalCount, workspac
           </button>
         )
       })}
-      <span className="spacer" />
-      <span className="railFoot" aria-hidden="true">
-        <span className="dot" style={{ width: 7, height: 7, background: workspaceColor ?? 'var(--stone)' }} />
-        <span className={`dot sm ${conn === 'connected' ? 'green' : conn === 'connecting' ? 'yellow' : 'red'}`} />
-      </span>
     </nav>
   )
 }
