@@ -238,8 +238,18 @@ export function App() {
   const onboarded = useOnboarded()
   const [wsModal, setWsModal] = useState<WorkspaceModalMode | null>(null)
   const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null
-  const { tabs, preview, titles, open: openTab, close: closeTab, replace: replaceTab, setPreview, remember, move: moveTab } =
-    useOpenTabs(workspaceId)
+  const {
+    tabs,
+    preview,
+    titles,
+    open: openTab,
+    close: closeTab,
+    closeAll: closeAllTabs,
+    replace: replaceTab,
+    setPreview,
+    remember,
+    move: moveTab,
+  } = useOpenTabs(workspaceId)
 
   /** Every document the band is holding — pinned or peeked. */
   const docKeys = useMemo(
@@ -593,6 +603,16 @@ export function App() {
     [tabs, activeTabKey, navigate, closeTab],
   )
 
+  // Empty the band. Drafts go with their tabs — that is the only place they
+  // live — and with nothing left open, the inbox is where you land.
+  const closeAllOpenTabs = useCallback(() => {
+    for (const key of [...tabs, ...(preview ? [preview] : [])]) {
+      if (key.startsWith('draft:')) draftStore.remove(key.slice(6))
+    }
+    closeAllTabs()
+    navigate('/inbox')
+  }, [tabs, preview, closeAllTabs, navigate])
+
   // Global hotkeys. ⌘K works everywhere (even in inputs); single keys only
   // outside text fields and while no dialog is open.
   useEffect(() => {
@@ -871,6 +891,7 @@ export function App() {
             onInbox={() => navigate('/inbox')}
             onSelect={(key) => navigate(routeOfKey(key))}
             onClose={closeOpenTab}
+            onCloseAll={closeAllOpenTabs}
             onReorder={moveTab}
             onNew={newSession}
             onNewTerminal={newTerminal}

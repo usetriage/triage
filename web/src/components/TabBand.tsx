@@ -15,6 +15,7 @@ import {
   Plus,
   Terminal,
   X,
+  XCircle,
   type LucideProps,
 } from 'lucide-react'
 import {
@@ -89,6 +90,8 @@ type Props = {
   onInbox: () => void
   onSelect: (key: string) => void
   onClose: (key: string) => void
+  /** Close every open tab at once, preview included. */
+  onCloseAll: () => void
   /** Promote the peeked document to a tab of its own. */
   onPin: (key: string) => void
   /** Drag a pinned tab: move it to sit before `before`'s key, or to the end when `before` is null. */
@@ -230,6 +233,7 @@ export function TabBand({
   onInbox,
   onSelect,
   onClose,
+  onCloseAll,
   onPin,
   onReorder,
   onNew,
@@ -265,6 +269,7 @@ export function TabBand({
             active={activeKey === t.key}
             onSelect={onSelect}
             onClose={onClose}
+            onCloseAll={onCloseAll}
             onPin={onPin}
             drag={dragBag(t.key, i)}
             reorder={{
@@ -277,7 +282,14 @@ export function TabBand({
         ))}
 
         {preview && (
-          <Tab tab={preview} active={activeKey === preview.key} onSelect={onSelect} onClose={onClose} onPin={onPin} />
+          <Tab
+            tab={preview}
+            active={activeKey === preview.key}
+            onSelect={onSelect}
+            onClose={onClose}
+            onCloseAll={onCloseAll}
+            onPin={onPin}
+          />
         )}
 
         {pageTab && (
@@ -317,6 +329,7 @@ function Tab({
   active,
   onSelect,
   onClose,
+  onCloseAll,
   onPin,
   drag,
   reorder,
@@ -325,6 +338,7 @@ function Tab({
   active: boolean
   onSelect: (key: string) => void
   onClose: (key: string) => void
+  onCloseAll: () => void
   onPin: (key: string) => void
   /** Present only for pinned tabs — the preview slot and page tab neither drag nor take a drop. */
   drag?: DragBag
@@ -400,6 +414,10 @@ function Tab({
         <CtxMenuItem onSelect={() => onClose(tab.key)}>
           <X size={14} aria-hidden="true" />
           <span className="name">Close</span>
+        </CtxMenuItem>
+        <CtxMenuItem onSelect={onCloseAll}>
+          <XCircle size={14} aria-hidden="true" />
+          <span className="name">Close all</span>
         </CtxMenuItem>
       </CtxMenuContent>
     </CtxMenu>

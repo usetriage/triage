@@ -93,6 +93,11 @@ export function useOpenTabs(workspaceId: string) {
     setBand((b) => prune({ ...b, tabs: b.tabs.filter((t) => t !== id), preview: b.preview === id ? null : b.preview }))
   }, [])
 
+  /** Empty the band: every pinned tab and the preview go at once. */
+  const closeAll = useCallback(() => {
+    setBand((b) => (b.tabs.length === 0 && !b.preview ? b : EMPTY))
+  }, [])
+
   /** A draft tab becoming a session tab: same slot, new key. */
   const replace = useCallback((from: string, to: string) => {
     setBand((b) => {
@@ -138,7 +143,7 @@ export function useOpenTabs(workspaceId: string) {
     })
   }, [])
 
-  return { tabs, preview, titles, open, close, replace, setPreview, remember, move }
+  return { tabs, preview, titles, open, close, closeAll, replace, setPreview, remember, move }
 }
 
 /**
