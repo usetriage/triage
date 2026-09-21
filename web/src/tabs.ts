@@ -197,11 +197,15 @@ export function useLastRoutes(workspaceId: string) {
 /**
  * A stable colour per project folder — the small dot on a tab that says which
  * codebase it belongs to. Derived from the path so it never needs storing.
+ *
+ * The hash picks a slot, not a colour: what comes back is `var(--hue-N)`, so
+ * the dark theme's neons and the light theme's darker re-picks (styles.css)
+ * swap on a theme flip without re-rendering anything.
  */
-const PALETTE = ['#3b9eff', '#11ff99', '#ffc53d', '#ff801f', '#ff2047', '#a78bfa', '#f472b6', '#2dd4bf']
+const HUES = 8
 
 export function projectColor(cwd: string): string {
   let h = 0
   for (let i = 0; i < cwd.length; i++) h = (h * 31 + cwd.charCodeAt(i)) >>> 0
-  return PALETTE[h % PALETTE.length]
+  return `var(--hue-${h % HUES})`
 }
