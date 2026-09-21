@@ -2,7 +2,7 @@
   "name": "usetriage",
   "version": "0.8.3",
   "type": "module",
-  "description": "Ranked work inbox for engineers — every item arrives with its action drafted, dispatch straight into your local Claude Code",
+  "description": "Ranked work inbox for engineers \u2014 every item arrives with its action drafted, dispatch straight into your local Claude Code",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/usetriage/triage.git"
@@ -26,6 +26,7 @@
     "dev": "node scripts/dev.mjs",
     "clear-port": "./clear-port.sh",
     "smoke": "node scripts/smoke.mjs",
+    "smoke:mcp": "node scripts/smoke-mcp.mjs",
     "typecheck": "tsc -p tsconfig.server.json && tsc -p tsconfig.web.json",
     "dev:server": "tsx server/index.ts",
     "mcp": "tsx server/mcp.ts",

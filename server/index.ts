@@ -191,6 +191,7 @@ import { applyImageEdits, itemImageAttachments, readItemImage } from './itemImag
 import { FileIndexes, resolveFileMention } from './files.js'
 import { ArtifactIndex, slug } from './artifacts.js'
 import { TRIAGE_MCP_INSTRUCTIONS, triageSessionAppend } from '../shared/triageContext.js'
+import { callTool as callMcpTool, PROTOCOL_VERSION as MCP_PROTOCOL_VERSION, TOOLS as MCP_TOOLS } from '../core/mcp/tools.js'
 import {
   BRIEF_SYSTEM_APPEND,
   briefRelPath,
@@ -386,8 +387,14 @@ class WorkspaceRuntime {
   terminalCommands: string[] | null = null
   affiliatedCache: { at: number; repos: string[] } | null = null
 
-  /** the in-process triage MCP server every chat session in this workspace gets */
-  readonly triageMcp: ReturnType<typeof createSdkMcpServer>
+  /**
+   * The in-process triage MCP server a chat session gets. One instance per
+   * session, never shared: the SDK connects each instance to exactly one
+   * transport, so a second concurrent session handed the same object loses
+   * its connect and lands `status: "failed"` in system/init — a chat with no
+   * mcp__triage__* tools whenever another session in the workspace is live.
+   */
+  readonly triageMcp: () => ReturnType<typeof createSdkMcpServer>
   /** PTY shells opened from the web UI — run with this workspace's spawn env */
   readonly terminals: TerminalManager
   /** per-folder file listings behind the composer's `@` picker */
@@ -430,7 +437,7 @@ class WorkspaceRuntime {
     this.playbookDir = path.join(workspaceDir(meta.id), 'playbooks')
     this.dispatchDir = path.join(workspaceDir(meta.id), 'dispatch')
     this.attachmentsDir = path.join(workspaceDir(meta.id), 'attachments')
-    this.triageMcp = makeTriageMcp(this)
+    this.triageMcp = () => makeTriageMcp(this)
     this.terminals = new TerminalManager(
       (msg) => broadcast(this, msg),
       (level, msg) => log(level, 'terminal', msg, { workspace: meta.id }),
@@ -519,7 +526,7 @@ class LiveSession {
         // work items directly — same tool surface as the stdio shim external
         // Claude Code sessions get (server/mcp.ts). Scoped to this workspace.
         // Brief sessions add their own `write_brief` server on top.
-        mcpServers: { triage: rt.triageMcp, ...(extras.mcp ?? {}) },
+        mcpServers: { triage: rt.triageMcp(), ...(extras.mcp ?? {}) },
         ...(row.kind === 'brief' ? { disallowedTools: BRIEF_DISALLOWED_TOOLS } : {}),
         // Workspace auth backend: api-key / config-dir spawn with overrides;
         // inherit passes nothing, exactly the pre-workspaces behavior.
@@ -2781,7 +2788,7 @@ async function setItemImagesOp(rt: WorkspaceRuntime, id: string, edits: ItemImag
 
 // ---------------------------------------------------------------------------
 // Work-item operations — one core, three callers: the HTTP routes below, the
-// in-process MCP server that web chats get (per-workspace triageMcp), and the
+// in-process MCP server that web chats get (rt.triageMcp(), one per session), and the
 // stdio shim (server/mcp.ts) which reaches them over HTTP. Every transport
 // funnels through these functions, so list/create/edit/upsert/resolve behave
 // identically no matter who calls them. Validation stays in workItemFrom/
@@ -3202,10 +3209,12 @@ function extrasFor(rt: WorkspaceRuntime, row: StoredSession): SessionExtras {
   if (!e) {
     // Identity first: the headless contract's "change nothing" must be the last
     // word a brief run reads, not something the identity block then softens.
-    e = { systemAppend: `${identity}\n${BRIEF_SYSTEM_APPEND}`, mcp: { brief: makeBriefMcp(rt, row.id) } }
+    e = { systemAppend: `${identity}\n${BRIEF_SYSTEM_APPEND}` }
     rt.briefExtras.set(row.id, e)
   }
-  return e
+  // The server is rebuilt per spawn, never cached: one instance connects to one
+  // transport, so a revived run handed the old object would lose write_brief.
+  return { ...e, mcp: { brief: makeBriefMcp(rt, row.id) } }
 }
 
 /**
@@ -3768,12 +3777,130 @@ async function serveWeb(pathname: string, res: http.ServerResponse) {
   res.end(NO_BUILD_HTML)
 }
 
+
+/**
+ * The MCP endpoint (streamable HTTP): the same contract the stdio shim serves
+ * (core/mcp/tools.ts), reachable as a URL instead of a spawned process —
+ * `http://localhost:5178/mcp` for a running daemon, `…:5188/mcp` in dev. No
+ * per-session subprocess to spawn, resolve on PATH, or lose a connect race
+ * with, which is most of what made MCP feel unreliable from outside triage.
+ *
+ * The workspace rides in the URL (`?workspace=<id>`), not an env var, and an
+ * id that matches nothing is refused at `initialize` — the client shows the
+ * server as failed instead of quietly filing work into the default inbox.
+ */
+const MCP_PATH = '/mcp'
+
+/**
+ * A browser can POST to localhost from any page it likes, so a local HTTP MCP
+ * server must check where the request claims to come from (the MCP spec says
+ * so for exactly this reason). Non-browser clients send no Origin at all.
+ */
+function localOrigin(origin: string | undefined): boolean {
+  if (!origin) return true
+  try {
+    const h = new URL(origin).hostname
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]'
+  } catch {
+    return false
+  }
+}
+
+/** Loopback into this daemon's own API, so one route table serves every door. */
+function mcpApi(workspace: string | null): (path: string, body?: unknown, method?: string) => Promise<unknown> {
+  return async (path, body, method) => {
+    if (workspace) path += `${path.includes('?') ? '&' : '?'}workspace=${encodeURIComponent(workspace)}`
+    const res = await fetch(`http://127.0.0.1:${PORT}${path}`, {
+      method: method ?? (body === undefined ? 'GET' : 'POST'),
+      headers: { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+    return (await res.json()) as unknown
+  }
+}
+
+type McpRpc = { jsonrpc?: string; id?: number | string; method?: string; params?: Record<string, unknown> }
+
+/** One JSON-RPC message. Returns null for a notification (nothing to send back). */
+async function mcpDispatch(msg: McpRpc, workspace: string | null, serverUrl: string): Promise<unknown | null> {
+  const id = msg.id
+  const ok = (result: unknown) => (id === undefined ? null : { jsonrpc: '2.0', id, result })
+  const fail = (code: number, message: string) => (id === undefined ? null : { jsonrpc: '2.0', id, error: { code, message } })
+  switch (msg.method) {
+    case 'initialize':
+      return ok({
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: { tools: {} },
+        serverInfo: { name: 'triage', version: VERSION },
+        instructions: TRIAGE_MCP_INSTRUCTIONS,
+      })
+    case 'ping':
+      return ok({})
+    case 'tools/list':
+      return ok({ tools: MCP_TOOLS })
+    case 'tools/call': {
+      const name = String(msg.params?.name ?? '')
+      const args = (msg.params?.arguments ?? {}) as Record<string, unknown>
+      try {
+        const { text, isError } = await callMcpTool(mcpApi(workspace), { serverUrl, requestedWorkspace: workspace }, name, args)
+        return ok({ content: [{ type: 'text', text }], isError })
+      } catch (err) {
+        return ok({ content: [{ type: 'text', text: `failed: ${errText(err)}` }], isError: true })
+      }
+    }
+    default:
+      return msg.method ? fail(-32601, `method not found: ${msg.method}`) : fail(-32600, 'invalid request')
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`)
   const json = (status: number, body: unknown) => {
     res.writeHead(status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(body))
   }
+  if (url.pathname === MCP_PATH) {
+    if (!localOrigin(req.headers.origin)) {
+      json(403, { error: 'cross-origin requests are not accepted on /mcp' })
+      return
+    }
+    // No SSE stream is offered: every response is a plain JSON body, which the
+    // spec covers by answering 405 to the stream methods.
+    if (req.method !== 'POST') {
+      res.writeHead(405, { 'content-type': 'application/json', allow: 'POST' })
+      res.end(JSON.stringify({ error: 'POST a JSON-RPC message to /mcp' }))
+      return
+    }
+    const wanted = url.searchParams.get('workspace')
+    if (wanted && !runtimes.has(wanted)) {
+      // Loud, at connect time: the alternative is filing work into the wrong
+      // inbox for as long as it takes someone to notice.
+      json(404, {
+        error: `unknown workspace "${wanted}"`,
+        known: [...runtimes.keys()],
+        hint: 'the URL takes a workspace id, not its display name; drop the parameter to use the default',
+      })
+      return
+    }
+    let payload: unknown
+    try {
+      payload = await readJsonBody(req, 4_000_000)
+    } catch (err) {
+      json(400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: `parse error: ${errText(err)}` } })
+      return
+    }
+    const serverUrl = `http://localhost:${PORT}${MCP_PATH}`
+    const batch = Array.isArray(payload) ? (payload as McpRpc[]) : [payload as McpRpc]
+    const out = (await Promise.all(batch.map((m) => mcpDispatch(m, wanted, serverUrl)))).filter((r) => r !== null)
+    if (out.length === 0) {
+      res.writeHead(202)
+      res.end()
+      return
+    }
+    json(200, Array.isArray(payload) ? out : out[0])
+    return
+  }
+
   if (url.pathname === '/api/health') {
     // The CLI's "is triage running" probe — see server/state.ts. Daemon-wide.
     json(200, {

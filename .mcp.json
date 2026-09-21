@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "triage-dev": {
+      "type": "http",
+      "url": "http://localhost:5188/mcp?workspace=triage-development"
+    }
+  }
+}
