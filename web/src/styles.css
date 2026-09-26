@@ -995,6 +995,16 @@ button.chip:hover:not(:disabled), .chip[data-state="open"] { color: var(--ink); 
 .wsMenu .wsDot { width: 8px; height: 8px; border-radius: var(--r-full); flex: none; }
 .wsMenu .wsMenuName { flex: 1; display: flex; align-items: center; gap: 7px; }
 .wsDefaultTag { font-style: normal; font-size: 0.7692rem; color: var(--ash); border: 1px solid var(--hair-strong); border-radius: var(--r-full); padding: 0 6px; }
+/* The open-in-a-new-tab glyph: dormant until the row is under the pointer or
+   the keyboard, so the menu reads as names, not as a row of controls. */
+.wsMenu .wsOpenTab {
+  display: flex; align-items: center; justify-content: center; flex: none;
+  width: 20px; height: 20px; margin: -3px -4px -3px 0; border-radius: var(--r-xs);
+  opacity: 0; cursor: pointer; transition: opacity 0.1s ease, background 0.1s ease;
+}
+.wsMenu .uiMenuItem[data-highlighted] .wsOpenTab { opacity: 1; }
+.wsMenu .wsOpenTab:hover { background: var(--wash-3); }
+.wsMenu .wsOpenTab:hover svg { color: var(--ink); }
 
 /* ---------- dialogs ---------- */
 dialog {

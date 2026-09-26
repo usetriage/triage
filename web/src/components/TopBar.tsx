@@ -1,5 +1,5 @@
-import { Activity, Check, ChevronsUpDown, CircleHelp, Gauge, Plus, Settings, Settings2 } from 'lucide-react'
-import { useRef } from 'react'
+import { Activity, Check, ChevronsUpDown, CircleHelp, Gauge, Plus, Settings, Settings2, SquareArrowOutUpRight } from 'lucide-react'
+import { useRef, useState } from 'react'
 import { MOD_LABEL } from '../keys.js'
 import type { Workspace } from '../../../shared/protocol.js'
 import type { ConnState } from '../store.js'
@@ -88,10 +88,23 @@ function WorkspaceSwitcher({
   // Radix drives rows through `onSelect`, which does not carry the modifier —
   // the pointer event that preceded it does, so stash it there.
   const newTab = useRef(false)
+  // The glyph swallows its own pointer events (below), so Radix never selects
+  // the row for it and never closes the menu either — we hold `open` to do it.
+  const [open, setOpen] = useState(false)
   const active = workspaces.find((w) => w.id === workspaceId)
   if (!active) return null // hello not in yet
+  const openInNewTab = (id: string) => {
+    window.open(basePath(id), '_blank', 'noopener')
+    setOpen(false)
+  }
   return (
-    <Menu onOpenChange={() => (newTab.current = false)}>
+    <Menu
+      open={open}
+      onOpenChange={(next) => {
+        newTab.current = false
+        setOpen(next)
+      }}
+    >
       <MenuTrigger asChild>
         <button type="button" className="wsPill" title={`Workspace: ${active.name}`}>
           <span className="wsDot" style={{ background: active.color }} aria-hidden="true" />
@@ -106,7 +119,7 @@ function WorkspaceSwitcher({
             title={`${w.name} — ${MOD_LABEL}-click to open in a new tab`}
             onPointerDown={(e) => (newTab.current = e.metaKey || e.ctrlKey || e.button === 1)}
             onSelect={() => {
-              if (newTab.current) window.open(basePath(w.id), '_blank', 'noopener')
+              if (newTab.current) openInNewTab(w.id)
               else if (w.id !== workspaceId) onSwitch(w.id)
               newTab.current = false
             }}
@@ -115,6 +128,23 @@ function WorkspaceSwitcher({
             <span className="wsMenuName">
               {w.name}
               {w.isDefault && <em className="wsDefaultTag">default</em>}
+            </span>
+            {/* The modifier, spelled out as a glyph. It keeps every pointer
+                event to itself: Radix selects an item on click *and* on a
+                pointer-up it did not see the pointer-down for, so letting any
+                of the three through would also switch this tab. */}
+            <span
+              className="wsOpenTab"
+              aria-hidden="true"
+              title={`Open in a new tab (${MOD_LABEL}-click)`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                openInNewTab(w.id)
+              }}
+            >
+              <SquareArrowOutUpRight size={12} aria-hidden="true" />
             </span>
             {w.id === workspaceId && <Check size={13} aria-hidden="true" />}
           </MenuItem>
