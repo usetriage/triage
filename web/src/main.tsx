@@ -9,7 +9,7 @@ import './styles.css'
 // This tab's workspace comes from its own URL (`/w/<id>/`), so two tabs can
 // hold two workspaces at once. Tag every request before anything can fetch.
 installWorkspaceFetch()
-// Apply the saved theme/zoom/font before the first paint, so there is no
+// Apply the saved theme/font before the first paint, so there is no
 // flash of the default dark theme when a light-theme user loads the page.
 initAppearance()
 store.connect()

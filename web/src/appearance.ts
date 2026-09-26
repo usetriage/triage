@@ -1,6 +1,5 @@
 /**
- * How this browser renders the app: colour theme, overall zoom, and base text
- * size. A per-browser, per-device preference — it lives in localStorage and is
+ * How this browser renders the app: colour theme and base text size. A per-browser, per-device preference — it lives in localStorage and is
  * applied to the document root, not the session store. The Appearance settings
  * tab edits it; `initAppearance()` (called before the first paint) applies the
  * saved values and keeps "System" in step with the OS colour scheme.
@@ -15,24 +14,15 @@ export type ThemeMode = 'system' | 'light' | 'dark'
 
 export type Appearance = {
   theme: ThemeMode
-  /** Whole-interface scale, as a percentage. */
-  zoom: number
   /** Base reading-text size, in px. */
   fontSize: number
 }
 
 const THEME_KEY = 'triage.appearance.theme'
-const ZOOM_KEY = 'triage.appearance.zoom'
 const FONT_KEY = 'triage.appearance.fontSize'
 
-export const ZOOM_PRESETS = [90, 100, 110, 125] as const
-export const ZOOM_MIN = 90
-export const ZOOM_MAX = 125
-export const ZOOM_DEFAULT = 100
-
-export const FONT_PRESETS = [12, 13, 14, 15] as const
 export const FONT_MIN = 12
-export const FONT_MAX = 15
+export const FONT_MAX = 18
 export const FONT_DEFAULT = 13
 
 const THEMES: ThemeMode[] = ['system', 'light', 'dark']
@@ -64,7 +54,6 @@ export function readAppearance(): Appearance {
     // Dark-first: with nothing saved yet (a fresh install), default to dark
     // regardless of the OS scheme. "System" is an explicit opt-in, not the default.
     theme: isThemeMode(theme) ? theme : 'dark',
-    zoom: clampNum(Number(readRaw(ZOOM_KEY)), ZOOM_MIN, ZOOM_MAX, ZOOM_DEFAULT),
     fontSize: clampNum(Number(readRaw(FONT_KEY)), FONT_MIN, FONT_MAX, FONT_DEFAULT),
   }
 }
@@ -81,7 +70,6 @@ export function resolveTheme(mode: ThemeMode): 'light' | 'dark' {
 function applyToDocument(a: Appearance) {
   const root = document.documentElement
   root.dataset.theme = resolveTheme(a.theme)
-  root.style.setProperty('--app-zoom', String(a.zoom / 100))
   root.style.setProperty('--app-font-size', `${a.fontSize}px`)
 }
 
@@ -107,7 +95,6 @@ function refresh() {
 /** Persist the keys present in `patch`, then re-apply and notify. */
 export function writeAppearance(patch: Partial<Appearance>) {
   if (patch.theme !== undefined) writeRaw(THEME_KEY, patch.theme)
-  if (patch.zoom !== undefined) writeRaw(ZOOM_KEY, String(patch.zoom))
   if (patch.fontSize !== undefined) writeRaw(FONT_KEY, String(patch.fontSize))
   refresh()
 }

@@ -130,12 +130,11 @@
   --hue-7: #2dd4bf;
 
   /* appearance settings apply here (see appearance.ts) */
-  --app-zoom: 1;
   --app-font-size: 13px;
   color-scheme: dark;
   /* The Text-size control scales every rem-based font-size in the app off this
      root size (13px = 1rem). Paddings/dimensions stay in px, so text grows
-     without the layout growing — that is what separates it from Zoom. */
+     without the layout growing — that is what separates it from browser zoom. */
   font-size: var(--app-font-size, 13px);
 }
 
@@ -231,13 +230,9 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
-/* Zoom scales the whole interface; width/height are pre-divided so the zoomed
-   #root still fills exactly one viewport (no phantom scrollbars at >100%). */
-#root {
-  zoom: var(--app-zoom, 1);
-  width: calc(100vw / var(--app-zoom, 1));
-  height: calc(100vh / var(--app-zoom, 1));
-}
+/* No app-level zoom: CSS `zoom` skews xterm.js's mouse→cell mapping (terminal
+   selection drifts rows). Browser zoom (⌘+/⌘−) scales everything correctly. */
+#root { width: 100vw; height: 100vh; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 a { color: var(--blue); text-decoration: none; }
@@ -1432,6 +1427,19 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 .uiSwitch:disabled { opacity: 0.45; cursor: default; }
 .uiSwitchThumb { display: block; width: 14px; height: 14px; border-radius: 50%; background: var(--ash); transform: translateX(2px); transition: transform 0.14s ease, background 0.12s; }
 .uiSwitch[data-state="checked"] .uiSwitchThumb { transform: translateX(16px); background: var(--on-primary); }
+
+/* Radix slider — stepped numeric settings (text size) */
+.uiSlider { position: relative; display: flex; align-items: center; width: 160px; height: 20px; touch-action: none; user-select: none; cursor: pointer; }
+.uiSliderTrack { position: relative; flex: 1; height: 3px; border-radius: var(--r-full); background: var(--hair-strong); }
+.uiSliderRange { position: absolute; height: 100%; border-radius: var(--r-full); background: var(--ink); }
+.uiSliderThumb { display: block; width: 14px; height: 14px; border-radius: 50%; background: var(--ink); border: 2px solid var(--canvas); box-shadow: 0 0 0 1px var(--hair-strong); cursor: grab; }
+.uiSliderThumb:active { cursor: grabbing; }
+.fontSlider { display: inline-flex; align-items: center; gap: 10px; }
+/* Fixed px so the end glyphs don't grow with the setting they control. */
+.fontSlider .a { color: var(--ash); line-height: 1; }
+.fontSlider .a.sm { font-size: 11px; }
+.fontSlider .a.lg { font-size: 17px; }
+.fontSlider .val { min-width: 34px; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--ash); }
 
 /* the "fix" affordance under an auth-looking session error */
 .msg.error .fixRow { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--edge-red); font-family: var(--sans); font-size: 0.9231rem; color: var(--body); flex-wrap: wrap; }

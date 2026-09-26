@@ -8,6 +8,7 @@
  * server; browser-scoped ones (Sessions · Shortcuts) write to localStorage.
  */
 import * as Dialog from '@radix-ui/react-dialog'
+import * as Slider from '@radix-ui/react-slider'
 import * as Switch from '@radix-ui/react-switch'
 import * as Tabs from '@radix-ui/react-tabs'
 import {
@@ -50,11 +51,10 @@ import { KIND_LABEL } from '../itemUi.js'
 import { readSessionDefaults, writeSessionDefaults, type SessionDefaults } from '../sessionDefaults.js'
 import {
   FONT_DEFAULT,
-  FONT_PRESETS,
+  FONT_MAX,
+  FONT_MIN,
   useAppearance,
   writeAppearance,
-  ZOOM_DEFAULT,
-  ZOOM_PRESETS,
   type ThemeMode,
 } from '../appearance.js'
 import { closeSettings, SETTINGS_TABS, setSettingsTab, useSettings, type SettingsTab } from '../settings.js'
@@ -828,7 +828,7 @@ function ProseFileSection({
 }
 
 // ---------------------------------------------------------------------------
-// Appearance — theme, zoom and text size (per browser).
+// Appearance — theme and text size (per browser).
 // ---------------------------------------------------------------------------
 
 /** A pill of mutually-exclusive options — the same idiom as the inbox filter. */
@@ -866,7 +866,6 @@ const THEME_OPTS: ReadonlyArray<{ value: ThemeMode; label: string }> = [
   { value: 'light', label: 'Light' },
   { value: 'dark', label: 'Dark' },
 ]
-const FONT_LABELS: Record<number, string> = { 12: 'Small', 13: 'Default', 14: 'Large', 15: 'Larger' }
 
 function AppearanceTab() {
   const a = useAppearance()
@@ -879,31 +878,35 @@ function AppearanceTab() {
       </Section>
       <Section
         title="Scale"
-        hint="Zoom scales the whole interface — layout, controls and text together, like browser zoom. Text size nudges just the reading text, on top of the zoom."
+        hint="Text size nudges just the reading text. To scale the whole interface, use your browser's zoom (⌘+ / ⌘−)."
       >
-        <Row label="Zoom" hint={`The interface renders at ${a.zoom}%.`}>
-          <Segmented
-            ariaLabel="Zoom"
-            value={a.zoom}
-            options={ZOOM_PRESETS.map((z) => ({ value: z, label: `${z}%` }))}
-            onChange={(zoom) => writeAppearance({ zoom })}
-          />
-        </Row>
-        <Row label="Text size" hint={`Body text is ${a.fontSize}px.`}>
-          <Segmented
-            ariaLabel="Text size"
-            value={a.fontSize}
-            options={FONT_PRESETS.map((f) => ({ value: f, label: FONT_LABELS[f] ?? `${f}px` }))}
-            onChange={(fontSize) => writeAppearance({ fontSize })}
-          />
+        <Row label="Text size" hint={`Body text is ${a.fontSize}px${a.fontSize === FONT_DEFAULT ? ' (default)' : ''}.`}>
+          <div className="fontSlider">
+            <span className="a sm" aria-hidden="true">A</span>
+            <Slider.Root
+              className="uiSlider"
+              min={FONT_MIN}
+              max={FONT_MAX}
+              step={1}
+              value={[a.fontSize]}
+              onValueChange={([fontSize]) => writeAppearance({ fontSize })}
+            >
+              <Slider.Track className="uiSliderTrack">
+                <Slider.Range className="uiSliderRange" />
+              </Slider.Track>
+              <Slider.Thumb className="uiSliderThumb" aria-label="Text size" />
+            </Slider.Root>
+            <span className="a lg" aria-hidden="true">A</span>
+            <span className="val">{a.fontSize}px</span>
+          </div>
         </Row>
       </Section>
       <Section title="Reset">
-        <Row label="Back to defaults" hint="Dark theme, 100% zoom, default text size.">
+        <Row label="Back to defaults" hint="Dark theme, default text size.">
           <button
             type="button"
             className="btn"
-            onClick={() => writeAppearance({ theme: 'dark', zoom: ZOOM_DEFAULT, fontSize: FONT_DEFAULT })}
+            onClick={() => writeAppearance({ theme: 'dark', fontSize: FONT_DEFAULT })}
           >
             Reset
           </button>

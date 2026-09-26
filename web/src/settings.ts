@@ -44,7 +44,7 @@ export const SETTINGS_TABS: ReadonlyArray<SettingsTabMeta> = [
   { id: 'activity', label: 'Activity', sub: 'Recent watch runs in this workspace — what ran, when, and what it filed.', group: 'diagnostics', fill: true },
   { id: 'usage', label: 'Usage', sub: 'What Claude Code has cost on this machine — tokens, spend, and where they went.', group: 'diagnostics', fill: true },
   { id: 'logs', label: 'Logs', sub: 'The daemon’s log, filterable by level and subsystem.', group: 'diagnostics', fill: true },
-  { id: 'appearance', label: 'Appearance', sub: 'Theme, zoom, and text size — how this browser renders the workbench.', group: 'app' },
+  { id: 'appearance', label: 'Appearance', sub: 'Theme and text size — how this browser renders the workbench.', group: 'app' },
   { id: 'sessions', label: 'Sessions', sub: 'Defaults for every new session started from this browser.', group: 'app' },
   { id: 'shortcuts', label: 'Shortcuts', sub: 'Every key the workbench answers to.', group: 'app' },
   { id: 'about', label: 'About', sub: 'The daemon behind this page: version, ports, and where its data lives.', group: 'app' },
