@@ -15,6 +15,7 @@ import type {
   SystemStatus,
 } from '../../../shared/protocol.js'
 import type { ConnState } from '../store.js'
+import { Select, SelectItem } from '../ui/Select.js'
 
 function rel(ms: number | null | undefined): string {
   if (!ms) return 'never'
@@ -247,14 +248,19 @@ export function LogsTab() {
             </button>
           ))}
         </div>
-        <select value={subsystem} onChange={(e) => setSubsystem(e.target.value)}>
-          <option value="all">all subsystems</option>
+        <Select
+          className="logSelect"
+          aria-label="Subsystem"
+          value={subsystem}
+          onValueChange={setSubsystem}
+        >
+          <SelectItem value="all">all subsystems</SelectItem>
           {subsystems.map((s) => (
-            <option key={s} value={s}>
+            <SelectItem key={s} value={s}>
               {s}
-            </option>
+            </SelectItem>
           ))}
-        </select>
+        </Select>
         <input className="logFilterInput" placeholder="Filter…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <div className="logLines">

@@ -3,6 +3,7 @@ import type { BriefJobsResponse, PlaybooksResponse, ScoredItem, SettingsResponse
 import { briefStore } from '../briefStore.js'
 import { findModel, useModels } from '../models.js'
 import { KIND_LABEL } from '../itemUi.js'
+import { Select, SelectItem } from '../ui/Select.js'
 
 type Props = {
   open: boolean
@@ -123,28 +124,36 @@ export function CreateBriefDialog({ open, items, onClose, onQueued }: Props) {
       />
 
       <div className="knobs">
-        <label className="pill" title="Which playbook shapes the brief">
-          <select value={playbook} onChange={(e) => setPlaybook(e.target.value)}>
-            <option value="">
-              {sameKind ? `Playbook: ${items[0] ? KIND_LABEL[items[0].kind] ?? items[0].kind : 'by kind'}` : 'Playbook: each item’s own kind'}
-            </option>
-            {playbooks.map((k) => (
-              <option key={k} value={k}>
-                {KIND_LABEL[k as keyof typeof KIND_LABEL] ?? k}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="pill" title="Which model runs the playbook">
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
-            <option value="">Model: {defaultModelName}</option>
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <Select
+          className="pill"
+          title="Which playbook shapes the brief"
+          aria-label="Playbook"
+          value={playbook}
+          onValueChange={setPlaybook}
+        >
+          <SelectItem value="">
+            {sameKind ? `Playbook: ${items[0] ? KIND_LABEL[items[0].kind] ?? items[0].kind : 'by kind'}` : 'Playbook: each item’s own kind'}
+          </SelectItem>
+          {playbooks.map((k) => (
+            <SelectItem key={k} value={k}>
+              {KIND_LABEL[k as keyof typeof KIND_LABEL] ?? k}
+            </SelectItem>
+          ))}
+        </Select>
+        <Select
+          className="pill"
+          title="Which model runs the playbook"
+          aria-label="Model"
+          value={model}
+          onValueChange={setModel}
+        >
+          <SelectItem value="">Model: {defaultModelName}</SelectItem>
+          {models.map((m) => (
+            <SelectItem key={m.id} value={m.id}>
+              {m.name}
+            </SelectItem>
+          ))}
+        </Select>
       </div>
 
       {error && <div className="projError">{error}</div>}

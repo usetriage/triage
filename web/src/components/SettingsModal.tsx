@@ -49,6 +49,7 @@ import { FAST_MODE_BLURB, modelSupportsFastMode } from '../fastMode.js'
 import { SHORTCUTS } from '../keys.js'
 import { findModel, useModels } from '../models.js'
 import { KIND_LABEL } from '../itemUi.js'
+import { Select, SelectItem } from '../ui/Select.js'
 import { readSessionDefaults, writeSessionDefaults, type SessionDefaults } from '../sessionDefaults.js'
 import {
   FONT_DEFAULT,
@@ -707,20 +708,20 @@ function BriefsTab() {
           />
         </Row>
         <Row label="Default model" hint="What a brief runs on when the Create-brief dialog doesn’t pick one. Cheaper models are usually enough for reading.">
-          <select
-            className="setNum"
-            style={{ width: 'auto' }}
+          <Select
+            className="setSelect"
+            aria-label="Default model"
             value={settings?.briefsDefaultModel ?? ''}
             disabled={!settings}
-            onChange={(e) => void save({ briefsDefaultModel: e.target.value || null })}
+            onValueChange={(v) => void save({ briefsDefaultModel: v || null })}
           >
-            <option value="">Claude Code default</option>
+            <SelectItem value="">Claude Code default</SelectItem>
             {models.map((m) => (
-              <option key={m.id} value={m.id}>
+              <SelectItem key={m.id} value={m.id}>
                 {m.name}
-              </option>
+              </SelectItem>
             ))}
-          </select>
+          </Select>
         </Row>
         {settings?.briefsDefaultModel && !findModel(models, settings.briefsDefaultModel) && (
           <p className="hint">Default model “{settings.briefsDefaultModel}” is not in the probed list; it is passed through as-is.</p>
@@ -812,14 +813,14 @@ function ProseFileSection({
     <Section title={title} hint={hint}>
       <div className="setPlaybook">
         <div className="head">
-          <select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Kind">
+          <Select className="setSelect" value={kind} onValueChange={setKind} aria-label="Kind">
             {(kinds.length ? kinds : [{ kind: 'manual', custom: false }]).map((k) => (
-              <option key={k.kind} value={k.kind}>
+              <SelectItem key={k.kind} value={k.kind}>
                 {KIND_LABEL[k.kind as keyof typeof KIND_LABEL] ?? k.kind}
                 {k.custom ? ' · edited' : ''}
-              </option>
+              </SelectItem>
             ))}
-          </select>
+          </Select>
           <span className="spacer" />
           <button type="button" className="btn sm" disabled={!dirty || saving} onClick={() => void saveFile()}>
             {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}

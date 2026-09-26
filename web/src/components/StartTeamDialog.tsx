@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { DispatchPreviewResponse, SaveTeamResponse, ScoredItem, StartTeamResponse } from '../../../shared/protocol.js'
 import { draftFromTeam, loadTeamLibrary, problems, teamsCall, wireAgents, type TeamDraft, type TeamLibrary } from '../teams.js'
+import { Select, SelectItem } from '../ui/Select.js'
 import { TeamEditor } from './TeamEditor.js'
 
 type Props = {
@@ -15,7 +16,6 @@ type Props = {
 
 const tilde = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
 const DEFAULT_KICKOFF = 'Start the team on this item. Understand the scope, show me the plan, then delegate the first task.'
-const BLANK = '__blank'
 
 /**
  * "Start a team": who is about to take this item, before anything spawns. The
@@ -25,7 +25,7 @@ const BLANK = '__blank'
  */
 export function StartTeamDialog({ open, item, onClose, onStarted }: Props) {
   const [lib, setLib] = useState<TeamLibrary | null>(null)
-  const [team, setTeam] = useState<string>(BLANK)
+  const [team, setTeam] = useState<string>('')
   const [draft, setDraft] = useState<TeamDraft>({ manager: { model: null, effort: null, instructions: '' }, agents: [] })
   const [selected, setSelected] = useState('manager')
   const [dirty, setDirty] = useState(false)
@@ -38,7 +38,7 @@ export function StartTeamDialog({ open, item, onClose, onStarted }: Props) {
   const pick = (name: string, l: TeamLibrary | null = lib) => {
     if (!l) return
     const t = l.teams.find((x) => x.name === name) ?? null
-    setTeam(t ? t.name : BLANK)
+    setTeam(t ? t.name : '')
     setDraft(draftFromTeam(t, l))
     setSelected('manager')
     setDirty(false)
@@ -56,7 +56,7 @@ export function StartTeamDialog({ open, item, onClose, onStarted }: Props) {
     void loadTeamLibrary()
       .then((l) => {
         setLib(l)
-        pick(l.teams.find((t) => t.name === 'development')?.name ?? l.teams[0]?.name ?? BLANK, l)
+        pick(l.teams.find((t) => t.name === 'development')?.name ?? l.teams[0]?.name ?? '', l)
       })
       .catch((err) => setError(String(err)))
     void fetch(`/api/dispatch/preview?itemId=${encodeURIComponent(item.id)}`)
@@ -83,7 +83,7 @@ export function StartTeamDialog({ open, item, onClose, onStarted }: Props) {
     try {
       const b = await teamsCall<StartTeamResponse & { ok: true }>('POST', 'start', {
         itemId: item.id,
-        team: team === BLANK ? null : team,
+        team: team || null,
         manager: draft.manager,
         agents: wireAgents(draft.agents),
         kickoff,
@@ -129,14 +129,14 @@ export function StartTeamDialog({ open, item, onClose, onStarted }: Props) {
               <label className="teamPickLbl" htmlFor="teamPick">
                 Team
               </label>
-              <select id="teamPick" className="teamSel" value={team} onChange={(e) => pick(e.target.value)} disabled={!lib}>
+              <Select id="teamPick" className="teamSel" aria-label="Team" value={team} onValueChange={pick} disabled={!lib}>
                 {lib?.teams.map((t) => (
-                  <option key={t.name} value={t.name}>
+                  <SelectItem key={t.name} value={t.name}>
                     {t.label}
-                  </option>
+                  </SelectItem>
                 ))}
-                <option value={BLANK}>Blank — just the manager</option>
-              </select>
+                <SelectItem value="">Blank — just the manager</SelectItem>
+              </Select>
               {dirty && <span className="pill edited">edited</span>}
               <Dialog.Close asChild>
                 <button type="button" className="iconBtn" aria-label="Close" title="Close (Esc)">

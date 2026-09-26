@@ -4,6 +4,7 @@ import { AGENT_CANS, AGENT_COLORS, MAX_TEAM_AGENTS, type AgentCan, type AgentEnt
 import { EFFORT_LABEL, useModels } from '../models.js'
 import { AGENT_HEX, CAN_META, blankAgent, canSummary, fromEntry, problems, type EditorAgent, type Problem, type TeamDraft } from '../teams.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
+import { Select, SelectItem } from '../ui/Select.js'
 
 const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
@@ -139,24 +140,31 @@ function ModelEffort({
   const known = !model || models.some((m) => m.id === model)
   return (
     <div className="teamPair">
-      <select className="teamSel" aria-label="Model" value={model ?? ''} onChange={(e) => onModel(e.target.value || null)}>
-        <option value="">Default</option>
+      <Select className="teamSel" aria-label="Model" value={model ?? ''} onValueChange={(v) => onModel(v || null)}>
+        <SelectItem value="">Default</SelectItem>
         {models.map((m) => (
-          <option key={m.id} value={m.id}>
+          <SelectItem key={m.id} value={m.id} description={m.description}>
             {m.name}
-          </option>
+          </SelectItem>
         ))}
-        {!known && model && <option value={model}>{aliasName(model)}</option>}
-      </select>
+        {/* A saved model the probe no longer lists still has to render, or the
+            field would silently blank itself. */}
+        {!known && model && <SelectItem value={model}>{aliasName(model)}</SelectItem>}
+      </Select>
       <span className="teamPairK">Effort</span>
-      <select className="teamSel" aria-label="Effort" value={effort ?? ''} onChange={(e) => onEffort((e.target.value || null) as EffortLevel | null)}>
-        <option value="">Default</option>
+      <Select
+        className="teamSel"
+        aria-label="Effort"
+        value={effort ?? ''}
+        onValueChange={(v) => onEffort((v || null) as EffortLevel | null)}
+      >
+        <SelectItem value="">Default</SelectItem>
         {EFFORTS.map((x) => (
-          <option key={x} value={x}>
+          <SelectItem key={x} value={x}>
             {EFFORT_LABEL[x]}
-          </option>
+          </SelectItem>
         ))}
-      </select>
+      </Select>
     </div>
   )
 }

@@ -6,7 +6,7 @@
  * it happens, and at the end the item(s) it would have filed. Nothing is
  * saved by the preview; Create is the only write.
  */
-import { Check, Clock } from 'lucide-react'
+import { Check, ChevronDown, Clock } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type {
   Project,
@@ -24,6 +24,9 @@ import { useEvents } from '../hooks.js'
 import { relTime } from '../itemUi.js'
 import { useModels } from '../models.js'
 import { store } from '../store.js'
+import { projectColor } from '../tabs.js'
+import { Select, SelectItem } from '../ui/Select.js'
+import { ProjectIdPicker } from './ProjectPicker.js'
 import { Markdown } from './Markdown.js'
 import { Transcript } from './Transcript.js'
 import { CONNECTORS, OUTPUTS, PRESETS, cronToPreset, presetToCron, type SchedulePreset } from '../watchUi.js'
@@ -317,14 +320,17 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
               <label htmlFor="wf-project">
                 Project <span className="hint">· optional. Lets the run read code.</span>
               </label>
-              <select id="wf-project" value={form.projectId} onChange={(e) => set('projectId', e.target.value)}>
-                <option value="">None</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+              <ProjectIdPicker projects={projects} value={form.projectId} onChange={(v) => set('projectId', v)}>
+                {(current) => (
+                  <button type="button" id="wf-project" className="wformSelect" aria-label="Project">
+                    {current && (
+                      <span className="pdot" style={{ background: projectColor(current.path) }} aria-hidden="true" />
+                    )}
+                    <span className="val">{current?.name ?? 'None'}</span>
+                    <ChevronDown className="caret" size={14} aria-hidden="true" />
+                  </button>
+                )}
+              </ProjectIdPicker>
               {project && <span className="hint mono">{project.path}</span>}
             </div>
 
@@ -332,18 +338,27 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
               <label htmlFor="wf-model">
                 Model <span className="hint">· the model each run uses</span>
               </label>
-              <select id="wf-model" value={form.model} onChange={(e) => set('model', e.target.value)}>
-                <option value="">Default (Claude Code’s choice)</option>
+              <Select
+                id="wf-model"
+                className="wformSelect"
+                aria-label="Model"
+                value={form.model}
+                onValueChange={(v) => set('model', v)}
+              >
+                <SelectItem value="">Default (Claude Code’s choice)</SelectItem>
                 {models
                   .filter((m) => m.id !== 'default')
                   .map((m) => (
-                    <option key={m.id} value={m.id}>
+                    <SelectItem key={m.id} value={m.id} description={m.description}>
                       {m.name}
-                      {m.description ? ` — ${m.description}` : ''}
-                    </option>
+                    </SelectItem>
                   ))}
-                {form.model && !models.some((m) => m.id === form.model) && <option value={form.model}>{form.model}</option>}
-              </select>
+                {/* A model saved earlier that the probe no longer lists still has
+                    to render, or the field would silently blank itself. */}
+                {form.model && !models.some((m) => m.id === form.model) && (
+                  <SelectItem value={form.model}>{form.model}</SelectItem>
+                )}
+              </Select>
             </div>
 
             <div className="field">

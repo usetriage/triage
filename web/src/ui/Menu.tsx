@@ -3,8 +3,16 @@
  *
  * Radix owns the hard parts (focus trapping, keyboard nav, collision-aware
  * positioning, click-outside, Escape, submenu timing); we own the pixels via
- * the `uiMenu*` classes in styles.css. Content is portaled to <body>, so the
- * styling here never depends on where the trigger sits in the tree.
+ * the `uiMenu*` classes in styles.css.
+ *
+ * Content is portaled out of the tree, so the styling never depends on where
+ * the trigger sits. *Where* it lands is decided by `usePortalContainer` —
+ * <body> normally, into the surrounding dialog when that dialog is a native
+ * modal one, which the browser paints above everything else. See
+ * portalContainer.ts for why; Select.tsx shares it. That is what the plumbing
+ * below buys: the root tracks open state and resolves the container, the
+ * trigger is the anchor it measures from, and the content reads the answer
+ * off context.
  *
  * The portal is a DOM portal only — React still bubbles events through the
  * *component* tree, so a click on a menu item reaches whatever wraps the
@@ -14,14 +22,66 @@
  */
 import * as ContextMenu from '@radix-ui/react-context-menu'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import type { ComponentPropsWithoutRef } from 'react'
+import { createContext, useContext, useMemo, useState } from 'react'
+import type { ComponentProps, ComponentPropsWithoutRef, Ref } from 'react'
+import { usePortalContainer } from './portalContainer.js'
 
 function cx(base: string, extra?: string) {
   return extra ? `${base} ${extra}` : base
 }
 
-export const Menu = DropdownMenu.Root
-export const MenuTrigger = DropdownMenu.Trigger
+/**
+ * The root tracks where its content should portal to (see portalContainer.ts)
+ * and hands it down, so `MenuContent` doesn't need to know anything about the
+ * dialog it might be sitting in. The trigger is the anchor we measure from —
+ * it is the one node of a menu that lives in the normal tree.
+ */
+type MenuCtx = { anchorRef: (node: HTMLElement | null) => void; container: HTMLElement | undefined }
+const MenuContext = createContext<MenuCtx>({ anchorRef: () => {}, container: undefined })
+
+export function Menu({
+  open,
+  onOpenChange,
+  ...props
+}: ComponentPropsWithoutRef<typeof DropdownMenu.Root>) {
+  const [selfOpen, setSelfOpen] = useState(false)
+  const { anchorRef, container, resolve } = usePortalContainer(open ?? selfOpen)
+  const ctx = useMemo(() => ({ anchorRef, container }), [anchorRef, container])
+  return (
+    <MenuContext.Provider value={ctx}>
+      <DropdownMenu.Root
+        {...props}
+        open={open}
+        onOpenChange={(next) => {
+          setSelfOpen(next)
+          if (next) resolve()
+          onOpenChange?.(next)
+        }}
+      />
+    </MenuContext.Provider>
+  )
+}
+
+/**
+ * Composes any caller-supplied ref with our anchor rather than letting one
+ * win: under React 19 `ref` is an ordinary prop, so a spread would silently
+ * drop whichever came first — and dropping the anchor makes exactly one menu
+ * quietly stop escaping its dialog, with nothing to show why.
+ */
+export function MenuTrigger({ ref, ...props }: ComponentProps<typeof DropdownMenu.Trigger>) {
+  const { anchorRef } = useContext(MenuContext)
+  return (
+    <DropdownMenu.Trigger
+      {...props}
+      ref={(node: HTMLButtonElement | null) => {
+        anchorRef(node)
+        if (typeof ref === 'function') ref(node)
+        else if (ref) (ref as { current: HTMLButtonElement | null }).current = node
+      }}
+    />
+  )
+}
+
 export const MenuSub = DropdownMenu.Sub
 
 export function MenuContent({
@@ -33,8 +93,9 @@ export function MenuContent({
   onKeyDown,
   ...props
 }: ComponentPropsWithoutRef<typeof DropdownMenu.Content>) {
+  const { container } = useContext(MenuContext)
   return (
-    <DropdownMenu.Portal>
+    <DropdownMenu.Portal container={container}>
       <DropdownMenu.Content
         className={cx('uiMenu', className)}
         sideOffset={sideOffset}
@@ -73,8 +134,9 @@ export function MenuSubContent({
   onKeyDown,
   ...props
 }: ComponentPropsWithoutRef<typeof DropdownMenu.SubContent>) {
+  const { container } = useContext(MenuContext)
   return (
-    <DropdownMenu.Portal>
+    <DropdownMenu.Portal container={container}>
       <DropdownMenu.SubContent
         className={cx('uiMenu', className)}
         sideOffset={sideOffset}
@@ -102,8 +164,39 @@ export function MenuSeparator(props: ComponentPropsWithoutRef<typeof DropdownMen
  * gives us cursor positioning and the long-press gesture; the pixels are the
  * `uiMenu*` classes above, so a context menu looks like every other menu.
  */
-export const CtxMenu = ContextMenu.Root
-export const CtxMenuTrigger = ContextMenu.Trigger
+export function CtxMenu({ open, onOpenChange, ...props }: ComponentProps<typeof ContextMenu.Root>) {
+  const [selfOpen, setSelfOpen] = useState(false)
+  const { anchorRef, container, resolve } = usePortalContainer(open ?? selfOpen)
+  const ctx = useMemo(() => ({ anchorRef, container }), [anchorRef, container])
+  return (
+    <MenuContext.Provider value={ctx}>
+      <ContextMenu.Root
+        {...props}
+        open={open}
+        onOpenChange={(next) => {
+          setSelfOpen(next)
+          if (next) resolve()
+          onOpenChange?.(next)
+        }}
+      />
+    </MenuContext.Provider>
+  )
+}
+
+/** The right-clicked area is the anchor — the context-menu equivalent of a trigger button. */
+export function CtxMenuTrigger({ ref, ...props }: ComponentProps<typeof ContextMenu.Trigger>) {
+  const { anchorRef } = useContext(MenuContext)
+  return (
+    <ContextMenu.Trigger
+      {...props}
+      ref={(node: HTMLSpanElement | null) => {
+        anchorRef(node)
+        if (typeof ref === 'function') ref(node)
+        else if (ref) (ref as { current: HTMLSpanElement | null }).current = node
+      }}
+    />
+  )
+}
 
 export function CtxMenuContent({
   className,
@@ -112,8 +205,9 @@ export function CtxMenuContent({
   onKeyDown,
   ...props
 }: ComponentPropsWithoutRef<typeof ContextMenu.Content>) {
+  const { container } = useContext(MenuContext)
   return (
-    <ContextMenu.Portal>
+    <ContextMenu.Portal container={container}>
       <ContextMenu.Content
         className={cx('uiMenu', className)}
         collisionPadding={collisionPadding}

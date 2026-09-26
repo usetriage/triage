@@ -894,7 +894,6 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 }
 .teamAdd:hover:not(:disabled) { color: var(--ink); border-color: var(--hair-bright); }
 .teamAdd:disabled { opacity: 0.5; cursor: default; }
-.uiMenu.teamAddMenu { z-index: 95; }
 .teamAddMenu .uiMenuItem { display: flex; align-items: center; gap: 8px; }
 .teamAddName { color: var(--ink); }
 .teamAddCan { margin-left: auto; padding-left: 14px; font-size: 0.8462rem; color: var(--ash); }
@@ -911,13 +910,24 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .teamInp.wide { width: 100%; }
 .teamInp:disabled { opacity: 0.55; }
 .teamInp.bad { border-color: var(--edge-red); }
-.teamSel {
-  -webkit-appearance: none; appearance: none; height: 30px; padding: 0 26px 0 10px; cursor: pointer;
-  background: var(--card) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888e90' stroke-width='2.4'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 9px center;
+/* Now a Radix trigger rather than a native <select>: the caret is a real
+   element instead of a background image, but the box is unchanged, because it
+   still sits beside .teamInp in the same rows. Doubled up with .uiSelect
+   because that rule is later in this file and would otherwise win the box
+   properties and stretch the pair to full width. */
+.teamSel.uiSelect {
+  display: inline-flex; align-items: center; gap: 8px; width: auto; height: 30px;
+  padding: 0 9px 0 10px; background: var(--card); border-radius: var(--r);
+  color: var(--body); font-size: 0.9615rem; text-align: left; cursor: pointer;
 }
+.teamSel.uiSelect > span:first-of-type { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.teamSel.uiSelect .caret { flex: none; color: var(--ash); }
+.teamSel.uiSelect[data-disabled] { opacity: 0.55; pointer-events: none; }
+.teamSel.uiSelect:hover { border-color: var(--hair-bright); }
+.teamSel.uiSelect[data-state="open"], .teamSel.uiSelect:focus-visible { border-color: var(--ink); }
 .teamArea { width: 100%; padding: 8px 10px; line-height: 1.55; resize: vertical; display: block; }
-.teamInp:hover, .teamSel:hover, .teamArea:hover { border-color: var(--hair-bright); }
-.teamInp:focus, .teamSel:focus, .teamArea:focus { outline: none; border-color: var(--ink); }
+.teamInp:hover, .teamArea:hover { border-color: var(--hair-bright); }
+.teamInp:focus, .teamArea:focus { outline: none; border-color: var(--ink); }
 .teamInp::placeholder, .teamArea::placeholder { color: var(--stone); }
 .teamHint { font-size: 0.8462rem; color: var(--stone); margin-top: 5px; line-height: 1.45; }
 .teamErr { font-size: 0.8462rem; color: var(--red); margin-top: 5px; }
@@ -1118,12 +1128,6 @@ button.chip:hover:not(:disabled), .chip[data-state="open"] { color: var(--ink); 
 .chip.perm.risk-high { color: var(--red); border-color: var(--edge-red); }
 .chip.perm.risk-high svg { color: var(--red); }
 .chip.cwd.pick { cursor: pointer; }
-.chip.cwd.pick select {
-  appearance: none; -webkit-appearance: none; min-width: 0; max-width: 100%; padding: 0; margin: 0;
-  background: transparent; border: none; outline: none; cursor: pointer; color: inherit; font: 0.8462rem/1.5 var(--mono);
-  overflow: hidden; text-overflow: ellipsis;
-}
-.chip.cwd.pick select option { background: var(--elev); color: var(--ink); }
 .modelPicker, .permPicker { position: relative; flex: none; display: flex; }
 #sendBtn, #stopBtn {
   display: inline-flex; align-items: center; justify-content: center; flex: none;
@@ -1151,7 +1155,7 @@ button.chip:hover:not(:disabled), .chip[data-state="open"] { color: var(--ink); 
 
 /* ---------- menus (Radix dropdown) ---------- */
 .uiMenu {
-  z-index: 60; min-width: 204px; padding: 5px;
+  z-index: 95; min-width: 204px; padding: 5px;
   background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r);
   box-shadow: 0 0 0 1px var(--ring);
   font-family: var(--sans); font-size: 1rem; line-height: 1.45; color: var(--body);
@@ -1191,6 +1195,46 @@ button.chip:hover:not(:disabled), .chip[data-state="open"] { color: var(--ink); 
 .uiMenuConfirm .danger { background: var(--red); color: #1a0308; }
 .uiMenuConfirm .cancel { background: transparent; color: var(--mute); border-color: var(--hair-strong); }
 .wsMenu { min-width: 220px; }
+
+/* ---------- selects (Radix select) ---------- */
+/* The trigger is a sibling of .prioBar: same 36px bar, same hairline that
+   brightens on hover and while open, same caret in --ash. The popup is a
+   .uiMenu, so items inherit the menu's hover/highlight wholesale. */
+.uiSelect {
+  display: flex; align-items: center; gap: 9px; width: 100%; height: 36px; padding: 0 11px;
+  border: 1px solid var(--hair-strong); border-radius: var(--r); background: transparent;
+  color: var(--body); font-family: var(--sans); font-size: 0.9231rem; text-align: left;
+  cursor: pointer; transition: border-color 0.1s ease;
+}
+.uiSelect:hover, .uiSelect[data-state="open"] { border-color: var(--hair-bright); }
+.uiSelect:focus { outline: none; }
+.uiSelect:focus-visible { outline: 1px solid var(--ink); outline-offset: 1px; }
+.uiSelect[data-placeholder] { color: var(--ash); }
+.uiSelect[data-disabled] { opacity: 0.5; cursor: default; pointer-events: none; }
+.uiSelect > span:first-of-type { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.uiSelect .caret { margin-left: auto; color: var(--ash); flex: none; }
+/* Above the app's dialog layers (overlays 80/90, dialog bodies 81/91) — Radix
+   copies this z-index onto its popper wrapper, which is the positioned
+   element, so it is the lever that actually works. Same layer as .uiMenu, so
+   menus and selects can't cover each other. Native modal dialogs are a
+   separate problem: they are in the top layer and we portal into them instead. */
+.uiSelectContent {
+  z-index: 95;
+  min-width: var(--radix-select-trigger-width);
+  max-height: var(--radix-select-content-available-height);
+  overflow: hidden;
+  transform-origin: var(--radix-select-content-transform-origin);
+}
+.uiSelectItem { padding-right: 9px; }
+.uiSelectItem .check { margin-left: auto; padding-left: 14px; }
+/* Radix mounts these only while the list can actually scroll in that
+   direction, so they double as the "there is more" hint a wheel-less user
+   would otherwise never get. Part of the menu surface, not a scrollbar. */
+.uiSelectScroll {
+  display: flex; align-items: center; justify-content: center;
+  height: 18px; cursor: default; color: var(--ash); background: var(--elev);
+}
+.uiSelectScroll:hover { color: var(--ink); }
 .wsMenu .wsDot { width: 8px; height: 8px; border-radius: var(--r-full); flex: none; }
 .wsMenu .wsMenuName { flex: 1; display: flex; align-items: center; gap: 7px; }
 .wsDefaultTag { font-style: normal; font-size: 0.7692rem; color: var(--ash); border: 1px solid var(--hair-strong); border-radius: var(--r-full); padding: 0 6px; }
@@ -1214,12 +1258,12 @@ dialog::backdrop { background: var(--scrim); }
 dialog:focus, dialog:focus-visible { outline: none; }
 dialog h3 { margin: 0 0 14px; font-size: 1.1538rem; font-weight: 500; color: var(--ink); letter-spacing: -0.1px; }
 dialog label { display: block; font-size: 0.9231rem; color: var(--mute); margin: 12px 0 5px; }
-dialog input, dialog textarea, dialog select {
+dialog input, dialog textarea {
   width: 100%; background: var(--canvas); border: 1px solid var(--hair-strong); color: var(--ink);
   border-radius: var(--r); padding: 8px 10px; font-size: 1rem; line-height: 1.45; outline: none;
   transition: border-color 0.12s;
 }
-dialog input:focus, dialog textarea:focus, dialog select:focus { border-color: var(--ink); }
+dialog input:focus, dialog textarea:focus { border-color: var(--ink); }
 dialog input::placeholder, dialog textarea::placeholder { color: var(--stone); }
 dialog .row { margin-top: 18px; display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
 dialog .row button, dialog button.go, dialog button.cancel, dialog button.danger {
@@ -1288,7 +1332,13 @@ dialog.sheet[open] { display: grid; }
 .logTabs { display: inline-flex; gap: 4px; }
 .logTab { background: transparent; border: 1px solid transparent; color: var(--mute); font-size: 0.9231rem; height: 24px; padding: 0 9px; border-radius: var(--r-full); text-transform: capitalize; }
 .logTab.active { color: var(--ink); background: var(--elev); border-color: var(--hair-strong); }
-.logFilters select { width: auto; padding: 3px 8px; font-size: 0.9231rem; border-radius: var(--r-sm); }
+/* Sits between .logTabs and .logFilterInput, so it matches their height and
+   the smaller filter-row type rather than the default 36px form control. */
+.logSelect.uiSelect {
+  width: auto; height: 24px; padding: 0 8px; gap: 6px;
+  border-radius: var(--r-sm); background: var(--elev); color: var(--ink); font-size: 0.9231rem;
+}
+.logSelect.uiSelect > span:first-of-type { max-width: 200px; }
 .logFilterInput { flex: 1; min-width: 120px; padding: 3px 8px !important; font-size: 0.9231rem !important; border-radius: var(--r-sm) !important; }
 .logLines { font-family: var(--mono); font-size: 0.8846rem; line-height: 1.7; max-height: 46vh; overflow: auto; background: var(--deep); border: 1px solid var(--hair); border-radius: var(--r); padding: 8px 10px; }
 .logLine { display: flex; gap: 8px; white-space: nowrap; }
@@ -1470,8 +1520,21 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 .pillRow .pill.add:hover { color: var(--body); }
 .pillRow .pill.add.set { color: var(--ink); border-style: solid; }
 .pillRow .pill:hover { border-color: var(--hair-bright); }
-.pillRow .pill select { appearance: none; -webkit-appearance: none; border: none !important; outline: none; background: transparent !important; cursor: pointer; color: inherit; font-size: 0.9231rem !important; padding: 0 !important; margin: 0; max-width: 200px; width: auto; border-radius: 0 !important; }
-.pillRow .pill select option { background: var(--elev); color: var(--ink); }
+/* Pills whose trigger *is* a Select — the inbox compose bar's setters and the
+   Create-brief dialog's knobs. Not scoped to .pillRow: both rows want the same
+   thing, and one rule beats two that must be kept in step.
+   .uiSelect is a 36px full-width form control by default, so the pill variant
+   pulls it back to pill shape; the caret goes — a pill is already an obvious
+   affordance and the row has no room for it. Colour is left to .pill.set and
+   the .prio* rules below. */
+.pill.uiSelect {
+  width: auto; gap: 6px; height: 24px; padding: 0 10px;
+  border-radius: var(--r-full); background: var(--elev);
+  color: var(--charcoal); font-size: 0.8462rem; line-height: 1.5;
+}
+.pill.uiSelect .caret { display: none; }
+.pill.uiSelect > span:first-of-type { max-width: 200px; }
+.pillRow .pill .pdot { width: 7px; height: 7px; border-radius: var(--r-full); flex: none; }
 .pillRow .pill svg { color: var(--ash); }
 .pillRow .pill.set { color: var(--ink); }
 .pillRow .pill.set svg { color: var(--ink); }
@@ -1604,12 +1667,11 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 .setErr { color: var(--red); font-size: 0.9231rem; }
 .setField label { display: block; font-size: 0.9231rem; color: var(--mute); margin: 12px 0 5px; }
 .setField label:first-child { margin-top: 0; }
-.settings input:not([type]), .settings input[type="text"], .settings input[type="password"], .settings textarea, .settings select {
+.settings input:not([type]), .settings input[type="text"], .settings input[type="password"], .settings textarea {
   width: 100%; background: var(--canvas); border: 1px solid var(--hair-strong); color: var(--ink);
   border-radius: var(--r); padding: 8px 10px; font-size: 1rem; line-height: 1.45; outline: none; transition: border-color 0.12s;
 }
-.settings input:focus, .settings select:focus { border-color: var(--ink); }
-.settings .logFilters select { width: auto; padding: 3px 8px; font-size: 0.9231rem; border-radius: var(--r-sm); }
+.settings input:focus { border-color: var(--ink); }
 .settings .logFilterInput { width: auto; flex: 1; }
 .settings input::placeholder { color: var(--stone); }
 .settings .wsKeyRow input { font-family: var(--mono); font-size: 0.9231rem; }
@@ -1788,6 +1850,10 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 .projRowItem .desc .path { overflow: hidden; text-overflow: ellipsis; }
 .projRowItem .check { margin-top: 2px; }
 .projRowItem.on { background: var(--wash-2); }
+/* "No project" has no colour to show, so it indents to the same text column
+   as the rows below it and reads muted — it is an absence, not a project. */
+.projRowItem.none { align-items: center; padding-left: 26px; }
+.projRowItem.none .name { color: var(--mute); }
 
 /* ---------- usage tab (settings → diagnostics) ---------- */
 .usage { display: flex; flex-direction: column; gap: 18px; padding-bottom: 8px; }
@@ -2027,15 +2093,24 @@ dialog.briefDialog .items .it { font-size: 1rem; color: var(--body); overflow: h
 dialog.briefDialog .items .it .k { color: var(--ash); font-size: 0.8462rem; margin-right: 6px; }
 dialog.briefDialog textarea { min-height: 88px; resize: vertical; }
 dialog.briefDialog .knobs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
-dialog.briefDialog .knobs select { width: auto; }
 .setPlaybook { display: flex; flex-direction: column; gap: 8px; }
 .setPlaybook .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.setPlaybook .head select { width: auto; background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 0 10px; height: 30px; font-size: 1rem; }
 .setPlaybook textarea { width: 100%; box-sizing: border-box; min-height: 260px; resize: vertical; font-family: var(--mono); font-size: 0.9615rem; line-height: 1.6; background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 10px 12px; outline: none; }
 .setPlaybook textarea:focus { border-color: var(--ink); }
 .setPlaybook .path { font-family: var(--mono); font-size: 0.8462rem; color: var(--stone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .setNum { width: 80px; background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 0 10px; height: 30px; font-size: 1rem; outline: none; }
 .setNum:focus { border-color: var(--ink); }
+/* The settings selects. `.setNum` is an input style and was being borrowed by
+   a native <select>; these are Radix triggers, so they get their own class
+   with the same form-control language and an auto width. */
+.setSelect.uiSelect {
+  width: auto; height: 30px; padding: 0 10px; gap: 8px;
+  background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r);
+  color: var(--ink); font-size: 1rem;
+}
+.setSelect.uiSelect:hover:not([data-disabled]) { border-color: var(--hair-bright); }
+.setSelect.uiSelect[data-disabled] { opacity: 0.5; }
+.setSelect.uiSelect > span:first-of-type { max-width: 260px; }
 
 /* ---------- artifact editor (full content area) ---------- */
 .page.artEditPage { display: flex; flex-direction: column; overflow: hidden; padding: 20px 28px 16px; }
@@ -2108,14 +2183,33 @@ dialog.briefDialog .knobs select { width: auto; }
 .wform .field { display: flex; flex-direction: column; gap: 6px; }
 .wform label { font-size: 0.9231rem; color: var(--mute); }
 .wform .hint { color: var(--stone); font-size: 0.9231rem; }
-.wform input, .wform textarea, .wform select {
+.wform input, .wform textarea {
   width: 100%; background: var(--canvas); border: 1px solid var(--hair-strong); color: var(--ink);
   border-radius: var(--r); padding: 8px 10px; font-size: 1rem; line-height: 1.45; outline: none; transition: border-color 0.12s;
 }
-.wform input:focus, .wform textarea:focus, .wform select:focus { border-color: var(--ink); }
+.wform input:focus, .wform textarea:focus { border-color: var(--ink); }
 .wform input::placeholder, .wform textarea::placeholder { color: var(--stone); }
 .wform textarea { min-height: 118px; resize: vertical; line-height: 1.6; }
-.wform select { width: 320px; }
+/* NB this one is a single class, unlike .pill.uiSelect / .teamSel.uiSelect —
+   it can be, because it is defined *after* .uiSelect and so wins the box
+   properties on source order. It has to stay single, because it also dresses
+   the project menu's plain <button>, which carries no .uiSelect. Keep it below
+   the select block.
+   Project and model on the watch form are a menu trigger and a Select, but
+   they sit in a column of text inputs, so they take the same box as their
+   siblings above: same width, border, radius and padding, caret on the end. */
+.wformSelect {
+  display: flex; align-items: center; gap: 8px; width: 320px; height: auto;
+  padding: 8px 10px; background: var(--canvas); border: 1px solid var(--hair-strong);
+  border-radius: var(--r); color: var(--ink); font-size: 1rem; line-height: 1.45;
+  text-align: left; cursor: pointer; outline: none; transition: border-color 0.12s;
+}
+.wformSelect:hover { border-color: var(--hair-bright); }
+.wformSelect:focus-visible, .wformSelect[data-state="open"] { border-color: var(--ink); }
+/* not :first-of-type — the colour dot is a span too, and must not stretch */
+.wformSelect > span:not(.pdot) { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.wformSelect .caret { flex: none; color: var(--ash); }
+.wformSelect .pdot { width: 7px; height: 7px; border-radius: var(--r-full); flex: none; }
 .wform .chipRow { gap: 6px; }
 .cchip { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px 0 8px; border-radius: var(--r); border: 1px solid var(--hair-strong); background: transparent; color: var(--mute); font-size: 0.9615rem; transition: color 0.1s, border-color 0.1s, background 0.1s; }
 .cchip:hover { color: var(--ink); border-color: var(--hair-bright); }

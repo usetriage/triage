@@ -41,7 +41,7 @@ import { withWorkspace } from '../workspaceUrl.js'
 import { useAttachments } from '../attachments.js'
 import { AttachmentStrip } from './AttachmentStrip.js'
 import { inboxStore, useInbox } from '../inboxStore.js'
-import { rowOpen } from '../tabs.js'
+import { projectColor, rowOpen } from '../tabs.js'
 import { briefPill, briefStore, useBriefs } from '../briefStore.js'
 import { CreateBriefDialog } from './CreateBriefDialog.js'
 import {
@@ -58,6 +58,8 @@ import {
   weekday,
 } from '../itemUi.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
+import { Select, SelectItem } from '../ui/Select.js'
+import { ProjectIdPicker } from './ProjectPicker.js'
 import { anyDialogOpen, isTypingTarget } from '../keys.js'
 
 /** The status tabs (.docs/watches-v2.md): items are durable and never deleted,
@@ -1073,27 +1075,32 @@ function ItemComposer({
         />
 
         <div className="pillRow">
-          <label className={`pill prio${priority}`} title="Priority">
-            <Flag size={12} aria-hidden="true" />
-            <select value={priority} onChange={(e) => setPriority(Number(e.target.value))}>
-              {PRIORITY_VALUES.map((v) => (
-                <option key={v} value={v}>
-                  {v === 0 ? 'Priority' : PRIORITY_LABEL[v]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={`pill${projectId ? ' set' : ''}`} title="Project">
-            <Folder size={12} aria-hidden="true" />
-            <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-              <option value="">Project</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Select
+            className={`pill prio${priority}`}
+            title="Priority"
+            aria-label="Priority"
+            icon={<Flag size={12} aria-hidden="true" />}
+            value={String(priority)}
+            onValueChange={(v) => setPriority(Number(v))}
+          >
+            {PRIORITY_VALUES.map((v) => (
+              <SelectItem key={v} value={String(v)}>
+                {v === 0 ? 'Priority' : PRIORITY_LABEL[v]}
+              </SelectItem>
+            ))}
+          </Select>
+          <ProjectIdPicker projects={projects} value={projectId} onChange={setProjectId}>
+            {(current) => (
+              <button type="button" className={`pill${current ? ' set' : ''}`} title="Project" aria-label="Project">
+                {current ? (
+                  <span className="pdot" style={{ background: projectColor(current.path) }} aria-hidden="true" />
+                ) : (
+                  <Folder size={12} aria-hidden="true" />
+                )}
+                {current?.name ?? 'Project'}
+              </button>
+            )}
+          </ProjectIdPicker>
           <button
             type="button"
             className={`pill add${thumbs.length ? ' set' : ''}`}
