@@ -83,6 +83,90 @@ export type WorkspaceVerifyResponse =
  */
 export type SessionKind = 'chat' | 'watch-run' | 'brief'
 
+// ---------------------------------------------------------------------------
+// Teams (server/teams.ts, .docs/teams.md): a manager plus agents working one
+// work item, each its own chat session. Agents are Claude Code agent files and
+// teams are files too, both in the workspace folder, seeded with defaults.
+// ---------------------------------------------------------------------------
+
+/** What an agent may do. Compiled to tool rules at spawn — never a prompt-only promise. */
+export type AgentCan = 'read' | 'edit' | 'run' | 'web'
+export const AGENT_CANS: AgentCan[] = ['read', 'edit', 'run', 'web']
+
+/** Claude Code's own agent colours. */
+export const AGENT_COLORS = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan'] as const
+export type AgentColor = (typeof AGENT_COLORS)[number]
+
+/** Most agents a team may have besides its manager (V1). */
+export const MAX_TEAM_AGENTS = 4
+
+/** One agent — the fields of a Claude Code agent file triage understands. */
+export type AgentSpec = {
+  /** slug: the file name and the address other members message */
+  name: string
+  label: string
+  description: string
+  /** a model id from the SDK's list; null = inherit Claude Code's default */
+  model: string | null
+  effort: EffortLevel | null
+  color: AgentColor
+  can: AgentCan[]
+  prompt: string
+}
+
+/** The manager is triage's own; these are the parts a team may tune. */
+export type ManagerSpec = { model: string | null; effort: EffortLevel | null; instructions: string }
+
+export type TeamSpec = {
+  name: string
+  label: string
+  description: string
+  manager: ManagerSpec
+  /** agent names, in roster order */
+  agents: string[]
+}
+
+/**
+ * Where a library file stands against what triage ships: untouched, edited,
+ * edited while a newer default shipped, or the user's own.
+ */
+export type LibraryStatus = 'default' | 'edited' | 'update' | 'yours'
+
+export type AgentEntry = AgentSpec & { status: LibraryStatus; path: string; usedBy: string[] }
+export type TeamEntry = TeamSpec & { status: LibraryStatus; path: string; missing: string[] }
+
+export type TeamLibraryResponse =
+  | { ok: true; teams: TeamEntry[]; agents: AgentEntry[]; dir: string }
+  | { ok: false; error: string }
+
+/** An agent as the team editor holds it: the spec, plus the library file it came from. */
+export type DraftAgent = AgentSpec & { base: string | null; dirty: boolean }
+
+export type StartTeamRequest = {
+  itemId: string
+  /** the library team the draft started from, if any */
+  team: string | null
+  manager: ManagerSpec
+  agents: DraftAgent[]
+  kickoff: string
+}
+export type StartTeamResponse = { ok: true; teamId: string; managerId: string } | { ok: false; error: string }
+
+export type SaveTeamRequest = {
+  /** the team file to overwrite; null = a new team */
+  name: string | null
+  label: string
+  description: string
+  manager: ManagerSpec
+  agents: DraftAgent[]
+  /** edited agents: fork them into new files (the dialog) or update their files (Settings) */
+  agentMode: 'fork' | 'update'
+}
+export type SaveTeamResponse = { ok: true; team: string; library: TeamLibraryResponse & { ok: true } } | { ok: false; error: string }
+
+/** A session's place on a team: the run, and which member it is. */
+export type TeamMembership = { id: string; member: string; label: string; color?: AgentColor; order: number }
+
 /**
  * What the user did with one prompt. `allow_always` is `allow` plus the SDK's
  * own "don't ask again" suggestions, scoped to this session — the narrow way
@@ -179,6 +263,10 @@ export type SessionSummary = {
   watchId?: string
   /** the work item this session was dispatched for, or briefs (from the links table). */
   itemId?: string
+  /** the team run this session is a member of, and which member. */
+  team?: TeamMembership
+  /** A permission prompt is waiting on the user. Absent = none. */
+  waiting?: boolean
   /** Last activity, epoch ms. The sidebar sorts and time-buckets on this. */
   updatedAt: number
 }
@@ -1086,7 +1174,14 @@ export type FileSearchResponse =
 
 export type SessionEvent =
   | { kind: 'sdk'; message: SdkMessage }
-  | { kind: 'local_user'; text: string; images?: ImageAttachment[]; mentions?: ResolvedMention[] }
+  | {
+      kind: 'local_user'
+      text: string
+      images?: ImageAttachment[]
+      mentions?: ResolvedMention[]
+      /** the label of the teammate that sent this over `message_teammate`; absent = the user */
+      from?: string
+    }
   | { kind: 'error'; message: string }
   | {
       kind: 'permission_request'

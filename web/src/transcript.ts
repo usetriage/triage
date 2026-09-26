@@ -37,7 +37,7 @@ export type ToolItem = {
 export type ThinkingItem = { key: string; kind: 'thinking'; text: string }
 
 export type TranscriptItem =
-  | { key: string; kind: 'user'; text: string; images?: ImageAttachment[]; mentions?: ResolvedMention[] }
+  | { key: string; kind: 'user'; text: string; images?: ImageAttachment[]; mentions?: ResolvedMention[]; from?: string }
   | { key: string; kind: 'assistant'; text: string }
   | ThinkingItem
   | { key: string; kind: 'error'; text: string }
@@ -81,7 +81,7 @@ export function buildTranscript(
   events.forEach((ev, i) => {
     switch (ev.kind) {
       case 'local_user':
-        items.push({ key: `u${i}`, kind: 'user', text: ev.text, images: ev.images, mentions: ev.mentions })
+        items.push({ key: `u${i}`, kind: 'user', text: ev.text, images: ev.images, mentions: ev.mentions, from: ev.from })
         break
       case 'error':
         items.push({ key: `e${i}`, kind: 'error', text: ev.message })

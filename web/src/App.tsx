@@ -35,6 +35,8 @@ import { draftStore, draftTitle, useDrafts } from './drafts.js'
 import { TerminalPage } from './components/TerminalPage.js'
 import { TopBar } from './components/TopBar.js'
 import { Transcript } from './components/Transcript.js'
+import { TeamStrip } from './components/TeamStrip.js'
+import { teamMembers } from './teams.js'
 import { WatchesPage } from './components/WatchesPage.js'
 import { REFINE_WATCH_KEY, WatchFormPage } from './components/WatchFormPage.js'
 import { WatchPage } from './components/WatchPage.js'
@@ -951,6 +953,14 @@ export function App() {
                     {STATUS_LABEL[current.status]}
                   </span>
                 </div>
+                {current.team && (
+                  <TeamStrip
+                    members={teamMembers(sessions, current.team.id)}
+                    currentId={current.id}
+                    modelName={(s) => findModel(models, s.model)?.name ?? s.model}
+                    onOpen={navigate}
+                  />
+                )}
                 <Transcript
                   key={current.id}
                   sessionId={current.id}

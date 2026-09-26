@@ -26,6 +26,7 @@ import {
   ScrollText,
   Settings2,
   Sparkles,
+  Users,
   Wallet,
   X,
   type LucideProps,
@@ -64,6 +65,7 @@ import { PermissionModePicker } from './PermissionModePicker.js'
 import { ConnectorsPanel } from './Connectors.js'
 import { McpTab } from './McpTab.js'
 import { ProjectsTab } from './ProjectsTab.js'
+import { TeamsTab } from './TeamsTab.js'
 import { RepoScopeEditor } from './RepoScope.js'
 import { UsageTab } from './UsageTab.js'
 import { ActivityTab, LogsTab, type SystemTab } from './SystemModal.js'
@@ -75,6 +77,7 @@ const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
   sources: Plug,
   projects: Folder,
   briefs: Sparkles,
+  teams: Users,
   connectors: Plug,
   mcp: Cable,
   activity: Activity,
@@ -184,6 +187,9 @@ export function SettingsModal({ workspace, onOpenSystem }: Props) {
                   </Tabs.Content>
                   <Tabs.Content value="briefs">
                     <BriefsTab />
+                  </Tabs.Content>
+                  <Tabs.Content value="teams">
+                    <TeamsTab />
                   </Tabs.Content>
                   <Tabs.Content value="connectors" className="settingsFill">
                     <ConnectorsPanel refreshNonce={nonce} />

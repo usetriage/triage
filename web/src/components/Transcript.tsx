@@ -111,6 +111,14 @@ const Item = memo(function Item({
 }) {
   switch (item.kind) {
     case 'user':
+      // A teammate agent's message: its own card, so it never reads as something the user typed.
+      if (item.from)
+        return (
+          <div className="msg teammate">
+            <div className="msgFrom">from {item.from}</div>
+            <Markdown text={item.text} />
+          </div>
+        )
       return (
         <div className="msg user">
           {item.images && item.images.length > 0 && (

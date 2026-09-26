@@ -153,7 +153,26 @@ import type {
   WorkspaceResponse,
   WorkspacesResponse,
   WorkspaceVerifyResponse,
+  SaveTeamResponse,
+  StartTeamResponse,
+  TeamLibraryResponse,
+  TeamMembership,
 } from '../shared/protocol.js'
+import {
+  MANAGER_DISALLOWED,
+  TEAM_MESSAGE_BUDGET,
+  TeamLibrary,
+  agentAppend,
+  agentFrom,
+  checkRoster,
+  disallowedFor,
+  draftAgentFrom,
+  frameTeamMessage,
+  isLibraryName,
+  managerAppend,
+  managerFrom,
+  type StoredTeamRun,
+} from './teams.js'
 import type { StoredTurn } from '../core/store/types.js'
 import { openSqliteStore } from '../core/store/sqlite.js'
 import type { Store, StoredSession, UpsertOutcome } from '../core/store/types.js'
@@ -422,6 +441,14 @@ class WorkspaceRuntime {
   /** session id → the work item it was dispatched for or briefs (mirrors `links`) */
   readonly sessionItem = new Map<string, string>()
 
+  // Teams (server/teams.ts): agents and teams are files; runs persist under `team_runs`.
+  readonly teamLibrary: TeamLibrary
+  readonly teamRuns = new Map<string, StoredTeamRun>()
+  /** session id → its run and which member it is, mirrored from `teamRuns` */
+  readonly sessionTeam = new Map<string, { runId: string; member: string }>()
+  /** run id → messages between members since the user last spoke to the team */
+  readonly teamMessages = new Map<string, number>()
+
   // Session changes (.docs/session-diff-variations.md): sessions in one folder
   // share a working tree, so "what did *this* session change" is reconstructed
   // from the git trees either side of each of its turns.
@@ -442,6 +469,7 @@ class WorkspaceRuntime {
     this.playbookDir = path.join(workspaceDir(meta.id), 'playbooks')
     this.dispatchDir = path.join(workspaceDir(meta.id), 'dispatch')
     this.attachmentsDir = path.join(workspaceDir(meta.id), 'attachments')
+    this.teamLibrary = new TeamLibrary(workspaceDir(meta.id))
     this.triageMcp = () => makeTriageMcp(this)
     this.terminals = new TerminalManager(
       (msg) => broadcast(this, msg),
@@ -467,7 +495,12 @@ initLogFile(path.join(TRIAGE_DIR, 'logs'))
  * Claude Code's own system prompt (it survives `resume`), and MCP servers
  * beyond the workspace's triage server.
  */
-type SessionExtras = { systemAppend?: string; mcp?: Record<string, ReturnType<typeof createSdkMcpServer>> }
+type SessionExtras = {
+  systemAppend?: string
+  mcp?: Record<string, ReturnType<typeof createSdkMcpServer>>
+  /** tools the subprocess never gets (a team role's policy) */
+  disallowedTools?: string[]
+}
 
 /** Tools a headless brief session never gets, whatever it asks (belt to the gate's braces). */
 const BRIEF_DISALLOWED_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'AskUserQuestion']
@@ -532,7 +565,9 @@ class LiveSession {
         // Claude Code sessions get (server/mcp.ts). Scoped to this workspace.
         // Brief sessions add their own `write_brief` server on top.
         mcpServers: { triage: rt.triageMcp(), ...(extras.mcp ?? {}) },
-        ...(row.kind === 'brief' ? { disallowedTools: BRIEF_DISALLOWED_TOOLS } : {}),
+        ...(row.kind === 'brief' || extras.disallowedTools?.length
+          ? { disallowedTools: [...(row.kind === 'brief' ? BRIEF_DISALLOWED_TOOLS : []), ...(extras.disallowedTools ?? [])] }
+          : {}),
         // Workspace auth backend: api-key / config-dir spawn with overrides;
         // inherit passes nothing, exactly the pre-workspaces behavior.
         ...(rt.env ? { env: rt.env } : {}),
@@ -716,13 +751,23 @@ class LiveSession {
     if (changed) broadcastSessionList(this.rt)
   }
 
-  async sendUserMessage(text: string, images?: ImageAttachment[], mentions?: Mention[]) {
+  /** A pending permission prompt is waiting on the user. */
+  get waiting(): boolean {
+    return this.pendingPermissions.size > 0
+  }
+
+  async sendUserMessage(text: string, images?: ImageAttachment[], mentions?: Mention[], opts: { from?: string } = {}) {
     // Mentions are resolved now, against this session's folder, so the event
     // log records what the model was actually given (and why a file wasn't).
     const attached = mentions?.length ? await resolveMentions(this.rt, this.row.cwd, mentions) : null
     // Before the agent can touch anything: the tree this turn starts from.
     await this.beginTurn()
-    this.emit({ kind: 'local_user', text, images, mentions: attached?.resolved }, true)
+    this.emit({ kind: 'local_user', text, images, mentions: attached?.resolved, ...(opts.from ? { from: opts.from } : {}) }, true)
+    // The user speaking to any member resets the team's message budget.
+    const team = this.rt.sessionTeam.get(this.row.id)
+    if (team && !opts.from) this.rt.teamMessages.delete(team.runId)
+    // A teammate's message is framed for the model; the transcript keeps the raw text and a badge.
+    const modelText = opts.from && text ? frameTeamMessage(opts.from, text) : text
     this.setStatus('running')
     void this.rt.store.sessions.touch(this.row.id)
     // Images lead: the model reads them as context for the text that follows.
@@ -732,7 +777,7 @@ class LiveSession {
         type: 'image' as const,
         source: { type: 'base64' as const, media_type: img.mediaType, data: img.data },
       })),
-      ...(text ? [{ type: 'text' as const, text }] : []),
+      ...(modelText ? [{ type: 'text' as const, text: modelText }] : []),
       ...(attached?.blocks ?? []).map((t) => ({ type: 'text' as const, text: t })),
     ]
     const msg: SDKUserMessage = {
@@ -753,6 +798,18 @@ class LiveSession {
     // triage write (create/edit/upsert/resolve) still goes through the prompt.
     if (TRIAGE_READ_TOOLS.has(toolName)) {
       return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
+    }
+    // Team members: talking to a teammate never prompts, and an agent that runs
+    // commands but can't edit (a reviewer) runs read-only git/gh unattended.
+    // (The manager has no shell at all — its disallowed tools, since the user's
+    // own allow rules skip this gate.)
+    const team = this.rt.sessionTeam.get(this.row.id)
+    if (team) {
+      if (toolName === 'mcp__team__message_teammate') return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
+      const agent = this.rt.teamRuns.get(team.runId)?.agents.find((a) => a.name === team.member)
+      if (agent && !agent.can.includes('edit') && toolName === 'Bash' && briefBashAllowed(toolInput)) {
+        return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
+      }
     }
     // Brief sessions are headless (.docs/next-version.md): nobody is there to
     // answer a prompt, so the policy is fixed — reads and the brief's own write
@@ -780,6 +837,7 @@ class LiveSession {
     const suggestions = opts.suggestions ?? []
     return new Promise<PermissionResult>((resolve) => {
       this.pendingPermissions.set(id, { input: toolInput, suggestions, resolve })
+      if (this.pendingPermissions.size === 1) broadcastSessionList(this.rt)
       this.emit(
         {
           kind: 'permission_request',
@@ -800,6 +858,7 @@ class LiveSession {
     const pending = this.pendingPermissions.get(id)
     if (!pending) return
     this.pendingPermissions.delete(id)
+    if (this.pendingPermissions.size === 0) broadcastSessionList(this.rt)
     if (behavior === 'deny') {
       pending.resolve({ behavior: 'deny', message: 'Denied by the user in the triage web UI.' })
     } else if (answers) {
@@ -916,6 +975,8 @@ function summarize(rt: WorkspaceRuntime, row: StoredSession): SessionSummary {
     ...(row.kind !== 'chat' ? { kind: row.kind } : {}),
     ...(row.watchId ? { watchId: row.watchId } : {}),
     ...(rt.sessionItem.has(row.id) ? { itemId: rt.sessionItem.get(row.id) } : {}),
+    ...(teamMembership(rt, row.id) ? { team: teamMembership(rt, row.id) } : {}),
+    ...(l?.waiting ? { waiting: true } : {}),
   }
 }
 
@@ -941,6 +1002,16 @@ async function deleteSession(rt: WorkspaceRuntime, sessionId: string): Promise<v
   rt.live.delete(sessionId)
   rt.rows.delete(sessionId)
   rt.branches.delete(sessionId)
+  const team = rt.sessionTeam.get(sessionId)
+  if (team) {
+    rt.sessionTeam.delete(sessionId)
+    const run = rt.teamRuns.get(team.runId)
+    if (run) {
+      run.members = run.members.filter((m) => m.sessionId !== sessionId)
+      if (!run.members.length) rt.teamRuns.delete(run.id)
+      await saveTeamRuns(rt)
+    }
+  }
   await rt.store.sessions.remove(sessionId)
   broadcast(rt, { type: 'session_deleted', sessionId })
   broadcastSessionList(rt)
@@ -1150,7 +1221,7 @@ async function createSession(
   effort: EffortLevel | null,
   fastMode: boolean,
   permissionMode: PermissionMode | null,
-  opts: { kind?: SessionKind } = {},
+  opts: { kind?: SessionKind; spawn?: boolean } = {},
 ): Promise<StoredSession> {
   const row = await rt.store.sessions.create({
     id: randomUUID(),
@@ -1163,7 +1234,8 @@ async function createSession(
     ...(opts.kind ? { kind: opts.kind } : {}),
   })
   rt.rows.set(row.id, row)
-  rt.live.set(row.id, new LiveSession(rt, row, 0, null, extrasFor(rt, row)))
+  // spawn: false = a row only; the first message starts it (getOrRevive).
+  if (opts.spawn !== false) rt.live.set(row.id, new LiveSession(rt, row, 0, null, extrasFor(rt, row)))
   void refreshBranch(rt, row)
   return row
 }
@@ -2486,6 +2558,8 @@ async function initRuntime(rt: WorkspaceRuntime): Promise<void> {
   // Watches are off by default in 0.7 (.docs/next-version.md); seeding follows the switch.
   if (await watchesEnabled(rt)) await seedWatchTemplates(rt)
   await bootBriefs(rt)
+  await rt.teamLibrary.seed().catch((err) => log('error', 'teams', `could not seed agents and teams: ${err}`, { workspace: rt.meta.id }))
+  await loadTeamRuns(rt)
   rt.inboxCache = await rt.store.inbox.load()
   probeConnectors(rt).catch((err) => log('error', 'connectors', `probe failed: ${err}`, { workspace: rt.meta.id }))
   probeModels(rt).catch((err) => log('error', 'models', `probe failed: ${err}`, { workspace: rt.meta.id }))
@@ -3228,6 +3302,17 @@ function extrasFor(rt: WorkspaceRuntime, row: StoredSession): SessionExtras {
     workspaceName: rt.meta.name,
     artifactsRoot: rt.artifacts.root,
   })
+  const team = rt.sessionTeam.get(row.id)
+  const run = team ? rt.teamRuns.get(team.runId) : undefined
+  const agent = team && run && team.member !== 'manager' ? run.agents.find((a) => a.name === team.member) : undefined
+  if (team && run && (team.member === 'manager' || agent)) {
+    // Rebuilt per spawn like the brief server: one instance, one transport.
+    return {
+      systemAppend: `${identity}\n${agent ? agentAppend(run, agent) : managerAppend(run)}`,
+      mcp: { team: makeTeamMcp(rt, row.id, run) },
+      disallowedTools: agent ? disallowedFor(agent.can) : MANAGER_DISALLOWED,
+    }
+  }
   if (row.kind !== 'brief') return { systemAppend: identity }
   let e = rt.briefExtras.get(row.id)
   if (!e) {
@@ -3476,6 +3561,205 @@ async function bootBriefs(rt: WorkspaceRuntime): Promise<void> {
   const failed = await rt.store.briefs.failAllRunning('the daemon restarted while this brief was running — re-brief to try again')
   if (failed.length) log('warn', 'briefs', `failed ${failed.length} run(s) interrupted by the restart`, { jobIds: failed, workspace: rt.meta.id })
   pumpBriefQueue(rt)
+}
+
+// ---------------------------------------------------------------------------
+// Teams (server/teams.ts) — sessions that message each other through triage.
+// ---------------------------------------------------------------------------
+const TEAM_RUNS_KEY = 'team_runs'
+
+async function saveTeamRuns(rt: WorkspaceRuntime): Promise<void> {
+  await rt.store.config.set(TEAM_RUNS_KEY, [...rt.teamRuns.values()])
+}
+
+/** Boot: mirror stored runs into memory, dropping members whose session was deleted. */
+async function loadTeamRuns(rt: WorkspaceRuntime): Promise<void> {
+  for (const run of (await rt.store.config.get<StoredTeamRun[]>(TEAM_RUNS_KEY)) ?? []) {
+    const members = run.members.filter((m) => rt.rows.has(m.sessionId))
+    if (!members.length) continue
+    rt.teamRuns.set(run.id, { ...run, members })
+    for (const m of members) rt.sessionTeam.set(m.sessionId, { runId: run.id, member: m.member })
+  }
+}
+
+/** A session's place on a team, as the wire carries it. */
+function teamMembership(rt: WorkspaceRuntime, sessionId: string): TeamMembership | undefined {
+  const t = rt.sessionTeam.get(sessionId)
+  const run = t ? rt.teamRuns.get(t.runId) : undefined
+  const order = run ? run.members.findIndex((m) => m.sessionId === sessionId) : -1
+  if (!t || !run || order < 0) return undefined
+  const m = run.members[order]
+  return { id: run.id, member: m.member, label: m.label, ...(m.color ? { color: m.color } : {}), order }
+}
+
+async function teamLibraryOp(rt: WorkspaceRuntime): Promise<TeamLibraryResponse & { ok: true }> {
+  return { ok: true, ...(await rt.teamLibrary.list()), dir: rt.teamLibrary.root }
+}
+
+/**
+ * Start a team on a work item from the dialog's draft: the manager plus one
+ * session per agent, in the item's project, each linked to the item as a
+ * dispatch. The roster is copied onto the run, so editing a library file later
+ * never rewrites what a run was told. Only the manager starts now; the others
+ * spawn on their first message.
+ */
+async function startTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<{ teamId: string; managerId: string }> {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const item = await rt.store.items.get(typeof r.itemId === 'string' ? r.itemId : '')
+  if (!item) throw new Error('no such work item')
+  const project = await projectFor(rt, item)
+  if (!project) throw new Error('this item has no project — set one on the item so the team knows which folder to work in')
+  const manager = managerFrom(r.manager)
+  const agents = (Array.isArray(r.agents) ? r.agents : []).map((a) => agentFrom(a))
+  checkRoster(agents)
+  const title = item.title.slice(0, 80)
+  const run: StoredTeamRun = {
+    id: randomUUID(),
+    itemId: item.id,
+    title,
+    createdAt: Date.now(),
+    team: isLibraryName(r.team) ? r.team : null,
+    manager,
+    agents,
+    members: [],
+  }
+  const mgr = await createSession(rt, `Manager · ${title}`, project.path, manager.model, manager.effort, false, 'gated', { spawn: false })
+  run.members.push({ member: 'manager', label: 'Manager', sessionId: mgr.id })
+  for (const a of agents) {
+    const mode = a.can.includes('edit') ? 'acceptEdits' : 'gated'
+    const row = await createSession(rt, `${a.label} · ${title}`, project.path, a.model, a.effort, false, mode, { spawn: false })
+    run.members.push({ member: a.name, label: a.label, color: a.color, sessionId: row.id })
+  }
+  for (const m of run.members) rt.sessionTeam.set(m.sessionId, { runId: run.id, member: m.member })
+  rt.teamRuns.set(run.id, run)
+  await saveTeamRuns(rt)
+  for (const m of run.members) await linkSessionToItem(rt, m.sessionId, item.id, 'dispatch')
+  const live = await getOrRevive(rt, mgr.id)
+  if (!live) throw new Error('could not start the manager session')
+  const brief = await currentBrief(rt, item.id)
+  const mentions: Mention[] = [{ kind: 'item', ref: item.id, label: item.title }]
+  if (brief) mentions.push({ kind: 'artifact', ref: brief.artifact.id, label: brief.artifact.title })
+  const kickoff =
+    typeof r.kickoff === 'string' && r.kickoff.trim()
+      ? r.kickoff.trim()
+      : `Start the team on this work item: "${item.title}". Understand the scope, show me the plan, then delegate the first task.`
+  const images = await itemImageAttachments(rt.attachmentsDir, item.id, item.images)
+  await live.sendUserMessage(`${kickoff}\n\n${mentions.map(mentionToken).join(' ')}`, images, mentions)
+  log('info', 'teams', `team started: ${item.title}`, { teamId: run.id, itemId: item.id, agents: agents.length, workspace: rt.meta.id })
+  return { teamId: run.id, managerId: mgr.id }
+}
+
+/**
+ * Save a team draft as a library team. Agents unchanged from their library file
+ * are referenced; edited ones are forked into new files (the dialog — never a
+ * silent edit to an agent other teams share) or written back (Settings, which
+ * shows who uses them). New agents get new files.
+ */
+async function saveTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<string> {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const lib = rt.teamLibrary
+  const label = typeof r.label === 'string' ? r.label.trim().slice(0, 60) : ''
+  if (!label) throw new Error('the team needs a name')
+  const drafts = (Array.isArray(r.agents) ? r.agents : []).map((a) => draftAgentFrom(a))
+  checkRoster(drafts)
+  const update = r.agentMode === 'update'
+  const names: string[] = []
+  const taken = new Set<string>()
+  // A forked copy keeps its name unless another agent already carries it — then
+  // the team's name tells the two apart in Settings ("Reviewer (My Development)").
+  const labels = new Set((await lib.agents()).map((a) => a.label.toLowerCase()))
+  for (const { base, dirty, ...raw } of drafts) {
+    const spec = !base || !dirty || update || !labels.has(raw.label.toLowerCase()) ? raw : { ...raw, label: `${raw.label} (${label})`.slice(0, 60) }
+    if (base && (await lib.readAgent(base))) {
+      if (!dirty) {
+        names.push(base)
+        continue
+      }
+      if (update) {
+        await lib.writeAgent({ ...spec, name: base })
+        names.push(base)
+        continue
+      }
+    }
+    const name = await lib.freeName('agent', spec.label, taken)
+    taken.add(name)
+    await lib.writeAgent({ ...spec, name })
+    names.push(name)
+  }
+  const existing = isLibraryName(r.name) && (await lib.readTeam(r.name)) ? r.name : null
+  const name = existing ?? (await lib.freeName('team', label))
+  await lib.writeTeam({
+    name,
+    label,
+    description: typeof r.description === 'string' ? r.description.trim().slice(0, 400) : '',
+    manager: managerFrom(r.manager),
+    agents: names,
+  })
+  log('info', 'teams', `team saved: ${label}`, { team: name, agents: names, workspace: rt.meta.id })
+  return name
+}
+
+/** Create or update one agent file (Settings → Teams → Agents). */
+async function saveAgentOp(rt: WorkspaceRuntime, raw: unknown): Promise<string> {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const spec = agentFrom(r.agent)
+  const lib = rt.teamLibrary
+  const existing = isLibraryName(r.name) && (await lib.readAgent(r.name)) ? r.name : null
+  const name = existing ?? (await lib.freeName('agent', spec.label))
+  await lib.writeAgent({ ...spec, name })
+  return name
+}
+
+/**
+ * The `team` MCP server a member gets: message_teammate, addressed by member
+ * name within its own run. The names are an enum built from the run's roster,
+ * so the model is shown exactly who it can reach.
+ */
+function makeTeamMcp(rt: WorkspaceRuntime, sessionId: string, run: StoredTeamRun) {
+  const me = rt.sessionTeam.get(sessionId)
+  const others = run.members.map((m) => m.member).filter((m) => m !== me?.member)
+  const to = others.length ? z.enum(others as [string, ...string[]]) : z.string()
+  return createSdkMcpServer({
+    name: 'team',
+    version: VERSION,
+    // Same reason as the triage server: message_teammate is the member's one
+    // job-critical tool, so it is loaded up front, never behind tool search.
+    alwaysLoad: true,
+    tools: [
+      tool(
+        'message_teammate',
+        'Send a message to another member of your team, by member name. It arrives in their session as a new turn. After sending, end your turn — their reply arrives as a new message.',
+        {
+          to: to.describe('the member to message'),
+          message: z.string().describe('the full message — the member sees only this, not your conversation'),
+        },
+        async (args) => {
+          try {
+            const self = rt.sessionTeam.get(sessionId)
+            const cur = self ? rt.teamRuns.get(self.runId) : undefined
+            if (!self || !cur) return errResult('this session is not on a team')
+            if (args.to === self.member) return errResult('that is you — message a different member')
+            const target = cur.members.find((m) => m.member === args.to)
+            if (!target) return errResult(`this team has no member named ${args.to}`)
+            const sent = (rt.teamMessages.get(cur.id) ?? 0) + 1
+            if (sent > TEAM_MESSAGE_BUDGET) {
+              return errResult(
+                `the team has sent ${TEAM_MESSAGE_BUDGET} messages since the user last spoke — stop and report the state of the work to the user instead`,
+              )
+            }
+            const live = await getOrRevive(rt, target.sessionId)
+            if (!live) return errResult(`could not start ${target.label}'s session`)
+            rt.teamMessages.set(cur.id, sent)
+            const from = cur.members.find((m) => m.sessionId === sessionId)?.label ?? self.member
+            await live.sendUserMessage(args.message, undefined, undefined, { from })
+            return okResult(`delivered to ${target.label}. End your turn now; their reply will arrive as a new message.`)
+          } catch (err) {
+            return errResult(errText(err))
+          }
+        },
+      ),
+    ],
+  })
 }
 
 /** What a dispatched session opens with: the kind's template, the item, and the brief as a mention. */
@@ -4851,6 +5135,40 @@ const server = http.createServer(async (req, res) => {
         await writeDispatchTemplate(rt.dispatchDir, kind, parsed.body)
       }
       json(200, { ok: true, kind, body: await readDispatchTemplate(rt.dispatchDir, kind) })
+    } catch (err) {
+      json(400, { ok: false, error: errText(err) })
+    }
+    return
+  }
+  // Teams (.docs/teams.md): the agent/team library, saving it, and starting a run.
+  if (url.pathname.startsWith('/api/teams')) {
+    const route = `${req.method} ${url.pathname}`
+    try {
+      const lib = rt.teamLibrary
+      if (route === 'GET /api/teams/library') {
+        json(200, await teamLibraryOp(rt))
+      } else if (route === 'POST /api/teams/start') {
+        const body: StartTeamResponse = { ok: true, ...(await startTeamOp(rt, await readJsonBody(req))) }
+        json(200, body)
+      } else if (route === 'POST /api/teams/save') {
+        const team = await saveTeamOp(rt, await readJsonBody(req))
+        const body: SaveTeamResponse = { ok: true, team, library: await teamLibraryOp(rt) }
+        json(200, body)
+      } else if (route === 'PUT /api/teams/agent') {
+        await saveAgentOp(rt, await readJsonBody(req))
+        json(200, await teamLibraryOp(rt))
+      } else if (route === 'DELETE /api/teams/agent' || route === 'DELETE /api/teams/team') {
+        await lib.remove(url.pathname.endsWith('agent') ? 'agent' : 'team', url.searchParams.get('name') ?? '')
+        json(200, await teamLibraryOp(rt))
+      } else if (route === 'POST /api/teams/reset') {
+        const b = ((await readJsonBody(req)) ?? {}) as { kind?: unknown; name?: unknown }
+        if (!isLibraryName(b.name) || (b.kind !== 'agent' && b.kind !== 'team')) throw new Error('need a kind and a name')
+        await lib.reset(b.kind, b.name)
+        json(200, await teamLibraryOp(rt))
+      } else if (route === 'POST /api/teams/open') {
+        await openInEditor(lib.root)
+        json(200, { ok: true })
+      } else json(404, { ok: false, error: 'not found' })
     } catch (err) {
       json(400, { ok: false, error: errText(err) })
     }

@@ -4,7 +4,7 @@
  * why it ranked, what has happened to it, and the sessions working on it.
  * The actions live in the right column so the left reads as a page, not a form.
  */
-import { AlarmClock, Archive, Check, ChevronDown, ChevronRight, ExternalLink, FileText, Hash, ImagePlus, Play, Sparkles, X } from 'lucide-react'
+import { AlarmClock, Archive, Check, ChevronDown, ChevronRight, ExternalLink, FileText, Hash, ImagePlus, Play, Sparkles, Users, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BriefJobsResponse,
@@ -38,6 +38,7 @@ import { store } from '../store.js'
 import { KIND_LABEL, PRIORITY_LABEL, PRIORITY_VALUES, ago, kindIcon, relTime } from '../itemUi.js'
 import { CreateBriefDialog } from './CreateBriefDialog.js'
 import { Markdown } from './Markdown.js'
+import { StartTeamDialog } from './StartTeamDialog.js'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
 
 type Props = {
@@ -91,6 +92,7 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
   const [feedback, setFeedback] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [teamOpen, setTeamOpen] = useState(false)
   const [spend, setSpend] = useState<SessionsUsage | null>(null)
   /** the readout is optional — a ledger that can't be read hides it rather than sitting on a skeleton */
   const [spendFailed, setSpendFailed] = useState(false)
@@ -680,6 +682,9 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
             <Play size={12} aria-hidden="true" />
             {linkedSessions.some((x) => x.role === 'dispatch') ? 'Dispatch another session' : 'Dispatch to a session'}
           </button>
+          <button type="button" className="btn wide" onClick={() => setTeamOpen(true)} title="A manager plus agents, each its own session — you talk to the manager">
+            <Users size={12} aria-hidden="true" /> Start a team
+          </button>
           {isOpen && settled && (
             <button type="button" className="btn wide" onClick={() => setBriefOpen(true)}>
               <Sparkles size={12} aria-hidden="true" /> {brief?.artifact ? 'Re-brief' : 'Create brief'}
@@ -879,6 +884,7 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
       </div>
 
       <CreateBriefDialog open={briefOpen} items={[item]} onClose={() => setBriefOpen(false)} onQueued={() => {}} />
+      <StartTeamDialog open={teamOpen} item={item} onClose={() => setTeamOpen(false)} onStarted={onNavigate} />
     </div>
   )
 }

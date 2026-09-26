@@ -811,6 +811,173 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .msg.user .msgImages { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .msg.user .msgImages img { max-width: 200px; max-height: 200px; border-radius: var(--r); border: 1px solid var(--hair-strong); display: block; }
 
+/* a teammate agent's message (teams): left-aligned like the agent it came from,
+   carded like a user turn so the hand-off reads as an input, labelled so it
+   never passes for something the user typed */
+.msg.teammate {
+  align-self: flex-start; max-width: 85%;
+  background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
+  padding: 10px 15px 11px; font-size: 1.0769rem; color: var(--body); line-height: 1.55;
+}
+.msg.teammate .msgFrom {
+  font-family: var(--mono); font-size: 0.8462rem; color: var(--mute); margin-bottom: 6px;
+  text-transform: lowercase;
+}
+
+/* team strip: the members of a team, one tab per session, over the transcript */
+#teamStrip {
+  display: flex; align-items: center; gap: 4px; padding: 6px 20px; flex: none;
+  border-bottom: 1px solid var(--hair); min-width: 0; overflow-x: auto;
+}
+#teamStrip .teamLabel { font-family: var(--mono); font-size: 0.8462rem; color: var(--stone); margin-right: 6px; }
+.teamTab {
+  display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px; flex: none;
+  border: 1px solid transparent; border-radius: var(--r); background: none;
+  color: var(--mute); font: inherit; font-size: 0.9231rem; cursor: pointer;
+}
+.teamTab:hover { color: var(--ink); background: var(--wash-2); }
+.teamTab[data-state="active"] { color: var(--ink); background: var(--elev); border-color: var(--hair-strong); }
+.teamTab:focus-visible { outline: 1px solid var(--ink); outline-offset: 1px; }
+.teamTab .model { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); }
+.teamTab .state { font-size: 0.8462rem; color: var(--charcoal); }
+.teamTab .state { display: inline-flex; align-items: center; gap: 5px; }
+.mgrGlyph { width: 9px; height: 9px; border: 1px solid var(--ink); transform: rotate(45deg) scale(0.78); flex: none; display: inline-block; }
+
+/* ---------- teams: the Start-a-team dialog and the editor it shares with Settings ---------- */
+.teamOverlay { position: fixed; inset: 0; z-index: 90; background: var(--scrim); animation: fadeIn 0.14s ease; }
+.teamDialog {
+  position: fixed; z-index: 91; left: 50%; top: 6vh; transform: translateX(-50%);
+  width: min(920px, calc(100vw - 40px)); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
+}
+.teamDialog:focus { outline: none; }
+.teamDialogHead { display: flex; align-items: center; gap: 10px; padding: 12px 14px 12px 18px; border-bottom: 1px solid var(--hair); flex: none; }
+.teamDialogHead .t { margin: 0; font-size: 1.1538rem; font-weight: 500; color: var(--ink); white-space: nowrap; }
+.teamDialogHead .item { color: var(--ash); font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.teamDialogHead .r { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+.teamPickLbl { color: var(--ash); font-size: 0.9231rem; }
+.pill.edited { color: var(--yellow); border-color: var(--edge-yellow, rgba(255, 197, 61, 0.35)); background: var(--tint-yellow); }
+.teamLoading { padding: 60px 20px; text-align: center; color: var(--ash); }
+.teamDialogFoot { border-top: 1px solid var(--hair); padding: 12px 18px 14px; display: flex; flex-direction: column; gap: 10px; flex: none; }
+.teamKick label { display: block; font-family: var(--mono); font-size: 0.8077rem; color: var(--stone); margin-bottom: 6px; }
+.teamFootRow { display: flex; align-items: center; gap: 12px; font-size: 0.8846rem; color: var(--ash); min-width: 0; }
+.teamFootRow .sp { flex: 1; }
+.teamFootRow .path { color: var(--body); }
+.teamFootRow .why { color: var(--red); font-size: 0.8846rem; text-align: right; }
+.teamFootRow .why.quiet { color: var(--ash); }
+.teamSaveInline { display: inline-flex; gap: 6px; align-items: center; }
+.teamSaveInline .teamInp { height: 26px; width: 180px; }
+.teamMeta { display: flex; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--hair); }
+.teamMeta .teamInp:first-child { width: 220px; flex: none; }
+.teamSolo { overflow: auto; }
+
+.teamEd { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 380px; overflow: hidden; flex: 1 1 auto; }
+.teamTree { display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; border-right: 1px solid var(--hair); background: var(--deep); overflow: auto; }
+.teamTreeLbl { font-family: var(--mono); font-size: 0.8077rem; color: var(--stone); padding: 2px 8px 8px; }
+.teamNode {
+  display: grid; grid-template-columns: 14px 10px minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  width: 100%; min-height: 32px; padding: 0 9px; border: 1px solid transparent; border-radius: var(--r);
+  background: none; color: var(--mute); text-align: left; font: inherit; cursor: pointer;
+}
+.teamNode:hover { background: var(--wash-2); }
+.teamNode.on { background: var(--elev); border-color: var(--hair-strong); color: var(--ink); }
+.teamNode:focus-visible { outline: 1px solid var(--ink); outline-offset: 1px; }
+.teamNode .branch, .teamAddRow .branch { font-family: var(--mono); font-size: 0.9231rem; color: var(--stone); text-align: right; }
+.teamNode .nn { font-size: 0.9615rem; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 5px; }
+.teamNode .nn.empty { color: var(--stone); font-style: italic; }
+.teamNode .nm { font-family: var(--mono); font-size: 0.7692rem; color: var(--ash); }
+.teamNode .flag { width: 6px; height: 6px; border-radius: var(--r-full); background: var(--red); flex: none; }
+.teamAddRow { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; align-items: center; padding: 0 9px; margin-top: 4px; }
+.teamAdd {
+  display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 9px; border: 1px dashed var(--hair-strong);
+  border-radius: var(--r); background: none; color: var(--ash); font: inherit; font-size: 0.9231rem; cursor: pointer; text-align: left;
+}
+.teamAdd:hover:not(:disabled) { color: var(--ink); border-color: var(--hair-bright); }
+.teamAdd:disabled { opacity: 0.5; cursor: default; }
+.uiMenu.teamAddMenu { z-index: 95; }
+.teamAddMenu .uiMenuItem { display: flex; align-items: center; gap: 8px; }
+.teamAddName { color: var(--ink); }
+.teamAddCan { margin-left: auto; padding-left: 14px; font-size: 0.8462rem; color: var(--ash); }
+.teamTreeFoot { margin-top: auto; padding: 10px 8px 2px; font-size: 0.8462rem; color: var(--stone); line-height: 1.5; }
+
+.teamForm { display: flex; flex-direction: column; gap: 12px; padding: 14px 18px; overflow: auto; min-width: 0; }
+.teamRow { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 12px; align-items: start; }
+.teamRowK { color: var(--ash); font-size: 0.9231rem; padding-top: 6px; }
+.teamRowV { min-width: 0; }
+.teamInp, .teamSel, .teamArea {
+  background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--body); font: inherit; font-size: 0.9615rem;
+}
+.teamInp { height: 30px; padding: 0 10px; width: 260px; max-width: 100%; }
+.teamInp.wide { width: 100%; }
+.teamInp:disabled { opacity: 0.55; }
+.teamInp.bad { border-color: var(--edge-red); }
+.teamSel {
+  -webkit-appearance: none; appearance: none; height: 30px; padding: 0 26px 0 10px; cursor: pointer;
+  background: var(--card) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888e90' stroke-width='2.4'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 9px center;
+}
+.teamArea { width: 100%; padding: 8px 10px; line-height: 1.55; resize: vertical; display: block; }
+.teamInp:hover, .teamSel:hover, .teamArea:hover { border-color: var(--hair-bright); }
+.teamInp:focus, .teamSel:focus, .teamArea:focus { outline: none; border-color: var(--ink); }
+.teamInp::placeholder, .teamArea::placeholder { color: var(--stone); }
+.teamHint { font-size: 0.8462rem; color: var(--stone); margin-top: 5px; line-height: 1.45; }
+.teamErr { font-size: 0.8462rem; color: var(--red); margin-top: 5px; }
+.teamPair { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.teamPairK { color: var(--ash); font-size: 0.9231rem; }
+.teamColors { display: inline-flex; gap: 4px; align-items: center; }
+.teamColors button { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid transparent; border-radius: var(--r-xs); background: none; cursor: pointer; }
+.teamColors button span { width: 10px; height: 10px; border-radius: 2px; display: block; }
+.teamColors button.on { border-color: var(--ink); }
+.teamColors button:focus-visible { outline: 1px solid var(--ink); }
+.teamCans { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.teamCan {
+  display: flex; gap: 9px; align-items: flex-start; padding: 7px 10px; text-align: left; font: inherit;
+  border: 1px solid var(--hair-strong); border-radius: var(--r); background: var(--card); color: var(--mute); cursor: pointer;
+}
+.teamCan:hover { border-color: var(--hair-bright); }
+.teamCan .box { width: 14px; height: 14px; border: 1px solid var(--hair-bright); border-radius: 3px; flex: none; margin-top: 2px; display: flex; align-items: center; justify-content: center; }
+.teamCan.on { color: var(--ink); background: var(--elev); }
+.teamCan.on .box { background: var(--ink); border-color: var(--ink); }
+.teamCan.on .box::after { content: ""; width: 6px; height: 3px; border-left: 1.6px solid var(--on-primary); border-bottom: 1.6px solid var(--on-primary); transform: rotate(-45deg) translate(1px, -1px); }
+.teamCan .ct { display: block; font-size: 0.9231rem; }
+.teamCan .cs { display: block; font-size: 0.8077rem; color: var(--ash); line-height: 1.4; }
+.teamCan.locked { opacity: 0.55; cursor: default; }
+.teamCan.locked:hover { border-color: var(--hair-strong); }
+.teamCallout { margin-top: 8px; padding: 8px 11px; border-radius: var(--r); font-size: 0.9231rem; line-height: 1.5; color: var(--body); }
+.teamCallout.err { border: 1px solid var(--edge-red); background: var(--tint-red); }
+.teamCallout b { font-weight: 500; color: var(--red); }
+.teamFixed { border: 1px dashed var(--hair-strong); border-radius: var(--r); padding: 9px 11px; color: var(--ash); font-size: 0.8846rem; line-height: 1.55; }
+.teamFixed b { color: var(--charcoal); font-weight: 500; }
+.teamFormFoot { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+.teamFormFoot .teamHint { margin: 0; flex: 1; }
+
+/* ---------- Settings → Teams ---------- */
+.teamsTab { padding-top: 6px; }
+.teamsTabBar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.teamsTabBar .sp { flex: 1; }
+.teamsTabBar .segBtn[data-state="active"] { background: var(--elev); border-color: var(--hair-strong); color: var(--ink); }
+.libList { background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r-lg); overflow: hidden; }
+.libRow { position: relative; display: grid; grid-template-columns: 170px minmax(0, 1fr) auto; align-items: center; gap: 14px; min-height: 42px; padding: 4px 14px; font-size: 0.9615rem; }
+.libRow.agent { grid-template-columns: 150px 64px minmax(0, 1fr) minmax(0, 140px) auto; }
+.libRow + .libRow { border-top: 1px solid var(--hair); }
+.libRow:hover { background: var(--wash-1); }
+.libName { display: flex; align-items: center; gap: 9px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.libRoster { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--charcoal); font-size: 0.9231rem; min-width: 0; }
+.libMember { display: inline-flex; align-items: center; gap: 6px; }
+.libMissing { color: var(--red); font-size: 0.8462rem; }
+.libMuted { color: var(--stone); }
+.libModel { font-size: 0.8462rem; color: var(--ash); }
+.libCan, .libUsed { font-size: 0.8846rem; color: var(--ash); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.libStatus { font-family: var(--mono); font-size: 0.7692rem; color: var(--stone); border: 1px solid var(--hair); border-radius: var(--r-full); padding: 0 7px; line-height: 18px; white-space: nowrap; }
+.libStatus.edited { color: var(--charcoal); border-color: var(--hair-strong); }
+.libStatus.update { color: var(--yellow); border-color: var(--edge-yellow, rgba(255, 197, 61, 0.35)); }
+.libStatus.yours { color: var(--body); border-color: var(--hair-strong); }
+/* actions overlay the row's end on hover, so hidden buttons never squeeze the columns */
+.libActs { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 2px; padding-left: 24px; background: linear-gradient(90deg, transparent, var(--card) 24px); opacity: 0; pointer-events: none; transition: opacity 0.12s; }
+.libRow:hover .libActs, .libRow:focus-within .libActs, .libActs.confirm { pointer-events: auto; }
+.libRow:hover .libActs, .libRow:focus-within .libActs, .libActs.confirm { opacity: 1; }
+.libConfirmText { font-size: 0.8846rem; color: var(--body); margin-right: 6px; }
+.libPath { font-size: 0.8462rem; color: var(--stone); }
+
 .msg.assistant { align-self: stretch; font-size: 1.1538rem; line-height: 1.7; color: var(--body); }
 .msg.assistant.live .md > :last-child::after { content: "▍"; color: var(--ink); margin-left: 1px; animation: caret 1s steps(1) infinite; }
 .msg.thinking { color: var(--mute); font-style: italic; font-size: 1rem; white-space: pre-wrap; padding-left: 12px; border-left: 1px solid var(--hair-strong); }
