@@ -33,6 +33,9 @@ export class Store {
   #conn: ConnState = 'connecting'
   #sessions: readonly SessionSummary[] = []
   #events = new Map<string, readonly SessionEvent[]>()
+  // When each event was stored, keyed by the event itself so the events arrays
+  // (and everything memoised on them) keep their shape.
+  #times = new WeakMap<SessionEvent, number>()
 
   // Workspace picture, from `hello`. The socket and every fetch are bound to
   // the workspace in this tab's URL (`/w/<id>/`, see workspaceUrl.ts), so two
@@ -66,6 +69,7 @@ export class Store {
   getConn = (): ConnState => this.#conn
   getSessions = (): readonly SessionSummary[] => this.#sessions
   getEvents = (sessionId: string): readonly SessionEvent[] => this.#events.get(sessionId) ?? NO_EVENTS
+  eventTime = (ev: SessionEvent): number | undefined => this.#times.get(ev)
   getLive = (sessionId: string): string => this.#liveText.get(sessionId) ?? ''
   getWorkspaceId = (): string => this.#workspaceId
   getWorkspaces = (): readonly Workspace[] => this.#workspaces
@@ -237,12 +241,14 @@ export class Store {
         this.#notify()
         break
       case 'history':
+        msg.times?.forEach((t, i) => this.#times.set(msg.events[i], t))
         this.#events.set(msg.sessionId, msg.events)
         this.#clearLive(msg.sessionId)
         this.#notify()
         this.#notifyLive()
         break
       case 'session_event':
+        if (msg.at !== undefined) this.#times.set(msg.event, msg.at)
         this.#applyEvent(msg.sessionId, msg.event)
         break
       case 'terminals':

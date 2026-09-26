@@ -1161,8 +1161,13 @@ export type ServerMessage =
   | { type: 'sessions'; sessions: SessionSummary[] }
   | { type: 'session_created'; session: SessionSummary }
   | { type: 'session_deleted'; sessionId: string }
-  | { type: 'history'; sessionId: string; events: SessionEvent[] }
-  | { type: 'session_event'; sessionId: string; event: SessionEvent }
+  /**
+   * `times[i]` is when `events[i]` was stored (ms epoch), so the transcript can
+   * say how long a run of tool calls took. Absent for an in-memory dry run.
+   */
+  | { type: 'history'; sessionId: string; events: SessionEvent[]; times?: number[] }
+  /** `at` is when the server saw the event (ms epoch). */
+  | { type: 'session_event'; sessionId: string; event: SessionEvent; at?: number }
   | { type: 'terminals'; terminals: TerminalSummary[] }
   | { type: 'terminal_created'; terminal: TerminalSummary }
   /** The scrollback so far — sent once per subscribe, before live output resumes. */

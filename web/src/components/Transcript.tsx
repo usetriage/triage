@@ -11,6 +11,7 @@ import {
 import { parseQuestions } from '../askQuestions.js'
 import { useLiveText } from '../hooks.js'
 import { openSettings } from '../settings.js'
+import { store } from '../store.js'
 import { buildTranscript, type TranscriptItem } from '../transcript.js'
 import { AskCard } from './AskCard.js'
 import { InitCard } from './InitCard.js'
@@ -18,6 +19,7 @@ import { MentionChip } from './MentionPicker.js'
 import { Markdown } from './Markdown.js'
 import { PermissionCard } from './PermissionCard.js'
 import { ToolCard } from './ToolCard.js'
+import { ToolGroup } from './ToolGroup.js'
 
 type Props = {
   sessionId: string
@@ -42,7 +44,7 @@ function overlapLabel(titles: readonly string[]): string {
 }
 
 export function Transcript({ sessionId, events, turns, onRespond }: Props) {
-  const items = useMemo(() => buildTranscript(events), [events])
+  const items = useMemo(() => buildTranscript(events, store.eventTime), [events])
   const { ref, scrollToBottom } = useStickToBottom()
 
   // Committed events grow the transcript; the streaming line grows it too, but
@@ -182,6 +184,8 @@ const Item = memo(function Item({
       return <InitCard item={item} />
     case 'tool':
       return <ToolCard item={item} />
+    case 'toolGroup':
+      return <ToolGroup item={item} />
     case 'permission': {
       // AskUserQuestion arrives as a permission prompt, but it is a question
       // for the reader — render it as choices, not as JSON to approve.

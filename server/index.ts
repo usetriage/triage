@@ -883,7 +883,7 @@ class LiveSession {
         log('error', 'session', `failed to persist event for ${this.row.id}: ${err}`)
       })
     }
-    broadcast(this.rt, { type: 'session_event', sessionId: this.row.id, event })
+    broadcast(this.rt, { type: 'session_event', sessionId: this.row.id, event, at: Date.now() })
   }
 }
 
@@ -1852,7 +1852,7 @@ function startWatchPreview(rt: WorkspaceRuntime, spec: PreviewSpec): string {
 async function runWatchPreview(rt: WorkspaceRuntime, pv: WatchPreview, spec: PreviewSpec): Promise<void> {
   const emit = (event: SessionEvent, keep = true) => {
     if (keep) pv.events.push(event)
-    broadcast(rt, { type: 'session_event', sessionId: pv.id, event })
+    broadcast(rt, { type: 'session_event', sessionId: pv.id, event, at: Date.now() })
   }
   const project = spec.projectId ? (await rt.store.projects.list()).find((p) => p.id === spec.projectId) ?? null : null
   const cwd = project?.path ?? os.homedir()
@@ -1973,7 +1973,7 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
       seq += 1
       rt.store.events.append(session.id, seq, event).catch(() => {})
     }
-    broadcast(rt, { type: 'session_event', sessionId: session.id, event })
+    broadcast(rt, { type: 'session_event', sessionId: session.id, event, at: Date.now() })
   }
 
   let matches = 0
@@ -5378,7 +5378,12 @@ wss.on('connection', (ws, req) => {
             break
           }
           const events = await rt.store.events.read(msg.sessionId)
-          send(ws, { type: 'history', sessionId: msg.sessionId, events: events.map((e) => e.event) })
+          send(ws, {
+            type: 'history',
+            sessionId: msg.sessionId,
+            events: events.map((e) => e.event),
+            times: events.map((e) => e.createdAt),
+          })
           break
         }
         case 'user_message': {

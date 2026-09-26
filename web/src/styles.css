@@ -830,6 +830,43 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .tool .well.result { color: var(--charcoal); }
 .tool .well.fail { color: var(--red-ink); }
 
+/* A run of tool calls folded into one pill (ToolGroup.tsx): sized to its text
+   and drawn in hairline, so it reads as an aside and the prose around it leads. */
+.toolGroup { font-size: 1rem; }
+.toolGroup > summary {
+  display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-width: 0;
+  padding: 4px 10px 4px 9px; border: 1px solid var(--hair); border-radius: var(--r-full);
+  font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); cursor: pointer; list-style: none;
+}
+.toolGroup > summary::-webkit-details-marker { display: none; }
+.toolGroup > summary:hover, .toolGroup[open] > summary { border-color: var(--hair-strong); }
+.toolGroup.busy > summary { border-color: var(--edge-blue); }
+.toolGroup.fail > summary { border-color: var(--edge-red); }
+.toolGroup .chev { flex: none; color: var(--stone); transition: transform 0.15s; }
+.toolGroup[open] > summary .chev { transform: rotate(90deg); }
+.toolGroup .glyph { display: flex; flex: none; color: var(--green); }
+.toolGroup .glyph.fail { color: var(--red); }
+.toolGroup .glyph.busy { color: var(--blue); animation: pulse 1.2s infinite; }
+.toolGroup .tgLabel { min-width: 0; font-family: var(--sans); font-size: 0.9231rem; color: var(--charcoal); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toolGroup .tgCount { flex: none; color: var(--stone); }
+.toolGroup .tgCount::before { content: "·"; margin-right: 8px; }
+.toolGroup.fail .tgCount { color: var(--red-ink); }
+/* the lines hang off a hairline under the pill, so they read as its contents */
+.toolGroup .tgBody { display: flex; flex-direction: column; margin: 8px 0 2px 10px; padding-left: 12px; border-left: 1px solid var(--hair); }
+.toolGroup .tgBody .msg.thinking { margin: 4px 0; font-size: 0.9231rem; border-left: 0; padding-left: 0; }
+.tline { font-size: 0.9615rem; }
+.tline > summary { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 8px; margin: 0 -8px; border-radius: var(--r-sm); cursor: pointer; list-style: none; }
+.tline > summary::-webkit-details-marker { display: none; }
+.tline > summary:hover { background: var(--wash-1); }
+.tline .tlVerb { flex: none; min-width: 64px; color: var(--charcoal); font-weight: 500; }
+.tline .tlTarget { flex: 1; min-width: 0; font-size: 0.9231rem; color: var(--ash); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tline .tlServer { color: var(--stone); }
+.tline .tlNote { flex: none; font-size: 0.8462rem; color: var(--stone); }
+.tline .tlNote.fail { color: var(--red-ink); }
+.tline .well { margin: 4px 0 6px 20px; max-height: 240px; }
+.tline .well.result { color: var(--charcoal); }
+.tline .well.fail { color: var(--red-ink); }
+
 .init { background: var(--card); border: 1px solid var(--hair); border-radius: var(--r); padding: 10px 14px; font-size: 0.9231rem; color: var(--ash); }
 .init b { color: var(--ink); font-weight: 500; }
 .init .mcp { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -1452,7 +1489,7 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dot.live, .tool .glyph.busy, .probing .pip, .msg.assistant.live .md > :last-child::after, .topIcon .connDot.down { animation: none; }
+  .dot.live, .tool .glyph.busy, .toolGroup .glyph.busy, .probing .pip, .msg.assistant.live .md > :last-child::after, .topIcon .connDot.down { animation: none; }
   .uiMenu[data-state="open"] { animation: none; }
   .settings, .settingsOverlay, .mermaidModal, .setActions .saved { animation: none; }
   .selBar { animation: none; }
