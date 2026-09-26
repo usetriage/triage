@@ -2277,3 +2277,58 @@ dialog.briefDialog .knobs select { width: auto; }
   border-radius: var(--r); color: var(--body); font-size: 0.9231rem; line-height: 1.55;
 }
 .mcpWarn svg { flex: none; margin-top: 3px; color: var(--yellow); }
+
+/* ---------- Changes: every project's uncommitted files ---------- */
+@keyframes spin { to { transform: rotate(360deg); } }
+.iconBtn.spinning svg { animation: spin 0.9s linear infinite; }
+
+.chgGroup .panelGroup.asBtn { gap: 0; }
+.chgGroup .panelGroup .nm { margin-left: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chgGroup .panelGroup .note { margin-left: 8px; color: var(--stone); text-transform: none; letter-spacing: 0; font-size: 0.7692rem; }
+.chgGroup .panelGroup .num { margin-left: auto; padding-right: 10px; font-family: var(--mono); letter-spacing: 0; text-transform: none; }
+
+/* a file row: status letter, name over its folder, counts */
+.prow.chg { height: auto; padding-top: 5px; padding-bottom: 5px; }
+.prow.chg .st { flex: none; width: 10px; font-family: var(--mono); font-size: 0.8462rem; text-align: center; }
+.prow.chg .t { display: flex; flex-direction: column; gap: 1px; }
+.prow.chg .t .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9231rem; }
+.prow.chg .t .sub { color: var(--stone); font-size: 0.7692rem; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st.modified { color: var(--yellow); }
+.st.added { color: var(--green); }
+.st.deleted { color: var(--red); }
+
+/* the file page: header bar, optional alert, then diff or editor filling the rest */
+.page.chgPage { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+.chgBar {
+  flex: none; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 16px;
+  border-bottom: 1px solid var(--hair); color: var(--ash);
+}
+.chgBar .st { flex: none; font-family: var(--mono); font-size: 0.9231rem; }
+.chgBar .crumb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 0.9231rem; }
+.chgBar .crumb .proj { color: var(--ash); margin-right: 8px; font-family: var(--sans); }
+.chgBar .crumb .dir { color: var(--stone); }
+.chgBar .crumb .nm { color: var(--ink); }
+.chgBar .num { flex: none; font-family: var(--mono); font-size: 0.8462rem; }
+.chgBar .sp { margin-left: auto; }
+.chgBar .segBtn { display: inline-flex; align-items: center; gap: 5px; }
+.chgBar .segBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+.chgBar .state { flex: none; min-width: 52px; text-align: right; color: var(--stone); font-size: 0.8462rem; }
+.chgBar .btn { display: inline-flex; align-items: center; gap: 5px; }
+.chgBar .btn .kbd { margin-left: 2px; }
+
+.chgAlert {
+  flex: none; display: flex; align-items: center; gap: 9px; padding: 8px 16px;
+  background: var(--tint-yellow); border-bottom: 1px solid var(--edge-yellow); color: var(--body); font-size: 0.9231rem;
+}
+.chgAlert svg { flex: none; color: var(--yellow); }
+.chgAlert .tx { flex: 1; min-width: 0; }
+
+.chgBody { flex: 1; min-height: 0; overflow: auto; background: var(--deep); }
+.chgBody.editing { display: flex; overflow: hidden; }
+.chgBody .dnote { margin: 0; padding: 14px 16px; color: var(--stone); font-size: 0.9231rem; }
+.chgBody .dnote.err { color: var(--red-ink); font-family: var(--mono); }
+.chgEditor {
+  flex: 1; width: 100%; box-sizing: border-box; resize: none; border: 0; outline: none;
+  background: var(--deep); color: var(--body); padding: 14px 18px;
+  font-family: var(--mono); font-size: 0.9231rem; line-height: 19px; tab-size: 2; white-space: pre; overflow: auto;
+}

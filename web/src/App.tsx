@@ -1,4 +1,4 @@
-import { FileText, Eye, Terminal as TerminalIcon } from 'lucide-react'
+import { FileDiff, FileText, Eye, Terminal as TerminalIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { DispatchPreviewResponse,
   EffortLevel,
@@ -17,6 +17,9 @@ import type { DispatchPreviewResponse,
 import { CommandPalette } from './components/CommandPalette.js'
 import { useSessionChanges } from './useSessionChanges.js'
 import { ChangesDrawer } from './components/ChangesDrawer.js'
+import { ChangePage } from './components/ChangePage.js'
+import { ChangesPanel } from './components/ChangesPanel.js'
+import { changeId, changesStore, useChanges } from './changesStore.js'
 import { Composer } from './components/Composer.js'
 import { ArtifactsPanel, NewTerminalMenu, QueuePanel, SessionsPanel, TerminalsPanel } from './components/ContextPanel.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
@@ -69,9 +72,10 @@ const STATUS_LABEL: Record<SessionStatus, string> = {
   error: 'error',
 }
 
-const PAGE_TABS: Record<'watches' | 'terminals' | 'artifacts', PageTab> = {
+const PAGE_TABS: Record<'watches' | 'terminals' | 'artifacts' | 'changes', PageTab> = {
   terminals: { key: 'page:terminals', label: 'Terminals', icon: TerminalIcon },
   artifacts: { key: 'page:artifacts', label: 'Artifacts', icon: FileText },
+  changes: { key: 'page:changes', label: 'Changes', icon: FileDiff },
   watches: { key: 'page:watches', label: 'Watches', icon: Eye },
 }
 
@@ -102,6 +106,9 @@ function tabKeyOf(route: Route): string | null {
       return `watch:${route.id}`
     case 'watch-form':
       return `watch-form:${route.id ?? 'new'}`
+    case 'change':
+      return `change:${changeId(route.projectId, route.path)}`
+    case 'changes':
     case 'artifacts':
     case 'watches':
     case 'terminals':
@@ -129,6 +136,8 @@ function routeOfKey(key: string): string {
       return `/watches/${encodeURIComponent(id)}`
     case 'watch-form':
       return id === 'new' ? '/watches/new' : `/watches/${encodeURIComponent(id)}/edit`
+    case 'change':
+      return `/change/${id}`
     case 'page':
       return `/${id}`
     default:
@@ -138,7 +147,7 @@ function routeOfKey(key: string): string {
 }
 
 /** Documents are peeked at; processes are pinned. */
-const DOC_KINDS: readonly TabKind[] = ['item', 'artifact', 'watch', 'watch-form']
+const DOC_KINDS: readonly TabKind[] = ['item', 'artifact', 'watch', 'watch-form', 'change']
 
 function kindOfKey(key: string): TabKind | null {
   const cut = key.indexOf(':')
@@ -165,6 +174,7 @@ const GENERIC: Record<TabKind, string> = {
   artifact: 'Artifact',
   watch: 'Watch',
   'watch-form': 'Watch',
+  change: 'File',
 }
 
 /**
@@ -186,6 +196,9 @@ function sectionOf(route: Route): RailSection | null {
     case 'artifact':
     case 'artifacts':
       return 'artifacts'
+    case 'change':
+    case 'changes':
+      return 'changes'
     case 'watch':
     case 'watch-form':
     case 'watches':
@@ -203,6 +216,7 @@ export function App() {
   const models = useModels()
   const inbox = useInbox()
   const artifacts = useArtifacts()
+  const changes = useChanges()
   const [route, navigate] = useHashRoute()
   const currentId = route.page === 'session' ? route.id : null
   const currentTerminalId = route.page === 'terminal' ? route.id : null
@@ -293,6 +307,11 @@ export function App() {
       if (key.startsWith('artifact:')) return artifacts.artifacts.find((a) => a.id === id)?.title ?? null
       if (key.startsWith('watch:')) return watchTitles.get(id) ?? null
       if (key.startsWith('watch-form:')) return id === 'new' ? 'New watch' : watchTitles.get(id) ?? null
+      if (key.startsWith('change:')) {
+        // A file is named by its basename; the path lives in the page header.
+        const file = decodeURIComponent(id.slice(id.indexOf('/') + 1))
+        return file.slice(file.lastIndexOf('/') + 1)
+      }
       return null
     },
     [inbox.items, artifacts.artifacts, watchTitles],
@@ -353,6 +372,10 @@ export function App() {
   // The open inbox feeds the rail badge and the Queue panel from the start.
   useEffect(() => {
     if (conn === 'connected') void inboxStore.refresh()
+  }, [conn])
+  // …and the Changes badge: one git pass per project, kept current by the store.
+  useEffect(() => {
+    if (conn === 'connected') void changesStore.refresh()
   }, [conn])
   // The Artifacts panel lists from the index; load it when that world is in front.
   useEffect(() => {
@@ -694,7 +717,9 @@ export function App() {
   // Only the rail *indexes* get a transient page tab now: an artifact, watch
   // or item in front is a document, and gets a real tab of its own.
   const pageTab =
-    route.page === 'watches' || route.page === 'terminals' || route.page === 'artifacts' ? PAGE_TABS[route.page] : null
+    route.page === 'watches' || route.page === 'terminals' || route.page === 'artifacts' || route.page === 'changes'
+      ? PAGE_TABS[route.page]
+      : null
 
   const previewTab = useMemo<OpenTab | null>(() => {
     const t = preview ? docTab(preview) : null
@@ -728,6 +753,16 @@ export function App() {
         onPin={(id, title) => pin(`artifact:${id}`, title)}
         onNew={() => navigate('/artifact/new')}
         onRefresh={() => void fetch('/api/artifacts/reindex', { method: 'POST' }).then(() => artifactStore.refresh())}
+        onSearch={() => setPaletteOpen(true)}
+      />
+    ) : railActive === 'changes' ? (
+      <ChangesPanel
+        projects={changes.projects}
+        loaded={changes.loaded}
+        loading={changes.loading}
+        current={route.page === 'change' ? { projectId: route.projectId, path: route.path } : null}
+        onOpen={(projectId, path) => navigate(`/change/${changeId(projectId, path)}`)}
+        onPin={(projectId, path) => pin(`change:${changeId(projectId, path)}`)}
         onSearch={() => setPaletteOpen(true)}
       />
     ) : railActive === 'inbox' ? (
@@ -784,6 +819,7 @@ export function App() {
           inboxCount={inbox.items.length}
           runningCount={runningCount}
           terminalCount={terminals.filter((t) => t.status === 'running').length}
+          changedCount={changes.projects.reduce((n, p) => n + p.files.length, 0)}
           onGo={goTo}
         />
 
@@ -851,6 +887,22 @@ export function App() {
               <ArtifactsPage onOpen={(id) => navigate(`/artifact/${id}`)} onPin={(id, title) => pin(`artifact:${id}`, title)} />
             ) : route.page === 'artifact' ? (
               <ArtifactPage key={route.id} id={route.id} onNavigate={navigate} onDirty={pinCurrent} />
+            ) : route.page === 'changes' ? (
+              <div className="termHome">
+                <div className="glow green" aria-hidden="true" />
+                <h2 className="display">Changes.</h2>
+                <p>
+                  Every uncommitted file in your projects, against HEAD — whoever changed it. Pick one on the
+                  left to read its diff, and switch to Edit to fix it in place.
+                </p>
+              </div>
+            ) : route.page === 'change' ? (
+              <ChangePage
+                key={`${route.projectId}/${route.path}`}
+                projectId={route.projectId}
+                path={route.path}
+                onDirty={pinCurrent}
+              />
             ) : route.page === 'watches' ? (
               <WatchesPage onNavigate={navigate} onPin={(id, title) => pin(`watch:${id}`, title)} />
             ) : route.page === 'watch' ? (

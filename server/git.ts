@@ -15,7 +15,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
-import { rm } from 'node:fs/promises'
+import { readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -134,4 +134,114 @@ export async function filePatch(
   ])
   if (out.length <= PATCH_BUDGET) return { patch: out, truncated: false }
   return { patch: out.slice(0, PATCH_BUDGET), truncated: true }
+}
+
+// ---------------------------------------------------------------------------
+// Working-tree changes — the Changes rail: what is uncommitted in a project,
+// against HEAD, whoever made it. Read-only like everything above; optional
+// locks are off so a background refresh never races the user's own `git`.
+// ---------------------------------------------------------------------------
+
+/** git's well-known empty tree: the base for a repo with no commits yet. */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+const NO_LOCKS = { GIT_OPTIONAL_LOCKS: '0' }
+
+/** Untracked files above this are counted as binary rather than read for a line count. */
+const COUNT_BUDGET = 2 * 1024 * 1024
+
+async function headTree(dir: string): Promise<string> {
+  try {
+    return (await git(dir, ['rev-parse', '--verify', '-q', 'HEAD^{tree}'], NO_LOCKS)).trim() || EMPTY_TREE
+  } catch {
+    return EMPTY_TREE // unborn branch
+  }
+}
+
+async function untracked(dir: string, file?: string): Promise<string[]> {
+  const out = await git(dir, ['ls-files', '-z', '--others', '--exclude-standard', ...(file ? ['--', file] : [])], NO_LOCKS)
+  return out.split('\0').filter(Boolean)
+}
+
+async function countLines(abs: string): Promise<{ lines: number; isBinary: boolean }> {
+  try {
+    const st = await stat(abs)
+    if (!st.isFile() || st.size > COUNT_BUDGET) return { lines: 0, isBinary: true }
+    const buf = await readFile(abs)
+    if (buf.subarray(0, 8192).includes(0)) return { lines: 0, isBinary: true }
+    if (!buf.length) return { lines: 0, isBinary: false }
+    let n = 0
+    for (const b of buf) if (b === 10) n++
+    return { lines: buf[buf.length - 1] === 10 ? n : n + 1, isBinary: false }
+  } catch {
+    return { lines: 0, isBinary: false }
+  }
+}
+
+/**
+ * Everything uncommitted under `dir`: tracked files against HEAD (staged or
+ * not — one view, the way a reviewer reads it) plus untracked files as adds.
+ * Paths are relative to `dir`, not the repo root, so a project that is a
+ * subfolder of a repo sees only its own files.
+ */
+export async function worktreeChanges(dir: string): Promise<TreeChange[]> {
+  const base = await headTree(dir)
+  const byPath = new Map<string, TreeChange>()
+
+  const names = await git(dir, ['diff', base, '--relative', '--no-renames', '--name-status', '-z'], NO_LOCKS)
+  const nf = names.split('\0')
+  for (let i = 0; i + 1 < nf.length; i += 2) {
+    const code = nf[i]?.trim()
+    const p = nf[i + 1]
+    if (!code || !p) continue
+    byPath.set(p, { path: p, status: STATUS[code[0]] ?? 'modified', insertions: 0, deletions: 0, isBinary: false })
+  }
+
+  const nums = await git(dir, ['diff', base, '--relative', '--no-renames', '--numstat', '-z'], NO_LOCKS)
+  for (const rec of nums.split('\0')) {
+    const m = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(rec)
+    const entry = m && byPath.get(m[3])
+    if (!m || !entry) continue
+    entry.isBinary = m[1] === '-' || m[2] === '-'
+    entry.insertions = m[1] === '-' ? 0 : Number(m[1])
+    entry.deletions = m[2] === '-' ? 0 : Number(m[2])
+  }
+
+  for (const p of await untracked(dir)) {
+    if (byPath.has(p)) continue
+    const { lines, isBinary } = await countLines(path.join(dir, p))
+    byPath.set(p, { path: p, status: 'added', insertions: lines, deletions: 0, isBinary })
+  }
+
+  return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/** One file's uncommitted patch — against HEAD, or against nothing when untracked. */
+export async function worktreePatch(dir: string, file: string): Promise<{ patch: string; truncated: boolean }> {
+  const base = await headTree(dir)
+  const flags = ['--no-renames', '--no-color', '--no-ext-diff', '--unified=3']
+  let out = await git(dir, ['diff', base, '--relative', ...flags, '--', file], NO_LOCKS)
+  // `ls-files --others` only lists paths inside the repo, so the no-index diff
+  // below can never be pointed at a file outside it.
+  if (!out && (await untracked(dir, file)).includes(file)) {
+    try {
+      out = await git(dir, ['diff', '--no-index', ...flags, '--', '/dev/null', file], NO_LOCKS)
+    } catch (err) {
+      // --no-index exits 1 when the files differ, which for an add is always.
+      const stdout = (err as { stdout?: unknown }).stdout
+      if (typeof stdout !== 'string') throw err
+      out = stdout
+    }
+  }
+  if (out.length <= PATCH_BUDGET) return { patch: out, truncated: false }
+  return { patch: out.slice(0, PATCH_BUDGET), truncated: true }
+}
+
+/** The checked-out branch, or null when detached or not a repo. */
+export async function currentBranch(dir: string): Promise<string | null> {
+  try {
+    const b = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'], NO_LOCKS)).trim()
+    return b && b !== 'HEAD' ? b : null
+  } catch {
+    return null
+  }
 }

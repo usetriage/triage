@@ -651,6 +651,54 @@ export type SessionDiffResponse =
   | { ok: true; path: string; patch: string; isBinary: boolean; truncated: boolean }
   | { ok: false; error: string }
 
+// ---------------------------------------------------------------------------
+// Working changes — the Changes rail: every project's uncommitted files
+// against HEAD, whoever made them. Paths are relative to the project folder.
+// ---------------------------------------------------------------------------
+
+export type WorkingFile = {
+  path: string
+  status: ChangeStatus
+  insertions: number
+  deletions: number
+  isBinary: boolean
+}
+
+export type ProjectChanges = {
+  project: Project
+  /** false when the project folder is not inside a git repo */
+  isRepo: boolean
+  branch: string | null
+  files: WorkingFile[]
+  insertions: number
+  deletions: number
+  /** git failed for this project; the others still load */
+  error?: string
+}
+
+/** GET /api/changes */
+export type WorkingChangesResponse =
+  | { ok: true; projects: ProjectChanges[] }
+  | { ok: false; error: string }
+
+/** GET /api/changes/diff?projectId=…&path=… — the same shape as a session's file diff. */
+export type WorkingDiffResponse = SessionDiffResponse
+
+/**
+ * GET /api/changes/file?projectId=…&path=… — a changed file, for editing.
+ * `version` is a hash of the bytes read; a save sends it back so an edit made
+ * on disk in the meantime (an agent, your editor) is refused, not clobbered.
+ */
+export type ProjectFileResponse =
+  | { ok: true; path: string; kind: 'text'; content: string; version: string }
+  | { ok: true; path: string; kind: 'binary' | 'large' | 'missing'; bytes: number }
+  | { ok: false; error: string }
+
+/** PUT /api/changes/file?projectId=…&path=… with body `{ content, version }`. */
+export type SaveProjectFileResponse =
+  | { ok: true; version: string }
+  | { ok: false; error: string; conflict?: boolean }
+
 // POST /api/pick-folder — opens the OS's native folder chooser on the machine
 // running the server (which is the user's own machine) and returns the picked
 // absolute path. `cancelled` is the user dismissing the dialog, not an error.

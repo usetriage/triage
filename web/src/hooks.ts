@@ -55,6 +55,9 @@ export type Route =
   | { page: 'watch'; id: string }
   | { page: 'artifacts' }
   | { page: 'artifact'; id: string }
+  | { page: 'changes' }
+  /** `#/change/<projectId>/<encoded path>` — one changed file: its diff, and an editor */
+  | { page: 'change'; projectId: string; path: string }
   /** `#/settings/<tab>` — opens the settings modal on that tab, then yields to the page underneath */
   | { page: 'settings'; tab: SettingsTab }
 
@@ -88,6 +91,17 @@ function parseRoute(hash: string): Route {
   }
   if (hash === '/artifacts') return { page: 'artifacts' }
   if (hash.startsWith('/artifact/')) return { page: 'artifact', id: hash.slice('/artifact/'.length) }
+  if (hash === '/changes') return { page: 'changes' }
+  {
+    const m = /^\/change\/([^/]+)\/(.+)$/.exec(hash)
+    if (m) {
+      try {
+        return { page: 'change', projectId: m[1], path: decodeURIComponent(m[2]) }
+      } catch {
+        return { page: 'changes' }
+      }
+    }
+  }
   if (hash === '/settings' || hash.startsWith('/settings/')) {
     const tab = hash.slice('/settings/'.length)
     return { page: 'settings', tab: isSettingsTab(tab) ? tab : DEFAULT_SETTINGS_TAB }

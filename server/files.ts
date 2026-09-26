@@ -7,11 +7,12 @@
  * secrets never show up by accident.
  */
 import { execFile } from 'node:child_process'
-import { readdir, readFile, realpath, stat } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { fuzzyScore } from '../shared/fuzzy.js'
-import { MAX_INLINE_FILE_BYTES, type FileHit } from '../shared/protocol.js'
+import { MAX_INLINE_FILE_BYTES, type FileHit, type ProjectFileResponse, type SaveProjectFileResponse } from '../shared/protocol.js'
 
 const pExecFile = promisify(execFile)
 
@@ -234,4 +235,75 @@ export async function resolveFileMention(cwd: string, ref: string): Promise<Reso
   // A NUL in the first 8 KB is the classic "this is not text" test.
   if (buf.subarray(0, 8192).includes(0)) return { kind: 'binary', abs: real, rel: shown, bytes: st.size }
   return { kind: 'text', abs: real, rel: shown, bytes: st.size, text: buf.toString('utf8') }
+}
+
+// ---------------------------------------------------------------------------
+// Editing — the Changes view opens a changed file and saves it back
+// ---------------------------------------------------------------------------
+
+/** Files above this open read-only: a textarea is the wrong tool past it. */
+export const MAX_EDIT_BYTES = 1024 * 1024
+
+const versionOf = (buf: Buffer) => createHash('sha1').update(buf).digest('hex')
+
+/**
+ * `rel` resolved to a real path inside `root`, or an error. Absolute paths,
+ * `..` escapes, symlinks pointing out of the folder, and anything under
+ * `.git/` are all refused — this is the only gate between the browser and a
+ * write to disk.
+ */
+async function containedPath(root: string, rel: string): Promise<{ real: string } | { error: string; missing?: true }> {
+  const norm = path.posix.normalize(rel.split(path.sep).join('/'))
+  if (!rel || path.isAbsolute(rel) || norm === '..' || norm.startsWith('../')) return { error: 'path is outside the project' }
+  if (norm === '.git' || norm.startsWith('.git/') || norm.includes('/.git/')) return { error: 'refusing to touch .git' }
+  let realRoot: string
+  try {
+    realRoot = await realpath(root)
+  } catch {
+    return { error: 'project folder not found' }
+  }
+  let real: string
+  try {
+    real = await realpath(path.resolve(root, norm))
+  } catch {
+    return { error: 'not found', missing: true }
+  }
+  if (!real.startsWith(realRoot + path.sep)) return { error: 'path is outside the project' }
+  return { real }
+}
+
+export async function readProjectFile(root: string, rel: string): Promise<ProjectFileResponse> {
+  const got = await containedPath(root, rel)
+  if ('error' in got) return got.missing ? { ok: true, path: rel, kind: 'missing', bytes: 0 } : { ok: false, error: got.error }
+  const st = await stat(got.real)
+  if (!st.isFile()) return { ok: false, error: 'not a file' }
+  if (st.size > MAX_EDIT_BYTES) return { ok: true, path: rel, kind: 'large', bytes: st.size }
+  const buf = await readFile(got.real)
+  if (buf.subarray(0, 8192).includes(0)) return { ok: true, path: rel, kind: 'binary', bytes: st.size }
+  return { ok: true, path: rel, kind: 'text', content: buf.toString('utf8'), version: versionOf(buf) }
+}
+
+/**
+ * Overwrite an existing file — never create one — provided it still holds
+ * the bytes the editor opened. Agents write to these same files; a stale save
+ * is a conflict for the user to resolve, not a silent revert of their work.
+ */
+export async function writeProjectFile(
+  root: string,
+  rel: string,
+  content: string,
+  version: string,
+): Promise<SaveProjectFileResponse> {
+  const got = await containedPath(root, rel)
+  if ('error' in got) return { ok: false, error: got.missing ? 'the file no longer exists' : got.error }
+  const st = await stat(got.real)
+  if (!st.isFile()) return { ok: false, error: 'not a file' }
+  if (st.size > MAX_EDIT_BYTES) return { ok: false, error: 'file is too large to edit here' }
+  if (versionOf(await readFile(got.real)) !== version) {
+    return { ok: false, conflict: true, error: 'the file changed on disk since you opened it' }
+  }
+  const next = Buffer.from(content, 'utf8')
+  if (next.length > MAX_EDIT_BYTES) return { ok: false, error: 'file is too large to edit here' }
+  await writeFile(got.real, next)
+  return { ok: true, version: versionOf(next) }
 }

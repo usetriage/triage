@@ -41,7 +41,7 @@ import {
   type PermissionUpdate,
 } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import { filePatch, repoRoot, snapshotTree, treeDiff, type TreeChange } from './git.js'
+import { currentBranch, filePatch, repoRoot, snapshotTree, treeDiff, worktreeChanges, worktreePatch, type TreeChange } from './git.js'
 import type {
   ClientMessage,
   Connector,
@@ -94,6 +94,11 @@ import type {
   SessionChangesResponse,
   SessionDiffResponse,
   SessionTurnSummary,
+  ProjectChanges,
+  ProjectFileResponse,
+  SaveProjectFileResponse,
+  WorkingChangesResponse,
+  WorkingDiffResponse,
 } from '../shared/protocol.js'
 import {
   MAX_IMAGES_PER_ITEM,
@@ -188,7 +193,7 @@ import {
 } from './workspaces.js'
 import { TerminalManager } from './terminals.js'
 import { applyImageEdits, itemImageAttachments, readItemImage } from './itemImages.js'
-import { FileIndexes, resolveFileMention } from './files.js'
+import { FileIndexes, readProjectFile, resolveFileMention, writeProjectFile } from './files.js'
 import { ArtifactIndex, slug } from './artifacts.js'
 import { TRIAGE_MCP_INSTRUCTIONS, triageSessionAppend } from '../shared/triageContext.js'
 import { callTool as callMcpTool, PROTOCOL_VERSION as MCP_PROTOCOL_VERSION, TOOLS as MCP_TOOLS } from '../core/mcp/tools.js'
@@ -1015,6 +1020,25 @@ const overlaps = (a: StoredTurn, b: StoredTurn): boolean =>
  * not in it. Within a window we can still be fooled by a *concurrent* session,
  * which is what `confidence` reports rather than hides.
  */
+/** One project's uncommitted work, for the Changes rail. Never throws: a broken repo is a row, not a 500. */
+async function projectChanges(project: Project): Promise<ProjectChanges> {
+  const empty: ProjectChanges = { project, isRepo: false, branch: null, files: [], insertions: 0, deletions: 0 }
+  if (!(await repoRoot(project.path))) return empty
+  try {
+    const [files, branch] = await Promise.all([worktreeChanges(project.path), currentBranch(project.path)])
+    return {
+      ...empty,
+      isRepo: true,
+      branch,
+      files,
+      insertions: files.reduce((n, f) => n + f.insertions, 0),
+      deletions: files.reduce((n, f) => n + f.deletions, 0),
+    }
+  } catch (err) {
+    return { ...empty, isRepo: true, error: errText(err) }
+  }
+}
+
 async function computeSessionChanges(rt: WorkspaceRuntime, row: StoredSession): Promise<SessionChanges> {
   const empty = { files: [], turns: [], insertions: 0, deletions: 0 }
   const root = await sessionRepoRoot(rt, row)
@@ -4120,6 +4144,71 @@ const server = http.createServer(async (req, res) => {
         body = { ok: false, error: errText(err) }
       }
       json(body.ok ? 200 : 400, body)
+      return
+    }
+  }
+
+  // The Changes rail: every project's uncommitted files, one file's patch, and
+  // reading/saving a changed file. Project-scoped, the complement of the
+  // session view above: "what is dirty", whoever made it.
+  if (url.pathname === '/api/changes' && req.method === 'GET') {
+    let body: WorkingChangesResponse
+    try {
+      const projects = await rt.store.projects.list()
+      body = { ok: true, projects: await Promise.all(projects.map(projectChanges)) }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 500, body)
+    return
+  }
+  if (url.pathname === '/api/changes/diff' || url.pathname === '/api/changes/file') {
+    const project = (await rt.store.projects.list()).find((p) => p.id === url.searchParams.get('projectId'))
+    const file = url.searchParams.get('path') ?? ''
+    if (!project || !file) {
+      json(400, { ok: false, error: project ? 'need a path' : 'unknown project' })
+      return
+    }
+    if (url.pathname === '/api/changes/diff' && req.method === 'GET') {
+      let body: WorkingDiffResponse
+      try {
+        const got = await worktreePatch(project.path, file)
+        body = { ok: true, path: file, patch: got.patch, isBinary: got.patch.includes('Binary files'), truncated: got.truncated }
+      } catch (err) {
+        body = { ok: false, error: errText(err) }
+      }
+      json(body.ok ? 200 : 400, body)
+      return
+    }
+    if (url.pathname === '/api/changes/file' && req.method === 'GET') {
+      let body: ProjectFileResponse
+      try {
+        body = await readProjectFile(project.path, file)
+      } catch (err) {
+        body = { ok: false, error: errText(err) }
+      }
+      json(body.ok ? 200 : 400, body)
+      return
+    }
+    if (url.pathname === '/api/changes/file' && req.method === 'PUT') {
+      // A write to disk: any page in the browser can POST to localhost, so
+      // only our own origin gets to do it.
+      if (!localOrigin(req.headers.origin)) {
+        json(403, { ok: false, error: 'cross-origin writes are not accepted' })
+        return
+      }
+      let body: SaveProjectFileResponse
+      try {
+        const parsed = (await readJsonBody(req, 4_000_000)) as { content?: unknown; version?: unknown } | null
+        if (typeof parsed?.content !== 'string' || typeof parsed.version !== 'string') {
+          throw new Error('need content and the version it was edited from')
+        }
+        body = await writeProjectFile(project.path, file, parsed.content, parsed.version)
+        if (body.ok) log('info', 'changes', `saved ${file}`, { project: project.name, workspace: rt.meta.id })
+      } catch (err) {
+        body = { ok: false, error: errText(err) }
+      }
+      json(body.ok ? 200 : body.conflict ? 409 : 400, body)
       return
     }
   }
