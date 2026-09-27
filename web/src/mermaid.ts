@@ -10,12 +10,13 @@
  */
 import DOMPurify from 'dompurify'
 import type { Mermaid, MermaidConfig } from 'mermaid'
+import type { Theme } from './themes.js'
 
-export type DiagramTheme = 'light' | 'dark'
+export type DiagramTheme = Theme
 
 /** `string` = rendered SVG, `null` = not a valid diagram, `undefined` = not rendered yet. */
 const cache = new Map<string, string | null>()
-const cacheKey = (theme: DiagramTheme, code: string) => `${theme}\n\n${code}`
+const cacheKey = (theme: DiagramTheme, code: string) => `${theme.id}\n\n${code}`
 
 export function diagram(theme: DiagramTheme, code: string): string | null | undefined {
   return cache.get(cacheKey(theme, code))
@@ -49,7 +50,7 @@ function config(theme: DiagramTheme): MermaidConfig {
     flowchart: { useMaxWidth: true },
     sequence: { useMaxWidth: true },
     themeVariables: {
-      darkMode: theme === 'dark',
+      darkMode: theme.scheme === 'dark',
       background: v('--card'),
       fontFamily: v('--sans'),
       fontSize: '13px',
@@ -73,7 +74,7 @@ function config(theme: DiagramTheme): MermaidConfig {
   }
 }
 
-let configured: DiagramTheme | null = null
+let configured: string | null = null
 let seq = 0
 
 async function renderOne(mermaid: Mermaid, code: string): Promise<string | null> {
@@ -95,9 +96,9 @@ async function renderOne(mermaid: Mermaid, code: string): Promise<string | null>
 export async function renderDiagrams(theme: DiagramTheme, codes: string[]): Promise<boolean> {
   if (!codes.some((code) => !cache.has(cacheKey(theme, code)))) return false
   const mermaid = await load()
-  if (configured !== theme) {
+  if (configured !== theme.id) {
     mermaid.initialize(config(theme))
-    configured = theme
+    configured = theme.id
   }
   let changed = false
   // Serially: mermaid queues render() calls internally anyway, and one message

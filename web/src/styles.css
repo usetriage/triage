@@ -1922,6 +1922,32 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 }
 .segmented button:hover { color: var(--ink); }
 .segmented button.on { background: var(--elev); color: var(--ink); }
+/* theme gallery (Settings → Themes). Each preview is painted from its theme's
+   palette inline, so only the frame and label here follow the live tokens. */
+.themeGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(164px, 1fr)); gap: 12px; }
+.themeCard {
+  display: flex; flex-direction: column; gap: 8px; padding: 6px 6px 9px; text-align: left;
+  border: 1px solid var(--hair-strong); border-radius: var(--r-lg); background: var(--card);
+  color: var(--body); font: inherit; cursor: pointer; transition: border-color 0.1s ease;
+}
+.themeCard:hover { border-color: var(--hair-bright); }
+.themeCard:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.themeCard[data-state="checked"] { border-color: var(--ink); }
+.themeName { display: flex; align-items: center; gap: 6px; padding: 0 4px; font-size: 0.9231rem; font-weight: 500; color: var(--body); }
+.themeName svg { margin-left: auto; color: var(--ink); }
+.themeCard[data-showing] .themeName { color: var(--ink); }
+.themePreview {
+  display: flex; gap: 6px; aspect-ratio: 16 / 10; padding: 6px; border-radius: var(--r);
+  overflow: hidden; box-shadow: inset 0 0 0 1px var(--hair);
+}
+.themePreview i { display: block; height: 3px; border-radius: var(--r-full); opacity: 0.9; }
+.themePreview .rail { display: flex; flex-direction: column; gap: 5px; width: 30%; padding: 6px 5px; border-radius: var(--r-xs); border: 1px solid; }
+.themePreview .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 6px 2px 2px; }
+.themePreview .code { display: flex; flex-direction: column; gap: 4px; padding: 5px; border-radius: var(--r-xs); }
+.themePreview .foot { display: flex; align-items: center; justify-content: space-between; margin-top: auto; }
+.themePreview .dots { display: flex; gap: 3px; }
+.themePreview .dots b { width: 5px; height: 5px; border-radius: var(--r-full); }
+.themePreview .btnPill { width: 22px; height: 8px; border-radius: var(--r-full); }
 .usageRange { margin-left: auto; font-family: var(--mono); font-size: 0.8462rem; color: var(--stone); }
 
 .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }

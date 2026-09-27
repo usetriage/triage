@@ -8,12 +8,14 @@
  * server; browser-scoped ones (Sessions · Shortcuts) write to localStorage.
  */
 import * as Dialog from '@radix-ui/react-dialog'
+import * as RadioGroup from '@radix-ui/react-radio-group'
 import * as Slider from '@radix-ui/react-slider'
 import * as Switch from '@radix-ui/react-switch'
 import * as Tabs from '@radix-ui/react-tabs'
 import {
   Activity,
   Cable,
+  Check,
   Folder,
   Gauge,
   Info,
@@ -26,6 +28,7 @@ import {
   ScrollText,
   Settings2,
   Sparkles,
+  SwatchBook,
   Users,
   Wallet,
   X,
@@ -52,13 +55,17 @@ import { KIND_LABEL } from '../itemUi.js'
 import { Select, SelectItem } from '../ui/Select.js'
 import { readSessionDefaults, writeSessionDefaults, type SessionDefaults } from '../sessionDefaults.js'
 import {
+  APPEARANCE_DEFAULTS,
+  chooseTheme,
   FONT_DEFAULT,
   FONT_MAX,
   FONT_MIN,
+  resolveTheme,
   useAppearance,
   writeAppearance,
   type ThemeMode,
 } from '../appearance.js'
+import { findTheme, THEMES, type Theme, type ThemeScheme } from '../themes.js'
 import { closeSettings, SETTINGS_TABS, setSettingsTab, useSettings, type SettingsTab } from '../settings.js'
 import { store } from '../store.js'
 import { ModelPopover } from './ModelPopover.js'
@@ -85,6 +92,7 @@ const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
   usage: Wallet,
   logs: ScrollText,
   appearance: Palette,
+  themes: SwatchBook,
   sessions: MessagesSquare,
   shortcuts: Keyboard,
   about: Info,
@@ -209,6 +217,9 @@ export function SettingsModal({ workspace, onOpenSystem }: Props) {
                   </Tabs.Content>
                   <Tabs.Content value="appearance">
                     <AppearanceTab />
+                  </Tabs.Content>
+                  <Tabs.Content value="themes">
+                    <ThemesTab />
                   </Tabs.Content>
                   <Tabs.Content value="sessions">
                     <SessionsTab />
@@ -878,9 +889,11 @@ function AppearanceTab() {
   const a = useAppearance()
   return (
     <>
-      <Section title="Theme" hint="System follows your operating system’s light or dark setting and switches with it.">
-        <Row label="Colour theme">
-          <Segmented ariaLabel="Colour theme" value={a.theme} options={THEME_OPTS} onChange={(theme) => writeAppearance({ theme })} />
+      <Section title="Theme">
+        <Row label="Colour theme" hint={`${resolveTheme(a).name}${a.mode === 'system' ? ' — following your operating system' : ''}.`}>
+          <button type="button" className="btn" onClick={() => setSettingsTab('themes')}>
+            Browse themes
+          </button>
         </Row>
       </Section>
       <Section
@@ -909,17 +922,110 @@ function AppearanceTab() {
         </Row>
       </Section>
       <Section title="Reset">
-        <Row label="Back to defaults" hint="Dark theme, default text size.">
-          <button
-            type="button"
-            className="btn"
-            onClick={() => writeAppearance({ theme: 'dark', fontSize: FONT_DEFAULT })}
-          >
+        <Row label="Back to defaults" hint="Triage Dark, default text size.">
+          <button type="button" className="btn" onClick={() => writeAppearance(APPEARANCE_DEFAULTS)}>
             Reset
           </button>
         </Row>
       </Section>
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Themes — a gallery per scheme. The mode decides which pick is on screen.
+// ---------------------------------------------------------------------------
+
+function ThemesTab() {
+  const a = useAppearance()
+  const showing = resolveTheme(a)
+  return (
+    <>
+      <Section title="Mode" hint="System follows your operating system’s light or dark setting and switches with it.">
+        <Row label="Colour mode">
+          <Segmented ariaLabel="Colour mode" value={a.mode} options={THEME_OPTS} onChange={(mode) => writeAppearance({ mode })} />
+        </Row>
+      </Section>
+      <ThemeGallery scheme="dark" value={a.darkTheme} showing={showing} system={a.mode === 'system'} />
+      <ThemeGallery scheme="light" value={a.lightTheme} showing={showing} system={a.mode === 'system'} />
+    </>
+  )
+}
+
+function ThemeGallery({
+  scheme,
+  value,
+  showing,
+  system,
+}: {
+  scheme: ThemeScheme
+  value: string
+  showing: Theme
+  system: boolean
+}) {
+  const title = scheme === 'dark' ? 'Dark themes' : 'Light themes'
+  const hint = system
+    ? `Your ${scheme} pick shows whenever your operating system is in ${scheme} mode.`
+    : showing.scheme === scheme
+      ? 'Showing now. Pick one to switch.'
+      : `Picking one switches to ${scheme} mode.`
+  return (
+    <Section title={title} hint={hint}>
+      <RadioGroup.Root
+        className="themeGrid"
+        aria-label={title}
+        value={value}
+        onValueChange={(id) => {
+          const theme = findTheme(id)
+          if (theme) chooseTheme(theme)
+        }}
+      >
+        {THEMES.filter((t) => t.scheme === scheme).map((t) => (
+          <RadioGroup.Item key={t.id} value={t.id} className="themeCard" data-showing={t.id === showing.id || undefined}>
+            <ThemePreview theme={t} />
+            <span className="themeName">
+              {t.name}
+              {t.id === value && <Check size={13} aria-hidden="true" />}
+            </span>
+          </RadioGroup.Item>
+        ))}
+      </RadioGroup.Root>
+    </Section>
+  )
+}
+
+/**
+ * A thumbnail of the workbench in a theme's own colours — painted from its
+ * palette, not the live tokens, so every card shows itself whatever is active.
+ */
+function ThemePreview({ theme }: { theme: Theme }) {
+  const p = theme.palette
+  const line = (w: string, color: string) => <i style={{ width: w, background: color }} />
+  return (
+    <span className="themePreview" style={{ background: p.canvas }} aria-hidden="true">
+      <span className="rail" style={{ background: p.card, borderColor: `${p.ink}14` }}>
+        {line('70%', p.ink)}
+        {line('50%', p.ash)}
+        {line('60%', p.ash)}
+      </span>
+      <span className="main">
+        {line('56%', p.ink)}
+        {line('84%', p.mute)}
+        {line('68%', p.mute)}
+        <span className="code" style={{ background: p.deep }}>
+          {line('40%', p.purple)}
+          {line('62%', p.green)}
+        </span>
+        <span className="foot">
+          <span className="dots">
+            {[p.red, p.yellow, p.green, p.blue].map((c, i) => (
+              <b key={i} style={{ background: c }} />
+            ))}
+          </span>
+          <span className="btnPill" style={{ background: p.ink }} />
+        </span>
+      </span>
+    </span>
   )
 }
 

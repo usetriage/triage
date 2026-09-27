@@ -8,10 +8,11 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { Pencil, Plus, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TerminalSummary } from '../../../shared/protocol.js'
-import { resolveTheme, useAppearance } from '../appearance.js'
+import { useTheme } from '../appearance.js'
 import { store } from '../store.js'
+import { terminalTheme } from '../themes.js'
 
 type Props = {
   terminal: TerminalSummary
@@ -22,73 +23,22 @@ type Props = {
 
 const homely = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
 
-/**
- * The design's palette, as xterm sees it. xterm paints to a canvas, so it
- * cannot read the CSS tokens — the two themes are spelled out here instead and
- * swapped on the live emulator when the appearance changes. `background` must
- * track `--deep`, which is what the .termHost rule paints behind the canvas.
- */
-const THEMES = {
-  dark: {
-    background: '#06060a',
-    foreground: 'rgba(252,253,255,0.86)',
-    cursor: '#fcfdff',
-    cursorAccent: '#000000',
-    selectionBackground: 'rgba(255,255,255,0.18)',
-    black: '#0a0a0c',
-    red: '#ff2047',
-    green: '#11ff99',
-    yellow: '#ffc53d',
-    blue: '#3b9eff',
-    magenta: '#c084fc',
-    cyan: '#2dd4bf',
-    white: '#a1a4a5',
-    brightBlack: '#464a4d',
-    brightRed: '#ff6b85',
-    brightGreen: '#5dffb8',
-    brightYellow: '#ffd76b',
-    brightBlue: '#6db6ff',
-    brightMagenta: '#d8b4fe',
-    brightCyan: '#5eead4',
-    brightWhite: '#fcfdff',
-  },
-  light: {
-    background: '#e6e9ee',
-    foreground: 'rgba(11,12,14,0.84)',
-    cursor: '#0b0c0e',
-    cursorAccent: '#ffffff',
-    selectionBackground: 'rgba(31,111,235,0.22)',
-    black: '#1b1e22',
-    red: '#c01530',
-    green: '#0a7a44',
-    yellow: '#8a6d1f',
-    blue: '#1256c7',
-    magenta: '#8b3fd6',
-    cyan: '#0e7f78',
-    white: '#5c6166',
-    brightBlack: '#8a9095',
-    brightRed: '#d61f3c',
-    brightGreen: '#0f9d58',
-    brightYellow: '#a97a00',
-    brightBlue: '#1f6feb',
-    brightMagenta: '#9333ea',
-    brightCyan: '#0f8b80',
-    brightWhite: '#0b0c0e',
-  },
-} as const
-
 export function TerminalPage({ terminal, onRename, onClose, onNewHere }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const emulator = useRef<Terminal | null>(null)
   const [renaming, setRenaming] = useState(false)
   const running = terminal.status === 'running'
-  const scheme = resolveTheme(useAppearance().theme)
+  // xterm paints to a canvas and cannot read the CSS tokens, so each theme
+  // spells out its terminal palette (see themes.ts). Its background tracks
+  // `--deep`, which is what the .termHost rule paints behind the canvas.
+  const theme = useTheme()
+  const palette = useMemo(() => terminalTheme(theme), [theme])
 
   useEffect(() => {
     const el = host.current
     if (!el) return
     const term = new Terminal({
-      theme: THEMES[scheme],
+      theme: palette,
       fontFamily: '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: 13,
       lineHeight: 1.25,
@@ -141,8 +91,8 @@ export function TerminalPage({ terminal, onRename, onClose, onNewHere }: Props) 
   // Repaint the scrollback in the other theme — including the already-written
   // rows, which xterm re-renders from its buffer when `options.theme` is set.
   useEffect(() => {
-    if (emulator.current) emulator.current.options.theme = THEMES[scheme]
-  }, [scheme])
+    if (emulator.current) emulator.current.options.theme = palette
+  }, [palette])
 
   return (
     <div className="termPage">

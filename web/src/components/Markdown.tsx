@@ -23,7 +23,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { resolveTheme, useAppearance } from '../appearance.js'
+import { useTheme } from '../appearance.js'
 import { diagram, renderDiagrams } from '../mermaid.js'
 
 marked.setOptions({
@@ -75,7 +75,7 @@ function renderMarkdown(text: string): { html: string; diagrams: string[] } {
 }
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
-  const theme = resolveTheme(useAppearance().theme)
+  const theme = useTheme()
   const [rendered, redraw] = useReducer((n: number) => n + 1, 0)
   const [zoomed, setZoomed] = useState<string | null>(null)
   const host = useRef<HTMLDivElement>(null)

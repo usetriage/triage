@@ -21,6 +21,7 @@ export type SettingsTab =
   | 'usage'
   | 'logs'
   | 'appearance'
+  | 'themes'
   | 'sessions'
   | 'shortcuts'
   | 'about'
@@ -47,6 +48,7 @@ export const SETTINGS_TABS: ReadonlyArray<SettingsTabMeta> = [
   { id: 'usage', label: 'Usage', sub: 'What Claude Code has cost on this machine — tokens, spend, and where they went.', group: 'diagnostics', fill: true },
   { id: 'logs', label: 'Logs', sub: 'The daemon’s log, filterable by level and subsystem.', group: 'diagnostics', fill: true },
   { id: 'appearance', label: 'Appearance', sub: 'Theme and text size — how this browser renders the workbench.', group: 'app' },
+  { id: 'themes', label: 'Themes', sub: 'Colour themes for the workbench — one for dark mode, one for light.', group: 'app' },
   { id: 'sessions', label: 'Sessions', sub: 'Defaults for every new session started from this browser.', group: 'app' },
   { id: 'shortcuts', label: 'Shortcuts', sub: 'Every key the workbench answers to.', group: 'app' },
   { id: 'about', label: 'About', sub: 'The daemon behind this page: version, ports, and where its data lives.', group: 'app' },
