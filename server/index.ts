@@ -23,7 +23,7 @@
  * The wire format lives in shared/protocol.ts and is shared with the frontend.
  */
 import http from 'node:http'
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rmdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { readFileSync } from 'node:fs'
@@ -41,12 +41,16 @@ import {
   type PermissionResult,
   type PermissionUpdate,
   type McpServerConfig,
+  type HookCallback,
+  type McpServerStatus,
+  type Options,
 } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { currentBranch, filePatch, repoRoot, snapshotTree, treeDiff, treePatch, worktreeChanges, worktreePatch, type TreeChange } from './git.js'
 import type {
   ClientMessage,
   Connector,
+  ConnectorScope,
   ConnectorsResponse,
   EffortLevel,
   FastModeDisabledReason,
@@ -212,10 +216,40 @@ import {
 } from '../core/sources/slack.js'
 import { scanUsage } from '../core/usage/ledger.js'
 import { summarize as summarizeUsage, summarizeBySession, summarizeModels } from '../core/usage/summary.js'
-import { isDue } from '../core/watch/schedule.js'
+import { decide, humanSpan, intervalOf, isCatchUpSpec, lookbackMs, parseCatchUp, scheduleOf, type SkipReason } from '../core/watch/schedule.js'
 import { cronFromCadence, isValidCron } from '../core/watch/cron.js'
-import { WATCH_CONNECTORS, WATCH_OUTPUTS, type NewWatch, type Watch, type WatchCadence, type WatchConnector, type WatchOutput, type WatchPreviewResult, type WatchPreviewRow, type WatchRunStatus } from '../core/watch/types.js'
-import { composeRunPrompt, MAX_ROWS_PER_RUN, runAllowedTools } from '../core/watch/connectors.js'
+import {
+  DEFAULT_WATCH_TIMEOUT_MS,
+  MAX_WATCH_TIMEOUT_MS,
+  WATCH_NOTIFY,
+  WATCH_OUTPUTS,
+  type NewWatch,
+  type Watch,
+  type WatchCadence,
+  type WatchConnector,
+  type WatchNotify,
+  type WatchOutput,
+  type WatchPreviewResult,
+  type WatchPreviewRow,
+  type WatchRunStatus,
+  type WatchRunTrigger,
+} from '../core/watch/types.js'
+import { composeRunPrompt, MAX_ROWS_PER_RUN } from '../core/watch/connectors.js'
+import {
+  grantLabel,
+  grantsFrom,
+  grantsFromLegacy,
+  mcpGrants,
+  mcpToolName,
+  presetGrant,
+  RESERVED_SERVER,
+  runAllowedTools,
+  runBaseTools,
+  serverLabel,
+  type LegacyConnector,
+  type WatchToolGrant,
+} from '../core/watch/tools.js'
+import { fenceDecision, fenceFor, type Fence } from '../core/watch/fence.js'
 import { clearState, pkgVersion, TRIAGE_DIR, writeState } from './state.js'
 import { initLogFile, log, logFilePath, logSubsystems, recentLogs } from './log.js'
 import {
@@ -234,6 +268,7 @@ import {
   type WorkspaceMeta,
 } from './workspaces.js'
 import { TerminalManager } from './terminals.js'
+import { launchAgentInstalled } from './launchd.js'
 import { applyImageEdits, itemImageAttachments, readItemImage } from './itemImages.js'
 import { FileIndexes, readProjectFile, resolveFileMention, writeProjectFile } from './files.js'
 import { ArtifactIndex, slug } from './artifacts.js'
@@ -417,7 +452,7 @@ class WorkspaceRuntime {
   githubReconcileInFlight: Promise<void> | null = null
 
   // watch runs
-  readonly runQueue: string[] = []
+  readonly runQueue: QueuedRun[] = []
   readonly runningWatches = new Set<string>()
   /** in-flight and recently finished dry runs, by ephemeral session id (never persisted) */
   readonly previews = new Map<string, WatchPreview>()
@@ -426,6 +461,9 @@ class WorkspaceRuntime {
   // probes
   connectorCache: ConnectorProbe | null = null
   connectorInFlight: Promise<ConnectorProbe> | null = null
+  /** connector probes per project folder (its project + local MCP servers), for the watch picker */
+  readonly folderProbes = new Map<string, ConnectorProbe>()
+  readonly folderProbeInFlight = new Map<string, Promise<ConnectorProbe>>()
   modelCache: ModelProbe | null = null
   modelInFlight: Promise<ModelProbe> | null = null
   /** `/` command lists, keyed by folder — a project's own commands live under it */
@@ -1539,7 +1577,9 @@ const GITHUB_TTL_MS = 5 * 60_000
 const GITHUB_LOOKBACK_MS = 14 * 86_400_000
 /** how many watch runs may execute at once (avoid the top-of-hour stampede) */
 const WATCH_CONCURRENCY = 2
-const WATCH_TIMEOUT_MS = 240_000
+const WATCH_TIMEOUT_KEY = 'watches.defaultTimeoutMs'
+const WATCH_BUDGET_KEY = 'watches.defaultBudgetUsd'
+const FOLDER_PROBE_TTL_MS = 10 * 60_000
 
 const REPOS_KEY = 'github.repos'
 const WATCHES_SEEDED_KEY = 'watches.seeded'
@@ -1708,7 +1748,7 @@ function sumTokens(usage: Record<string, unknown> | undefined): number {
 
 /** A watch is overdue if no run has completed within a grace window past its cadence. */
 function overdueWatch(w: Watch, now: number): boolean {
-  const grace = w.cadence === 'hourly' ? 2 * 3_600_000 : w.cadence === 'daily' ? 26 * 3_600_000 : 8 * 86_400_000
+  const grace = 2 * (intervalOf(scheduleOf(w), now) ?? 86_400_000) + 3_600_000
   return now - (w.lastRunAt ?? w.createdAt) > grace
 }
 
@@ -1753,63 +1793,115 @@ async function systemStatus(rt: WorkspaceRuntime): Promise<SystemStatus> {
       total: watches.length,
       enabled: enabled.length,
       overdue: enabled.filter((w) => overdueWatch(w, now)).length,
-      failing: enabled.filter((w) => w.lastRunStatus === 'failed').length,
+      failing: enabled.filter((w) => w.lastRunStatus === 'failed' || w.lastRunStatus === 'timeout').length,
+      configErrors: watches.filter((w) => w.configError).length,
     },
+    launchAgent: launchAgentInstalled(),
     logDir: logFilePath(),
   }
 }
 
-async function runDueWatches(rt: WorkspaceRuntime, opts: { force?: boolean } = {}): Promise<void> {
+/** One run waiting for a slot in the queue. Waiting keeps its slot: the due
+ * rule's clock only moves when the run actually starts. */
+type QueuedRun = { id: string; trigger: WatchRunTrigger; slot: number }
+
+/**
+ * Is every MCP server this watch uses up, per the latest probes? Only a server
+ * the probe positively reports broken (needs auth, failed, disabled) blocks a
+ * run — a server missing from a stale probe gets the benefit of the doubt, and
+ * a run that truly can't reach it fails loudly with no-connector-tools.
+ */
+function watchReady(rt: WorkspaceRuntime, w: Watch, project: Project | null): true | string {
+  const probes = [rt.connectorCache, project ? rt.folderProbes.get(project.path) : undefined].filter(
+    (p): p is ConnectorProbe => p != null,
+  )
+  if (!probes.length) return true
+  for (const g of mcpGrants(w.tools)) {
+    const found = probes.flatMap((p) => p.connectors).find((c) => c.server === g.source.server)
+    if (found && (found.status === 'needs-auth' || found.status === 'failed' || found.status === 'disabled')) {
+      return `${serverLabel(g.source.server)} ${found.status}`
+    }
+  }
+  return true
+}
+
+const SKIP_TEXT: Record<SkipReason, string> = {
+  overlap: 'previous run still in progress',
+  window: 'missed slot older than the catch-up window',
+  connector: 'a connector is not available',
+}
+
+/** Record a skipped slot as a run receipt and move the due rule's clock. */
+async function recordSkip(rt: WorkspaceRuntime, w: Watch, reason: SkipReason, detail?: string): Promise<void> {
+  const now = Date.now()
+  await rt.store.watches.markRunStarted(w.id, { startedAt: now })
+  const error = `skipped (${reason}): ${detail ?? SKIP_TEXT[reason]}`
+  await rt.store.watches.recordRun(w.id, { lastRunAt: now, lastRunTokens: 0, lastRunMatches: 0, status: 'skipped', error })
+  log('warn', 'scheduler', `${w.title}: ${error}`, { watchId: w.id, reason, workspace: rt.meta.id })
+}
+
+/**
+ * The scheduler tick for one workspace (watch-spec.md, item 3): decide per
+ * watch, record skips, queue due runs oldest slot first.
+ */
+async function runDueWatches(rt: WorkspaceRuntime, now = Date.now()): Promise<void> {
   // The global switch (Settings → Sources) — off means the scheduler never runs a watch.
   if (!(await watchesEnabled(rt))) return
-  if (slackConnected(rt) !== true) return
-  const now = new Date()
+  const projects = await rt.store.projects.list()
   for (const w of await rt.store.watches.list()) {
-    if (!w.enabled) continue
-    if (!opts.force && !isDue(w, now)) continue
-    if (rt.runningWatches.has(w.id)) {
-      // a previous run is still going — record the skip rather than swallow it
-      await rt.store.watches.recordRun(w.id, {
-        lastRunAt: Date.now(),
-        lastRunTokens: 0,
-        lastRunMatches: 0,
-        status: 'skipped',
-        error: 'previous run still in progress',
-      })
-      log('warn', 'scheduler', `skipped ${w.title}: previous run still in progress`, { watchId: w.id, workspace: rt.meta.id })
+    if (!w.enabled || w.configError) continue
+    if (rt.runQueue.some((q) => q.id === w.id)) continue // waiting already; keeps its slot
+    const project = projects.find((p) => p.id === w.projectId) ?? null
+    const d = decide({
+      schedule: scheduleOf(w),
+      lastRunStartedAt: w.lastRunStartedAt,
+      now,
+      tickMs: SCHEDULER_TICK_MS,
+      running: rt.runningWatches.has(w.id),
+      ready: watchReady(rt, w, project),
+      catchUp: parseCatchUp(w.catchUpWindow, w.output),
+    })
+    if (d.action === 'idle') continue
+    if (d.action === 'skip') {
+      await recordSkip(rt, w, d.reason, d.detail)
       continue
     }
-    if (!rt.runQueue.includes(w.id)) rt.runQueue.push(w.id)
+    rt.runQueue.push({ id: w.id, trigger: d.trigger, slot: d.slot })
   }
   pumpRunQueue(rt)
 }
 
 /**
- * Queue a single watch to run now (the per-watch "Run" button — a force run,
- * independent of cadence). Respects the in-flight guard so a double-click can't
- * start two runs of the same watch. Returns whether it queued or was already
- * running. Scheduled cadence runs continue independently via runDueWatches.
+ * Queue a single watch to run now (the per-watch "Run" button — a manual run,
+ * independent of the schedule). Respects the in-flight guard so a double-click
+ * can't start two runs of the same watch.
  */
 function enqueueWatch(rt: WorkspaceRuntime, id: string): 'queued' | 'running' {
   if (rt.runningWatches.has(id)) return 'running'
-  if (!rt.runQueue.includes(id)) rt.runQueue.push(id)
+  if (!rt.runQueue.some((q) => q.id === id)) rt.runQueue.push({ id, trigger: 'manual', slot: Date.now() })
   pumpRunQueue(rt)
   return 'queued'
 }
 
 function pumpRunQueue(rt: WorkspaceRuntime): void {
+  // oldest slot first, as wakecron does; the rest keep their slot for later
+  rt.runQueue.sort((a, b) => a.slot - b.slot)
   while (rt.activeRuns < WATCH_CONCURRENCY && rt.runQueue.length > 0) {
-    const id = rt.runQueue.shift()!
-    if (rt.runningWatches.has(id)) continue
-    rt.runningWatches.add(id)
+    const run = rt.runQueue.shift()!
+    if (rt.runningWatches.has(run.id)) continue
+    rt.runningWatches.add(run.id)
     rt.activeRuns += 1
-    const jitter = Math.floor(Math.random() * 3_000)
+    // The due rule's clock moves when the run starts — now, not after the
+    // jitter — so a tick in between can't see a stale slot and skip it.
+    const startedAt = Date.now()
+    void rt.store.watches.markRunStarted(run.id, { startedAt, trigger: run.trigger })
+    const jitter = run.trigger === 'manual' ? 0 : Math.floor(Math.random() * 3_000)
     setTimeout(() => {
-      runWatch(rt, id)
+      runWatch(rt, run, startedAt)
         .catch((err) => log('error', 'watch', `run crashed: ${err}`, { workspace: rt.meta.id }))
         .finally(() => {
           rt.activeRuns -= 1
-          rt.runningWatches.delete(id)
+          rt.runningWatches.delete(run.id)
           pumpRunQueue(rt)
         })
     }, jitter)
@@ -1872,7 +1964,7 @@ const DIGEST_SHAPE = {
  * identity from the link and stamps kind and provenance (this watch + run). So
  * the model only ADDS candidates and annotates why — lifecycle stays in code.
  */
-function makeScanMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onUpsert: () => void) {
+function makeScanMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onUpsert: (outcome: UpsertOutcome) => void) {
   let count = 0
   if (watch.output === 'digest') return makeDigestMcp(rt, watch, runId, onUpsert)
   return createSdkMcpServer({
@@ -1909,8 +2001,8 @@ function makeScanMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onUpsert
               ...(refs ? { refs } : {}),
             }
             const prov: Provenance = { watchId: watch.id, runId, at: now, why: args.why }
-            const { outcome } = await rt.store.items.upsert(item, prov)
-            onUpsert()
+            const { outcome, reopened } = await rt.store.items.upsert(item, prov)
+            onUpsert(outcome)
             rt.inboxCache = null
             log('info', 'watch', `filed (${outcome}): ${item.title}`, {
               id: item.id,
@@ -1920,7 +2012,15 @@ function makeScanMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onUpsert
               outcome,
               workspace: rt.meta.id,
             })
-            return okResult('ok: recorded')
+            // Stateless runs need to hear about repeats (watch-spec.md, item 4).
+            if (outcome === 'inserted') return okResult(`new: filed ${item.id}`)
+            if (reopened) return okResult(`already filed; it was done and has returned to the inbox: ${item.id}`)
+            const status = (await rt.store.items.get(item.id))?.status ?? 'open'
+            return okResult(
+              status === 'open'
+                ? `already filed and open: ${item.id}. Do not count it as new; move on to the next candidate.`
+                : `already filed, ${status}: ${item.id}`,
+            )
           } catch (err) {
             return errResult(err instanceof Error ? err.message : String(err))
           }
@@ -1940,7 +2040,7 @@ const digestRelPath = (watch: Watch): string => `reports/${slug(watch.title) || 
  * "returned" marker — and links report → item. The model writes prose; code
  * owns identity, lifecycle and the link, as everywhere else.
  */
-function makeDigestMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onWrite: () => void) {
+function makeDigestMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onWrite: (outcome: UpsertOutcome) => void) {
   let written = false
   return createSdkMcpServer({
     name: 'triage',
@@ -1979,7 +2079,7 @@ function makeDigestMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onWrit
             const { outcome, reopened } = await rt.store.items.upsert(item, prov)
             await rt.store.links.add({ fromKind: 'artifact', fromId: artifact.id, toKind: 'item', toId: item.id, role: 'report' })
             written = true
-            onWrite()
+            onWrite(outcome)
             rt.inboxCache = null
             log('info', 'watch', `digest written (${outcome}${reopened ? ', returned' : ''}): ${title}`, { id: item.id, watchId: watch.id, runId, artifact: artifact.path, workspace: rt.meta.id })
             return okResult(`ok: digest saved as ${artifact.path}`)
@@ -2003,7 +2103,167 @@ type WatchPreview = {
 }
 const PREVIEW_TTL_MS = 15 * 60_000
 
-type PreviewSpec = { instruction: string; connectors: WatchConnector[]; projectId?: string; model?: string; output: WatchOutput }
+/** What a run (real or dry) is made of: the watch as saved, or the form as it stands. */
+type RunSpec = {
+  instruction: string
+  tools: WatchToolGrant[]
+  project: Project
+  model?: string
+  output: WatchOutput
+  schedule: string
+  scope?: string
+}
+
+type PreviewSpec = Omit<RunSpec, 'project'> & { projectId: string }
+
+// ---------------------------------------------------------------------------
+// Folder MCP servers (watch-spec.md, item 1): the `project` servers in a
+// folder's .mcp.json and the user's private `local` servers for that folder
+// (in Claude's own config). Read by triage and passed explicitly — never by
+// loading the project's settings, which would also load its hooks, and hooks
+// are shell commands that would run unattended.
+// ---------------------------------------------------------------------------
+
+type FolderMcp = { servers: Record<string, McpServerConfig>; scopes: Map<string, 'project' | 'local'> }
+
+/** `${VAR}` / `${VAR:-default}` in .mcp.json strings, from the run's environment. */
+function expandEnv(v: unknown, env: Record<string, string | undefined>): unknown {
+  if (typeof v === 'string') return v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (_, k: string, d?: string) => env[k] ?? d ?? '')
+  if (Array.isArray(v)) return v.map((x) => expandEnv(x, env))
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, expandEnv(x, env)]))
+  return v
+}
+
+async function readJsonFile(file: string): Promise<Record<string, unknown> | null> {
+  try {
+    const parsed = JSON.parse(await readFile(file, 'utf8')) as unknown
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+async function folderMcpServers(rt: WorkspaceRuntime, cwd: string): Promise<FolderMcp> {
+  const env = { ...process.env, ...(rt.env ?? {}) }
+  const out: FolderMcp = { servers: {}, scopes: new Map() }
+  const add = (raw: unknown, scope: 'project' | 'local') => {
+    if (!raw || typeof raw !== 'object') return
+    for (const [name, cfg] of Object.entries(raw as Record<string, unknown>)) {
+      if (!cfg || typeof cfg !== 'object') continue
+      out.servers[name] = expandEnv(cfg, env) as McpServerConfig
+      out.scopes.set(name, scope)
+    }
+  }
+  const project = await readJsonFile(path.join(cwd, '.mcp.json'))
+  add(project?.mcpServers, 'project')
+  const configDir = rt.env?.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR
+  const claudeJson = await readJsonFile(configDir ? path.join(configDir, '.claude.json') : path.join(os.homedir(), '.claude.json'))
+  const perFolder = (claudeJson?.projects as Record<string, { mcpServers?: unknown }> | undefined)?.[cwd]
+  add(perFolder?.mcpServers, 'local') // private per-folder servers win over the shared file, as in Claude Code
+  delete out.servers.triage // our own in-process server owns that name
+  return out
+}
+
+/**
+ * Local-scope MCP servers the user configured for other folders (names only,
+ * never their config). A watch runs in one folder, so these aren't usable
+ * here — but listing them tells the user which project to pick instead.
+ */
+async function localServersElsewhere(rt: WorkspaceRuntime, cwd: string, here: Connector[]): Promise<Array<{ name: string; folder: string }>> {
+  const configDir = rt.env?.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR
+  const claudeJson = await readJsonFile(configDir ? path.join(configDir, '.claude.json') : path.join(os.homedir(), '.claude.json'))
+  const projects = (claudeJson?.projects ?? {}) as Record<string, { mcpServers?: Record<string, unknown> }>
+  const have = new Set(here.map((c) => c.server))
+  const out: Array<{ name: string; folder: string }> = []
+  for (const [folder, p] of Object.entries(projects)) {
+    if (folder === cwd || !p?.mcpServers || typeof p.mcpServers !== 'object') continue
+    for (const name of Object.keys(p.mcpServers)) if (!have.has(name)) out.push({ name, folder })
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name) || a.folder.localeCompare(b.folder))
+}
+
+/** A PreToolUse hook: the fence, deciding every tool call the run makes. */
+function fenceHook(fence: Fence): HookCallback {
+  return async (input) => {
+    if (input.hook_event_name !== 'PreToolUse') return {}
+    const d = fenceDecision(fence, input.tool_name, input.tool_input)
+    if (d.allow) return {}
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: d.reason } }
+  }
+}
+
+/** The workspace's default run limits, under a watch's own. */
+async function watchLimits(rt: WorkspaceRuntime, w: { timeoutMs?: number; maxBudgetUsd?: number }): Promise<{ timeoutMs: number; maxBudgetUsd?: number }> {
+  const s = await readSettings(rt)
+  const budget = w.maxBudgetUsd ?? s.watchBudgetUsd ?? undefined
+  return { timeoutMs: w.timeoutMs ?? s.watchTimeoutMs, ...(budget != null ? { maxBudgetUsd: budget } : {}) }
+}
+
+/**
+ * The prompt and SDK options every watch run shares, real or dry. Same prompt,
+ * same fence: built-in tools limited to what the grants need, the allowlist so
+ * granted tools never prompt, `dontAsk` so nothing else ever does, and the
+ * PreToolUse fence so nothing else ever runs — whatever the user's own global
+ * allow rules say. Runs work in the project folder and nowhere else.
+ */
+async function watchQuery(
+  rt: WorkspaceRuntime,
+  spec: RunSpec,
+  triage: McpServerConfig,
+  abort: AbortController,
+  extra: { maxBudgetUsd?: number; includePartialMessages?: boolean } = {},
+): Promise<{ prompt: string; options: Options }> {
+  const folder = await folderMcpServers(rt, spec.project.path)
+  const granted = new Set(mcpGrants(spec.tools).map((g) => g.source.server))
+  const folderServers = Object.fromEntries(Object.entries(folder.servers).filter(([name]) => granted.has(name)))
+  // Servers the user has connected but this watch wasn't granted still load
+  // from their settings; take their tools out of the run's context entirely
+  // (the fence would deny them anyway). Known from the latest probes.
+  // A run right after boot can beat the first probe; wait for it (a few seconds, no API turn).
+  const home = rt.connectorCache ?? (await probeConnectors(rt).catch(() => null))
+  const known = [...(rt.folderProbes.get(spec.project.path)?.connectors ?? []), ...(home?.connectors ?? [])]
+  const ungranted = [...new Set(known.map((c) => c.server))].filter((srv) => !granted.has(srv) && srv !== RESERVED_SERVER)
+  const disallowedTools = ungranted.map((srv) => mcpToolName(srv, '').replace(/__$/, ''))
+  const now = Date.now()
+  const prompt = composeRunPrompt({
+    instruction: spec.instruction,
+    tools: spec.tools,
+    project: { name: spec.project.name, path: spec.project.path },
+    output: spec.output,
+    lookbackMs: lookbackMs(spec.schedule, now),
+    nowIso: new Date(now).toISOString(),
+    ...(spec.scope ? { scope: spec.scope } : {}),
+  })
+  const options: Options = {
+    cwd: spec.project.path,
+    systemPrompt: { type: 'preset', preset: 'claude_code' },
+    settingSources: ['user'],
+    tools: runBaseTools(spec.tools),
+    allowedTools: runAllowedTools(spec.tools, spec.output),
+    ...(disallowedTools.length ? { disallowedTools } : {}),
+    permissionMode: 'dontAsk',
+    hooks: { PreToolUse: [{ hooks: [fenceHook(fenceFor(spec.tools, spec.output, spec.project.path))] }] },
+    ...(spec.model ? { model: spec.model } : {}),
+    ...(extra.maxBudgetUsd != null ? { maxBudgetUsd: extra.maxBudgetUsd } : {}),
+    ...(extra.includePartialMessages ? { includePartialMessages: true } : {}),
+    mcpServers: { ...folderServers, triage },
+    abortController: abort,
+    ...(rt.env ? { env: rt.env } : {}),
+  }
+  return { prompt, options }
+}
+
+/** The project a watch runs in, checked: a removed project or a missing folder is an error, never a fallback. */
+async function watchProject(rt: WorkspaceRuntime, projectId: string): Promise<Project> {
+  const project = (await rt.store.projects.list()).find((p) => p.id === projectId)
+  if (!project) throw new Error('project removed — pick another project for this watch')
+  const st = await stat(project.path).catch(() => null)
+  if (!st?.isDirectory()) throw new Error(`folder not found: ${project.path}`)
+  return project
+}
+
+const noConnectorError = (tools: WatchToolGrant[]) =>
+  `no connector tools — connect ${tools.map(grantLabel).join(', ')} for Claude (claude.ai/settings/connectors, or the project's MCP config)`
 
 /**
  * Start a dry run of a watch as the form currently describes it. Same prompt,
@@ -2024,8 +2284,6 @@ async function runWatchPreview(rt: WorkspaceRuntime, pv: WatchPreview, spec: Pre
     if (keep) pv.events.push(event)
     broadcast(rt, { type: 'session_event', sessionId: pv.id, event, at: Date.now() })
   }
-  const project = spec.projectId ? (await rt.store.projects.list()).find((p) => p.id === spec.projectId) ?? null : null
-  const cwd = project?.path ?? os.homedir()
   const rows: WatchPreviewRow[] = []
   let digest: { title: string; body: string } | undefined
   const collector = createSdkMcpServer({
@@ -2045,7 +2303,8 @@ async function runWatchPreview(rt: WorkspaceRuntime, pv: WatchPreview, spec: Pre
               if (rows.length >= MAX_ROWS_PER_RUN) return errResult(`row cap reached (${MAX_ROWS_PER_RUN}) — stop calling this tool`)
               const ident = identityFromUrl(args.url)
               if (!ident) return errResult('url must be a Slack permalink, a Linear issue URL or key, a GitHub PR/issue URL, or a web page URL')
-              if (rows.some((r) => r.id === ident.id)) return okResult('ok: already recorded')
+              if (rows.some((r) => r.id === ident.id)) return okResult(`already filed and open: ${ident.id}. Do not count it as new; move on to the next candidate.`)
+              const existing = await rt.store.items.get(ident.id).catch(() => null)
               rows.push({
                 id: ident.id,
                 title: args.title,
@@ -2055,36 +2314,22 @@ async function runWatchPreview(rt: WorkspaceRuntime, pv: WatchPreview, spec: Pre
                 lastActivity: safeWhen(args.lastActivity, Date.now()),
                 why: args.why,
               })
-              return okResult('ok: recorded')
+              return okResult(existing ? `already filed, ${existing.status}: ${ident.id}` : `new: filed ${ident.id}`)
             }),
           ],
   })
   const abort = new AbortController()
-  const timer = setTimeout(() => abort.abort(), WATCH_TIMEOUT_MS)
+  let timer: NodeJS.Timeout | undefined
   let tokens = 0
   let costUsd: number | undefined
   let resultText = ''
   let sawResult = false
   try {
-    const q = query({
-      prompt: composeRunPrompt({
-        instruction: spec.instruction,
-        connectors: spec.connectors,
-        project: project ? { name: project.name, path: project.path } : null,
-        output: spec.output,
-      }),
-      options: {
-        cwd,
-        systemPrompt: { type: 'preset', preset: 'claude_code' },
-        settingSources: ['user'],
-        includePartialMessages: true,
-        allowedTools: runAllowedTools(spec.connectors, project !== null, spec.output),
-        ...(spec.model ? { model: spec.model } : {}),
-        mcpServers: { triage: collector },
-        abortController: abort,
-        ...(rt.env ? { env: rt.env } : {}),
-      },
-    })
+    const project = await watchProject(rt, spec.projectId)
+    const limits = await watchLimits(rt, {})
+    timer = setTimeout(() => abort.abort(), limits.timeoutMs)
+    const { prompt, options } = await watchQuery(rt, { ...spec, project }, collector, abort, { ...limits, includePartialMessages: true })
+    const q = query({ prompt, options })
     for await (const msg of q) {
       const m = msg as unknown as SdkMessage & { result?: string; usage?: Record<string, unknown>; total_cost_usd?: unknown }
       emit({ kind: 'sdk', message: m as SdkMessage }, m.type !== 'stream_event')
@@ -2095,9 +2340,7 @@ async function runWatchPreview(rt: WorkspaceRuntime, pv: WatchPreview, spec: Pre
         if (typeof m.total_cost_usd === 'number') costUsd = m.total_cost_usd
       }
     }
-    if (resultText.includes('no-connector-tools')) {
-      throw new Error(`no connector tools — connect ${spec.connectors.join(', ')} for Claude at claude.ai/settings/connectors`)
-    }
+    if (resultText.includes('no-connector-tools')) throw new Error(noConnectorError(spec.tools))
     if (!sawResult) throw new Error(abort.signal.aborted ? 'the preview timed out' : 'the preview ended without a result')
     pv.result = { output: spec.output, rows, ...(digest ? { digest } : {}), tokens, ...(costUsd != null ? { costUsd } : {}), durationMs: Date.now() - pv.startedAt }
     pv.status = 'ready'
@@ -2108,34 +2351,53 @@ async function runWatchPreview(rt: WorkspaceRuntime, pv: WatchPreview, spec: Pre
     emit({ kind: 'error', message: pv.error })
     log('warn', 'watch', `preview failed: ${pv.error}`, { previewId: pv.id, workspace: rt.meta.id })
   } finally {
-    clearTimeout(timer)
+    if (timer) clearTimeout(timer)
     setTimeout(() => rt.previews.delete(pv.id), PREVIEW_TTL_MS).unref()
   }
 }
 
+/** A macOS notification about a finished run, per the watch's notify setting. */
+function notifyRun(rt: WorkspaceRuntime, w: Watch, status: WatchRunStatus, detail?: string): void {
+  if (process.platform !== 'darwin' || w.notify === 'never') return
+  const failed = status === 'failed' || status === 'timeout'
+  if (w.notify === 'on_failure' && !failed) return
+  if (!failed && status !== 'ok') return
+  const q = (s: string) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  const text = failed ? `${w.title} ${status === 'timeout' ? 'timed out' : 'failed'}${detail ? `: ${detail.slice(0, 120)}` : ''}` : `${w.title}: ${detail ?? 'ok'}`
+  execFile('osascript', ['-e', `display notification ${q(text)} with title ${q('triage')}`], (err) => {
+    if (err) log('warn', 'watch', `notification failed: ${err.message}`, { watchId: w.id, workspace: rt.meta.id })
+  })
+}
+
 /**
  * Run one watch to completion as a headless session. Persists the transcript to
- * the event log (so it is observable like any session), advances the cursor only
- * on success, and records the run's status/tokens/matches on the watch row.
+ * the event log (so it is observable like any session) and records the run's
+ * receipt on the watch row and its own session row. Stateless (watch-spec.md,
+ * item 4): nothing from this run feeds the next one's prompt.
  */
-async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
-  const watch = await rt.store.watches.get(watchId)
+async function runWatch(rt: WorkspaceRuntime, run: QueuedRun, startedMs: number): Promise<void> {
+  const watch = await rt.store.watches.get(run.id)
   if (!watch) return
-  const startedMs = Date.now()
-  const startedIso = new Date(startedMs).toISOString()
-  // An optional project gives the run a folder to read code in. A project that
-  // has since been removed degrades to no project — the run still happens.
-  const project = watch.projectId ? (await rt.store.projects.list()).find((p) => p.id === watch.projectId) ?? null : null
-  const cwd = project?.path ?? os.homedir()
+  const projectRow = (await rt.store.projects.list()).find((p) => p.id === watch.projectId) ?? null
+  if (!projectRow) {
+    // The project went away: pause with a config error, never fall back to another folder.
+    await rt.store.watches.patchState(watch.id, { enabled: false, configError: 'project removed — pick another project for this watch' })
+    await rt.store.watches.recordRun(watch.id, { lastRunAt: Date.now(), lastRunTokens: 0, lastRunMatches: 0, status: 'skipped', trigger: run.trigger, error: 'skipped: the watch has no project' })
+    log('warn', 'watch', `paused ${watch.title}: its project was removed`, { watchId: watch.id, workspace: rt.meta.id })
+    return
+  }
   const session = await rt.store.sessions.create({
     id: randomUUID(),
     title: `Watch · ${watch.title}`,
-    cwd,
+    cwd: projectRow.path,
     kind: 'watch-run',
     watchId: watch.id,
+    runTrigger: run.trigger,
   })
   rt.rows.set(session.id, session)
-  log('info', 'watch', `run started: ${watch.title}`, { watchId: watch.id, runId: session.id, connectors: watch.connectors, project: project?.name, model: watch.model, cursor: watch.cursor, workspace: rt.meta.id })
+  await rt.store.watches.markRunStarted(watch.id, { startedAt: startedMs, trigger: run.trigger, sessionId: session.id })
+  broadcastSessionList(rt)
+  log('info', 'watch', `run started: ${watch.title} (${run.trigger})`, { watchId: watch.id, runId: session.id, tools: watch.tools.map(grantLabel), project: projectRow.name, model: watch.model, workspace: rt.meta.id })
 
   let seq = 0
   const emit = (event: SessionEvent, persist = true) => {
@@ -2143,46 +2405,43 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
       seq += 1
       rt.store.events.append(session.id, seq, event).catch(() => {})
     }
-    broadcast(rt, { type: 'session_event', sessionId: session.id, event, at: Date.now() })
+    broadcast(rt, { type: 'session_event', sessionId: session.id, event })
   }
 
   let matches = 0
+  let newCount = 0
   let tokens = 0
   let costUsd: number | undefined
   let status: WatchRunStatus = 'failed'
   let error: string | undefined
+  let timedOut = false
   const abort = new AbortController()
-  const timer = setTimeout(() => abort.abort(), WATCH_TIMEOUT_MS)
-  const scanMcp = makeScanMcp(rt, watch, session.id, () => {
+  let timer: NodeJS.Timeout | undefined
+  const scanMcp = makeScanMcp(rt, watch, session.id, (outcome) => {
     matches += 1
+    if (outcome === 'inserted') newCount += 1
   })
 
   try {
-    const q = query({
-      prompt: composeRunPrompt({
-        instruction: watch.instruction,
-        connectors: watch.connectors,
-        cursor: watch.cursor,
-        scope: watch.scope,
-        project: project ? { name: project.name, path: project.path } : null,
-        output: watch.output,
-      }),
-      options: {
-        cwd,
-        systemPrompt: { type: 'preset', preset: 'claude_code' },
-        settingSources: ['user'],
-        allowedTools: runAllowedTools(watch.connectors, project !== null, watch.output),
-        // The watch's own model when it pinned one; otherwise Claude Code's default.
-        ...(watch.model ? { model: watch.model } : {}),
-        mcpServers: { triage: scanMcp },
-        abortController: abort,
-        ...(rt.env ? { env: rt.env } : {}),
-      },
-    })
+    const project = await watchProject(rt, watch.projectId)
+    const limits = await watchLimits(rt, watch)
+    timer = setTimeout(() => {
+      timedOut = true
+      abort.abort()
+    }, limits.timeoutMs)
+    const { prompt, options } = await watchQuery(
+      rt,
+      { instruction: watch.instruction, tools: watch.tools, project, model: watch.model, output: watch.output, schedule: scheduleOf(watch), scope: watch.scope },
+      scanMcp,
+      abort,
+      limits,
+    )
+    const q = query({ prompt, options })
     let sawResult = false
     let resultText = ''
+    let resultSubtype = ''
     for await (const msg of q) {
-      const m = msg as unknown as SdkMessage & { result?: string; usage?: Record<string, unknown>; total_cost_usd?: unknown }
+      const m = msg as unknown as SdkMessage & { result?: string; subtype?: string; usage?: Record<string, unknown>; total_cost_usd?: unknown }
       if (m.type === 'system' && m.subtype === 'init' && m.session_id) {
         session.sdkSessionId = m.session_id
         rt.store.sessions.setSdkSessionId(session.id, m.session_id).catch(() => {})
@@ -2191,44 +2450,51 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
       if (m.type === 'result') {
         sawResult = true
         resultText = typeof m.result === 'string' ? m.result : ''
+        resultSubtype = typeof m.subtype === 'string' ? m.subtype : ''
         tokens = sumTokens(m.usage)
         if (typeof m.total_cost_usd === 'number') costUsd = m.total_cost_usd
       }
     }
-    if (resultText.includes('no-connector-tools') || resultText.includes('no-slack-tools')) {
-      throw new Error(`no connector tools — connect ${watch.connectors.join(', ')} for Claude at claude.ai/settings/connectors`)
-    }
+    if (resultSubtype === 'error_max_budget_usd') throw new Error(`budget cap reached ($${limits.maxBudgetUsd?.toFixed(2)})`)
+    if (resultText.includes('no-connector-tools') || resultText.includes('no-slack-tools')) throw new Error(noConnectorError(watch.tools))
     if (!sawResult) throw new Error('scan ended without a result')
     status = 'ok'
   } catch (err) {
-    error = err instanceof Error ? err.message : String(err)
+    if (timedOut) {
+      status = 'timeout'
+      error = `timed out after ${humanSpan((await watchLimits(rt, watch)).timeoutMs)}`
+    } else {
+      error = err instanceof Error ? err.message : String(err)
+    }
     emit({ kind: 'error', message: error })
   } finally {
-    clearTimeout(timer)
+    if (timer) clearTimeout(timer)
     await rt.store.watches.recordRun(watch.id, {
-      // cursor advances ONLY on success — a failed/timed-out run must not skip its window
-      ...(status === 'ok' ? { cursor: startedIso } : {}),
       lastRunAt: Date.now(),
       lastRunTokens: tokens,
       lastRunMatches: matches,
+      lastRunNew: newCount,
       status,
+      trigger: run.trigger,
       sessionId: session.id,
       error,
     })
     // the run's own receipt, on its session row — powers the Activity view
     session.runStatus = status
     session.runMatches = matches
+    session.runNew = newCount
     session.runTokens = tokens
     session.runCostUsd = costUsd
     session.runError = error
     session.updatedAt = Date.now()
-    await rt.store.sessions.recordWatchRun(session.id, { status, matches, tokens, costUsd, error })
+    await rt.store.sessions.recordWatchRun(session.id, { status, matches, newCount, tokens, costUsd, error })
     log(
       status === 'ok' ? 'info' : 'error',
       'watch',
-      `run ${status}: ${watch.title}${status === 'ok' ? ` — ${matches} filed, ${Math.round(tokens / 1000)}k tok${costUsd != null ? `, $${costUsd.toFixed(2)}` : ''}` : ''}${error ? ` — ${error}` : ''}`,
-      { watchId: watch.id, runId: session.id, status, matches, tokens, durationMs: Date.now() - startedMs, workspace: rt.meta.id, ...(error ? { error } : {}) },
+      `run ${status}: ${watch.title}${status === 'ok' ? ` — ${newCount} new, ${matches - newCount} already filed, ${Math.round(tokens / 1000)}k tok${costUsd != null ? `, $${costUsd.toFixed(2)}` : ''}` : ''}${error ? ` — ${error}` : ''}`,
+      { watchId: watch.id, runId: session.id, status, trigger: run.trigger, matches, newCount, tokens, durationMs: Date.now() - startedMs, workspace: rt.meta.id, ...(error ? { error } : {}) },
     )
+    notifyRun(rt, watch, status, status === 'ok' ? `${newCount} new` : error)
     if (status === 'ok') {
       rt.inboxCache = null
       void syncInbox(rt)
@@ -2238,17 +2504,41 @@ async function runWatch(rt: WorkspaceRuntime, watchId: string): Promise<void> {
 }
 
 /**
+ * Boot: a watch run still without a final status died with the previous
+ * process. Mark it interrupted — on its session and, when it was the watch's
+ * latest run, on the watch — instead of leaving it "running" forever. No
+ * retry: the next run's look-back window overlaps the lost one.
+ */
+async function markInterruptedRuns(rt: WorkspaceRuntime): Promise<void> {
+  const error = 'interrupted: triage stopped during the run'
+  for (const row of rt.rows.values()) {
+    if (row.kind !== 'watch-run' || row.runStatus) continue
+    const events = await rt.store.events.read(row.id)
+    const seq = events.length ? events[events.length - 1].seq : 0
+    await rt.store.events.append(row.id, seq + 1, { kind: 'error', message: error })
+    await rt.store.sessions.recordWatchRun(row.id, { status: 'interrupted', matches: row.runMatches ?? 0, tokens: row.runTokens ?? 0, error })
+    row.runStatus = 'interrupted'
+    row.runError = error
+    const w = row.watchId ? await rt.store.watches.get(row.watchId) : null
+    if (w && w.lastRunSessionId === row.id) {
+      await rt.store.watches.recordRun(w.id, { lastRunAt: row.updatedAt, lastRunTokens: 0, lastRunMatches: 0, status: 'interrupted', sessionId: row.id, error })
+    }
+    log('warn', 'watch', `marked interrupted: ${row.title}`, { runId: row.id, watchId: row.watchId, workspace: rt.meta.id })
+  }
+}
+
+/**
  * Pre-installed watch templates (.docs/watches-v2.md): the old built-in Slack
  * rules, shipped as data and seeded as editable copies on first run. A user can
  * disable, edit, or duplicate them; a `templateId` marks the origin.
  */
 const WATCH_TEMPLATES: Array<
-  Pick<Watch, 'title' | 'instruction' | 'schedule' | 'cadence' | 'createsItems' | 'connectors'> & { templateId: string }
+  Pick<Watch, 'title' | 'instruction' | 'schedule' | 'cadence' | 'createsItems' | 'tools'> & { templateId: string }
 > = [
   {
     templateId: 'unread-dms',
     title: 'Unread DMs',
-    connectors: ['slack'],
+    tools: [presetGrant('claude.ai Slack')!],
     instruction: 'Look through my unread Slack direct messages. File each unanswered one that asks something of me.',
     schedule: '0 * * * *',
     cadence: 'hourly',
@@ -2257,13 +2547,36 @@ const WATCH_TEMPLATES: Array<
   {
     templateId: 'mentions',
     title: 'Mentions',
-    connectors: ['slack'],
+    tools: [presetGrant('claude.ai Slack')!],
     instruction: 'Find Slack messages where I am mentioned or tagged and my reply is still awaited. File each one.',
     schedule: '0 * * * *',
     cadence: 'hourly',
     createsItems: true,
   },
 ]
+
+const NEEDS_PROJECT = 'pick the project this watch runs in'
+
+/**
+ * Every watch runs in a project folder (watch-spec.md, item 2) and there is no
+ * fallback folder. A watch without one — saved before the rule, its project
+ * since removed, or left in the retired scratch project — pauses with a config
+ * error until the user picks a project. It never runs somewhere else.
+ */
+async function migrateWatchProjects(rt: WorkspaceRuntime): Promise<void> {
+  // Retire the scratch projects a dev build created, and their folders if still empty.
+  for (const p of await rt.store.projects.retireBuiltin()) {
+    await rmdir(p.path).catch(() => {}) // only succeeds on an empty folder
+    log('info', 'watch', `removed the retired scratch project ${p.path}`, { workspace: rt.meta.id })
+  }
+  const projects = await rt.store.projects.list()
+  for (const w of await rt.store.watches.list()) {
+    if (w.projectId && projects.some((p) => p.id === w.projectId)) continue
+    if (w.configError && !w.enabled) continue
+    await rt.store.watches.patchState(w.id, { projectId: null, enabled: false, configError: NEEDS_PROJECT })
+    log('info', 'watch', `paused "${w.title}": it has no project — pick one to run it`, { watchId: w.id, workspace: rt.meta.id })
+  }
+}
 
 /**
  * Install any built-in template the user has never been offered — tracked per
@@ -2289,13 +2602,18 @@ async function seedWatchTemplates(rt: WorkspaceRuntime): Promise<void> {
         source: 'slack',
         title: t.title,
         scope: '',
-        connectors: t.connectors,
+        tools: t.tools,
+        // Templates can't guess a folder: they arrive paused, asking for a project.
+        projectId: '',
+        configError: NEEDS_PROJECT,
         output: 'items',
+        notify: 'on_failure',
+        consecutiveFailures: 0,
         instruction: t.instruction,
         schedule: t.schedule,
         cadence: t.cadence,
         createsItems: t.createsItems,
-        enabled: true,
+        enabled: false,
         templateId: t.templateId,
         createdAt: now,
         updatedAt: now,
@@ -2359,19 +2677,62 @@ const CLAUDE_AI_PREFIX = 'claude.ai '
 
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms))
 
-function probeConnectors(rt: WorkspaceRuntime): Promise<ConnectorProbe> {
+const SCOPES: ConnectorScope[] = ['claudeai', 'user', 'local', 'project', 'plugin', 'managed']
+
+/** One server as the SDK reports it → our Connector, tools and all (watch-spec.md, item 1). */
+function toConnector(srv: McpServerStatus, scopeOverride?: ConnectorScope): Connector {
+  const claudeAi = srv.name.startsWith(CLAUDE_AI_PREFIX)
+  const scope: ConnectorScope =
+    scopeOverride ?? (claudeAi ? 'claudeai' : SCOPES.includes(srv.scope as ConnectorScope) ? (srv.scope as ConnectorScope) : 'unknown')
+  return {
+    name: claudeAi ? srv.name.slice(CLAUDE_AI_PREFIX.length) : srv.name,
+    server: srv.name,
+    status: srv.status,
+    source: claudeAi ? 'claude.ai' : 'local',
+    scope,
+    ...(srv.error ? { error: srv.error } : {}),
+    tools: (srv.tools ?? []).map((t) => {
+      const full = t.name.startsWith('mcp__') ? t.name : mcpToolName(srv.name, t.name)
+      return {
+        name: full.slice(full.lastIndexOf('__') + 2),
+        fullName: full,
+        ...(t.description ? { description: t.description.slice(0, 400) } : {}),
+        ...(t.annotations?.readOnly !== undefined ? { readOnly: t.annotations.readOnly } : {}),
+        ...(t.annotations?.destructive !== undefined ? { destructive: t.annotations.destructive } : {}),
+      }
+    }),
+  }
+}
+
+/**
+ * Probe which MCP servers connect. With no folder: the user-level view
+ * (Settings), from the home folder. With a folder: exactly what a watch run in
+ * that folder loads — the user's servers plus the folder's project and local
+ * servers, passed explicitly (never by loading the project's settings/hooks).
+ */
+function probeConnectors(rt: WorkspaceRuntime, cwd?: string): Promise<ConnectorProbe> {
   // Concurrent requests share one probe — a probe is a whole subprocess.
-  if (rt.connectorInFlight) return rt.connectorInFlight
-  rt.connectorInFlight = (async () => {
+  const inFlight = cwd ? rt.folderProbeInFlight.get(cwd) : rt.connectorInFlight
+  if (inFlight) return inFlight
+  const run = (async () => {
     const input = new AsyncQueue<SDKUserMessage>()
+    const folder = cwd ? await folderMcpServers(rt, cwd) : null
     const q = query({
       prompt: input,
-      options: {
-        cwd: os.homedir(), // user-level view; no project .mcp.json in the way
-        systemPrompt: { type: 'preset', preset: 'claude_code' },
-        settingSources: ['user', 'project', 'local'],
-        ...(rt.env ? { env: rt.env } : {}),
-      },
+      options: cwd
+        ? {
+            cwd,
+            systemPrompt: { type: 'preset', preset: 'claude_code' },
+            settingSources: ['user'],
+            mcpServers: folder!.servers,
+            ...(rt.env ? { env: rt.env } : {}),
+          }
+        : {
+            cwd: os.homedir(), // user-level view; no project .mcp.json in the way
+            systemPrompt: { type: 'preset', preset: 'claude_code' },
+            settingSources: ['user', 'project', 'local'],
+            ...(rt.env ? { env: rt.env } : {}),
+          },
     })
     try {
       // Servers connect asynchronously; poll until none are pending (or the
@@ -2383,22 +2744,23 @@ function probeConnectors(rt: WorkspaceRuntime): Promise<ConnectorProbe> {
         statuses = await q.mcpServerStatus()
       }
       const connectors = statuses
-        .map((srv): Connector =>
-          srv.name.startsWith(CLAUDE_AI_PREFIX)
-            ? { name: srv.name.slice(CLAUDE_AI_PREFIX.length), status: srv.status, source: 'claude.ai' }
-            : { name: srv.name, status: srv.status, source: 'local' },
-        )
+        .map((srv) => toConnector(srv, folder?.scopes.get(srv.name)))
         .sort((a, b) => a.name.localeCompare(b.name))
-      rt.connectorCache = { probedAt: Date.now(), connectors }
-      log('info', 'connectors', `probed: ${connectors.length} server(s), ${connectors.filter((c) => c.status === 'connected').length} connected`, { workspace: rt.meta.id })
-      return rt.connectorCache
+      const probe: ConnectorProbe = { probedAt: Date.now(), connectors }
+      if (cwd) rt.folderProbes.set(cwd, probe)
+      else rt.connectorCache = probe
+      log('info', 'connectors', `probed${cwd ? ` ${cwd}` : ''}: ${connectors.length} server(s), ${connectors.filter((c) => c.status === 'connected').length} connected`, { workspace: rt.meta.id })
+      return probe
     } finally {
       input.close()
       void q.return(undefined).catch(() => {}) // dispose the subprocess
-      rt.connectorInFlight = null
+      if (cwd) rt.folderProbeInFlight.delete(cwd)
+      else rt.connectorInFlight = null
     }
   })()
-  return rt.connectorInFlight
+  if (cwd) rt.folderProbeInFlight.set(cwd, run)
+  else rt.connectorInFlight = run
+  return run
 }
 
 // ---------------------------------------------------------------------------
@@ -2629,6 +2991,8 @@ function workspaceInfo(rt: WorkspaceRuntime) {
 /** Bring a runtime up: sessions, seeds, cached snapshot, background probes. */
 async function initRuntime(rt: WorkspaceRuntime): Promise<void> {
   await loadSessions(rt)
+  await markInterruptedRuns(rt)
+  await migrateWatchProjects(rt)
   // Watches are off by default in 0.7 (.docs/next-version.md); seeding follows the switch.
   if (await watchesEnabled(rt)) await seedWatchTemplates(rt)
   await bootBriefs(rt)
@@ -2770,7 +3134,9 @@ const ANY_ITEM_ID_RE = /^(github|slack|linear|web|manual):\S+$/
 /** Item saves carry images inline: the per-image cap, base64-inflated, times the per-item cap. */
 const MAX_ITEM_BODY_BYTES = Math.ceil(MAX_IMAGES_PER_ITEM * MAX_IMAGE_BYTES * 1.4) + 100_000
 
-type WatchPatch = Partial<NewWatch> & { enabled?: boolean }
+type WatchPatch = Partial<NewWatch> & { enabled?: boolean; runOnceNow?: boolean }
+
+const LEGACY_CONNECTORS: LegacyConnector[] = ['web', 'slack', 'linear', 'github']
 
 function watchPatchFrom(raw: unknown): { patch: WatchPatch } | { error: string } {
   if (typeof raw !== 'object' || raw === null) return { error: 'body must be a JSON object' }
@@ -2785,15 +3151,45 @@ function watchPatchFrom(raw: unknown): { patch: WatchPatch } | { error: string }
     if (typeof r.scope !== 'string' || (r.scope.trim() && !/^[#@]\S+$/.test(r.scope.trim()))) return { error: 'scope must be "#channel", "@dm", or empty' }
     patch.scope = r.scope.trim()
   }
-  if (r.connectors !== undefined) {
-    if (!Array.isArray(r.connectors) || r.connectors.length === 0 || !r.connectors.every((c) => WATCH_CONNECTORS.includes(c as WatchConnector))) {
-      return { error: `connectors must be a non-empty list of: ${WATCH_CONNECTORS.join(', ')}` }
+  if (r.tools !== undefined) {
+    const parsed = grantsFrom(r.tools)
+    if ('error' in parsed) return { error: parsed.error }
+    patch.tools = parsed.grants
+  } else if (r.connectors !== undefined) {
+    // legacy clients: the four fixed integrations → grants
+    if (!Array.isArray(r.connectors) || r.connectors.length === 0 || !r.connectors.every((c) => LEGACY_CONNECTORS.includes(c as LegacyConnector))) {
+      return { error: `connectors must be a non-empty list of: ${LEGACY_CONNECTORS.join(', ')}` }
     }
-    patch.connectors = [...new Set(r.connectors as WatchConnector[])]
+    patch.tools = grantsFromLegacy([...new Set(r.connectors as LegacyConnector[])])
   }
   if (r.projectId !== undefined) {
-    if (r.projectId !== null && typeof r.projectId !== 'string') return { error: 'projectId must be a string or null' }
-    patch.projectId = r.projectId ? r.projectId : undefined
+    // required: every watch runs in a project folder (watch-spec.md, item 2)
+    if (typeof r.projectId !== 'string' || !r.projectId) return { error: 'projectId is required — pick the project this watch runs in' }
+    patch.projectId = r.projectId
+  }
+  if (r.catchUpWindow !== undefined) {
+    if (r.catchUpWindow !== null && !isCatchUpSpec(r.catchUpWindow)) return { error: 'catchUpWindow must be "never", "unlimited", or a duration like "6h", or null' }
+    patch.catchUpWindow = r.catchUpWindow as string | null
+  }
+  if (r.timeoutMs !== undefined) {
+    const t = r.timeoutMs
+    if (t !== null && (typeof t !== 'number' || !Number.isInteger(t) || t < 30_000 || t > MAX_WATCH_TIMEOUT_MS)) {
+      return { error: `timeoutMs must be null or whole milliseconds from 30000 to ${MAX_WATCH_TIMEOUT_MS}` }
+    }
+    patch.timeoutMs = t as number | null
+  }
+  if (r.maxBudgetUsd !== undefined) {
+    const b = r.maxBudgetUsd
+    if (b !== null && (typeof b !== 'number' || !Number.isFinite(b) || b <= 0 || b > 100)) return { error: 'maxBudgetUsd must be null or dollars from 0.01 to 100' }
+    patch.maxBudgetUsd = b as number | null
+  }
+  if (r.notify !== undefined) {
+    if (!WATCH_NOTIFY.includes(r.notify as WatchNotify)) return { error: `notify must be one of: ${WATCH_NOTIFY.join(', ')}` }
+    patch.notify = r.notify as WatchNotify
+  }
+  if (r.runOnceNow !== undefined) {
+    if (typeof r.runOnceNow !== 'boolean') return { error: 'runOnceNow must be a boolean' }
+    patch.runOnceNow = r.runOnceNow
   }
   if (r.output !== undefined) {
     if (!WATCH_OUTPUTS.includes(r.output as WatchOutput)) return { error: `output must be one of: ${WATCH_OUTPUTS.join(', ')}` }
@@ -3289,8 +3685,12 @@ async function watchesEnabled(rt: WorkspaceRuntime): Promise<boolean> {
 async function readSettings(rt: WorkspaceRuntime): Promise<WorkspaceSettings> {
   const cap = await rt.store.config.get<number>(BRIEFS_CAP_KEY)
   const model = await rt.store.config.get<string>(BRIEFS_MODEL_KEY)
+  const timeout = await rt.store.config.get<number>(WATCH_TIMEOUT_KEY)
+  const budget = await rt.store.config.get<number>(WATCH_BUDGET_KEY)
   return {
     watchesEnabled: await watchesEnabled(rt),
+    watchTimeoutMs: typeof timeout === 'number' && timeout > 0 ? timeout : DEFAULT_WATCH_TIMEOUT_MS,
+    watchBudgetUsd: typeof budget === 'number' && budget > 0 ? budget : null,
     briefsDailyCap: typeof cap === 'number' && cap > 0 ? cap : DEFAULT_BRIEF_CAP,
     briefsDefaultModel: typeof model === 'string' && model ? model : null,
   }
@@ -3303,6 +3703,16 @@ async function writeSettings(rt: WorkspaceRuntime, raw: unknown): Promise<Worksp
     await rt.store.config.set(WATCHES_ENABLED_KEY, r.watchesEnabled)
     if (r.watchesEnabled) await seedWatchTemplates(rt)
     log('info', 'watch', `watches ${r.watchesEnabled ? 'enabled' : 'disabled'}`, { workspace: rt.meta.id })
+  }
+  if (r.watchTimeoutMs !== undefined) {
+    const t = r.watchTimeoutMs
+    if (typeof t !== 'number' || !Number.isInteger(t) || t < 30_000 || t > MAX_WATCH_TIMEOUT_MS) throw new Error(`watchTimeoutMs must be whole milliseconds from 30000 to ${MAX_WATCH_TIMEOUT_MS}`)
+    await rt.store.config.set(WATCH_TIMEOUT_KEY, t)
+  }
+  if (r.watchBudgetUsd !== undefined) {
+    const b = r.watchBudgetUsd
+    if (b !== null && (typeof b !== 'number' || !Number.isFinite(b) || b <= 0 || b > 100)) throw new Error('watchBudgetUsd must be null or dollars from 0.01 to 100')
+    await rt.store.config.set(WATCH_BUDGET_KEY, b)
   }
   if (r.briefsDailyCap !== undefined) {
     const n = r.briefsDailyCap
@@ -5159,7 +5569,15 @@ const server = http.createServer(async (req, res) => {
         await rt.store.projects.create({ id: randomUUID(), name, repo, path: resolved })
       } else if (req.method === 'DELETE') {
         const id = url.searchParams.get('id')
-        if (id) await rt.store.projects.remove(id)
+        if (id) {
+          await rt.store.projects.remove(id)
+          // Its watches pause with a visible reason — never run somewhere else (watch-spec.md, item 2).
+          for (const w of await rt.store.watches.list()) {
+            if (w.projectId !== id) continue
+            await rt.store.watches.patchState(w.id, { enabled: false, configError: 'project removed — pick another project for this watch' })
+            log('info', 'watch', `paused "${w.title}": its project was removed`, { watchId: w.id, workspace: rt.meta.id })
+          }
+        }
       }
       body = { ok: true, projects: await rt.store.projects.list() }
     } catch (err) {
@@ -5188,12 +5606,11 @@ const server = http.createServer(async (req, res) => {
         const parsed = watchPatchFrom(await readJsonBody(req))
         if ('error' in parsed) throw new Error(parsed.error)
         const p = parsed.patch
-        if (!p.title || !p.instruction || !p.connectors?.length) {
-          throw new Error('a watch needs a title, instructions, and at least one connector')
+        if (!p.title || !p.instruction || !p.tools?.length) {
+          throw new Error('a watch needs a title, instructions, and at least one integration')
         }
-        if (p.projectId && !(await rt.store.projects.list()).some((pr) => pr.id === p.projectId)) {
-          throw new Error('unknown project')
-        }
+        if (!p.projectId) throw new Error('pick the project this watch runs in')
+        if (!(await rt.store.projects.list()).some((pr) => pr.id === p.projectId)) throw new Error('unknown project')
         // Schedule is the source of truth; accept a legacy cadence as a fallback.
         const schedule = p.schedule ?? (p.cadence ? cronFromCadence(p.cadence, p.windowStart, p.windowDay) : '0 9 * * *')
         const now = Date.now()
@@ -5202,10 +5619,17 @@ const server = http.createServer(async (req, res) => {
           source: 'slack',
           title: p.title,
           scope: p.scope ?? '',
-          connectors: p.connectors,
+          tools: p.tools,
           projectId: p.projectId,
           model: p.model,
           output: p.output ?? 'items',
+          ...(p.catchUpWindow ? { catchUpWindow: p.catchUpWindow } : {}),
+          ...(p.timeoutMs != null ? { timeoutMs: p.timeoutMs } : {}),
+          ...(p.maxBudgetUsd != null ? { maxBudgetUsd: p.maxBudgetUsd } : {}),
+          notify: p.notify ?? 'on_failure',
+          consecutiveFailures: 0,
+          // "Run once now" off: the first run waits for the next slot.
+          ...(p.runOnceNow === false ? { lastRunStartedAt: now } : {}),
           instruction: p.instruction,
           schedule,
           cadence: p.cadence ?? 'daily',
@@ -5216,8 +5640,8 @@ const server = http.createServer(async (req, res) => {
           createdAt: now,
           updatedAt: now,
         })
-        log('info', 'watch', `created: ${p.title}`, { connectors: p.connectors, schedule, workspace: rt.meta.id })
-        // active on the next scheduler tick (never run → due immediately)
+        log('info', 'watch', `created: ${p.title}`, { tools: p.tools.map(grantLabel), schedule, workspace: rt.meta.id })
+        // active on the next scheduler tick (never run → due immediately, unless runOnceNow was off)
       } else if (req.method === 'PUT') {
         const id = url.searchParams.get('id')
         const existing = id ? await rt.store.watches.get(id) : null
@@ -5227,7 +5651,13 @@ const server = http.createServer(async (req, res) => {
         if (parsed.patch.projectId && !(await rt.store.projects.list()).some((pr) => pr.id === parsed.patch.projectId)) {
           throw new Error('unknown project')
         }
-        await rt.store.watches.update(id, parsed.patch)
+        const { runOnceNow: _ignored, ...patch } = parsed.patch
+        await rt.store.watches.update(id, patch)
+        // A valid project fixes a "project removed" config error.
+        if (patch.projectId && existing.configError) await rt.store.watches.patchState(id, { configError: null })
+        // Re-enabling waits for the next slot: no burst of catch-up runs.
+        if (patch.enabled === true && !existing.enabled) await rt.store.watches.patchState(id, { lastRunStartedAt: Date.now() })
+        if (patch.enabled === true && existing.configError && !patch.projectId) throw new Error(existing.configError)
         log('info', 'watch', `updated: ${parsed.patch.title ?? existing.title}`, { watchId: id, workspace: rt.meta.id })
       } else if (req.method === 'DELETE') {
         const id = url.searchParams.get('id')
@@ -5264,13 +5694,15 @@ const server = http.createServer(async (req, res) => {
       const parsed = watchPatchFrom(await readJsonBody(req))
       if ('error' in parsed) throw new Error(parsed.error)
       const p = parsed.patch
-      if (!p.instruction || !p.connectors?.length) throw new Error('a preview needs instructions and at least one integration')
+      if (!p.instruction || !p.tools?.length) throw new Error('a preview needs instructions and at least one integration')
+      if (!p.projectId) throw new Error('pick the project this watch runs in')
       const previewId = startWatchPreview(rt, {
         instruction: p.instruction,
-        connectors: p.connectors,
+        tools: p.tools,
         projectId: p.projectId,
         model: p.model,
         output: p.output ?? 'items',
+        schedule: p.schedule ?? '0 9 * * *',
       })
       body = { ok: true, previewId }
     } catch (err) {
@@ -5388,7 +5820,9 @@ const server = http.createServer(async (req, res) => {
           ...(r.watchId ? { watchId: r.watchId } : {}),
           watchTitle: (r.watchId && titles.get(r.watchId)) || r.title.replace(/^Watch · /, ''),
           status: r.runStatus,
+          ...(r.runTrigger ? { trigger: r.runTrigger } : {}),
           matches: r.runMatches,
+          ...(r.runNew != null ? { newCount: r.runNew } : {}),
           tokens: r.runTokens,
           ...(r.runCostUsd != null ? { costUsd: r.runCostUsd } : {}),
           startedAt: r.createdAt,
@@ -5438,7 +5872,7 @@ const server = http.createServer(async (req, res) => {
       const id = url.searchParams.get('id') ?? ''
       const w = await rt.store.watches.get(id)
       if (!w) throw new Error('unknown watch id')
-      if (slackConnected(rt) !== true) throw new Error('the claude.ai Slack connector is not connected')
+      if (w.configError) throw new Error(w.configError)
       enqueueWatch(rt, id)
       log('info', 'watch', `run requested: ${w.title}`, { watchId: id, workspace: rt.meta.id })
       body = { ok: true }
@@ -5561,7 +5995,11 @@ const server = http.createServer(async (req, res) => {
         rt.inboxCache = null
         void syncInbox(rt)
       })
-      void runDueWatches(rt, { force: true })
+      void (async () => {
+        // "Scan now": every enabled watch, now, as a manual run.
+        if (!(await watchesEnabled(rt))) return
+        for (const w of await rt.store.watches.list()) if (w.enabled && !w.configError) enqueueWatch(rt, w.id)
+      })()
       log('info', 'scheduler', 'manual scan requested (all watches + GitHub)', { workspace: rt.meta.id })
       body = { ok: true }
     } catch (err) {
@@ -5676,11 +6114,22 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/connectors') {
     let body: ConnectorsResponse
     try {
-      const probe =
-        rt.connectorCache && url.searchParams.get('refresh') !== '1'
-          ? rt.connectorCache
-          : await probeConnectors(rt)
-      body = { ok: true, probedAt: probe.probedAt, connectors: probe.connectors }
+      const refresh = url.searchParams.get('refresh') === '1'
+      const projectId = url.searchParams.get('projectId')
+      if (projectId) {
+        // The watch picker: what a run in this project's folder can load.
+        const project = (await rt.store.projects.list()).find((p) => p.id === projectId)
+        if (!project) throw new Error('unknown project')
+        const cached = rt.folderProbes.get(project.path)
+        const probe = cached && !refresh && Date.now() - cached.probedAt < FOLDER_PROBE_TTL_MS ? cached : await probeConnectors(rt, project.path)
+        // the run's own server shadows any user server named triage — never offer it
+        const connectors = probe.connectors.filter((c) => c.server !== RESERVED_SERVER)
+        body = { ok: true, probedAt: probe.probedAt, connectors, cwd: project.path, elsewhere: await localServersElsewhere(rt, project.path, connectors) }
+      } else {
+        const probe = rt.connectorCache && !refresh ? rt.connectorCache : await probeConnectors(rt)
+        if (refresh) rt.folderProbes.clear()
+        body = { ok: true, probedAt: probe.probedAt, connectors: probe.connectors }
+      }
     } catch (err) {
       body = { ok: false, error: String(err) }
     }

@@ -8,6 +8,9 @@
  *   triage restart     stop + start (picks up a newly installed version)
  *   triage status      is it running, where, since when
  *   triage logs        print the tail of ~/.triage/server.log
+ *   triage install     keep it running: a macOS LaunchAgent (restarts after reboot/crash)
+ *   triage uninstall   remove the LaunchAgent
+ *   triage doctor      check the environment watches depend on
  *
  * "Is triage running" is always decided by GET /api/health — a pid file can
  * lie after a crash or reboot; the health check cannot. The state file
@@ -34,6 +37,16 @@ import {
   readState,
   type Health,
 } from './state.js'
+import {
+  installLaunchAgent,
+  kickstartLaunchAgent,
+  launchAgentInstalled,
+  launchAgentLoaded,
+  launchAgentPlist,
+  loadLaunchAgent,
+  uninstallLaunchAgent,
+  unloadLaunchAgent,
+} from './launchd.js'
 
 // --- styling -----------------------------------------------------------------
 // Dependency-free ANSI. Colors turn off when piped or when NO_COLOR is set.
@@ -74,6 +87,11 @@ const HELP = `
     ${cyan('triage restart')}     stop, then start ${dim('(picks up a newly installed version)')}
     ${cyan('triage status')}      show whether the server is running and where
     ${cyan('triage logs')}        print the tail of the server log
+
+  ${bold('Keep it running')} ${dim('(macOS — watches only run while triage runs)')}
+    ${cyan('triage install')}     install a LaunchAgent: starts at login, restarts after a crash
+    ${cyan('triage uninstall')}   remove the LaunchAgent
+    ${cyan('triage doctor')}      check node, claude, gh, the agent, and the server
 
   ${bold('Workspaces')} ${dim('(.docs/workspaces.md)')}
     ${cyan('triage workspace list')}              list workspaces ${dim('(default marked *)')}
@@ -195,6 +213,21 @@ async function start(port: number) {
     return
   }
 
+  if (launchAgentInstalled()) {
+    // The LaunchAgent owns the process: load it and wait for health.
+    await loadLaunchAgent()
+    const deadline = Date.now() + 15_000
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 250))
+      const up = await checkHealth(port)
+      if (up && up !== 'other') {
+        printRunning(up, 'started (LaunchAgent)')
+        return
+      }
+    }
+    die(`the LaunchAgent did not bring triage up on port ${port} within 15s — check ${cyan('triage logs')}`)
+  }
+
   await mkdir(TRIAGE_DIR, { recursive: true })
   const logFd = openSync(LOG_FILE, 'a')
   // Re-invoke this same script with `serve`, detached, logging to the file.
@@ -249,6 +282,9 @@ async function stop(port: number): Promise<boolean> {
       `${yellow('!')} stopping ends ${bold(String(health.liveSessions))} live Claude session${health.liveSessions === 1 ? '' : 's'}`,
     )
   }
+  // KeepAlive would restart a killed server: unload the agent first. It loads
+  // again on `triage start` or at the next login.
+  if (launchAgentInstalled()) await unloadLaunchAgent()
   process.kill(health.pid, 'SIGTERM')
   const deadline = Date.now() + 10_000
   while (Date.now() < deadline) {
@@ -542,6 +578,75 @@ async function appCmd(sub: string | undefined) {
   die(`unknown app command "${sub}" — try ${cyan('triage app install')}`)
 }
 
+// --- keep it running (LaunchAgent) ---------------------------------------------
+
+async function install(port: number) {
+  if (process.platform !== 'darwin') die(`${cyan('triage install')} is macOS only — run ${cyan('triage serve')} under your own service manager`)
+  const script = fileURLToPath(import.meta.url)
+  if (script.endsWith('.ts')) {
+    die(`install from the published package, not a dev checkout (${tilde(script)}) — ${cyan('npm i -g usetriage')}, then ${cyan('triage install')}`)
+  }
+  // A background server started by hand would fight the agent for the port.
+  const health = await checkHealth(port)
+  if (health && health !== 'other' && !(await launchAgentLoaded())) await stop(port)
+  await mkdir(TRIAGE_DIR, { recursive: true })
+  const env: Record<string, string> = { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: os.homedir() }
+  for (const k of ['TRIAGE_HOME', 'TRIAGE_DB', 'CLAUDE_CONFIG_DIR', 'LANG']) if (process.env[k]) env[k] = process.env[k]!
+  await installLaunchAgent({ node: process.execPath, script, port, logFile: LOG_FILE, env })
+  const deadline = Date.now() + 15_000
+  let up: Health | null = null
+  while (Date.now() < deadline && !up) {
+    await new Promise((r) => setTimeout(r, 250))
+    const h = await checkHealth(port)
+    if (h && h !== 'other') up = h
+  }
+  box([
+    `${green('●')} ${bold('LaunchAgent installed')}`,
+    '',
+    row('agent', tilde(launchAgentPlist())),
+    row('node', tilde(process.execPath)),
+    row('server', up ? green(`up on :${port} (pid ${up.pid})`) : yellow(`not answering yet — check ${cyan('triage logs')}`)),
+    '',
+    dim('triage now starts at login and restarts if it crashes.'),
+    `${dim('Remove it with')} ${cyan('triage uninstall')}`,
+  ])
+}
+
+async function uninstall() {
+  if (process.platform !== 'darwin') die(`${cyan('triage uninstall')} is macOS only`)
+  const had = await uninstallLaunchAgent()
+  console.log(had ? `${green('✓')} LaunchAgent removed — triage is stopped; ${cyan('triage')} starts it by hand` : `${dim('○')} no LaunchAgent is installed`)
+}
+
+async function doctor(port: number) {
+  let failures = 0
+  const check = (ok: boolean | null, label: string, detail: string, fix?: string) => {
+    if (ok === false) failures += 1
+    const mark = ok === null ? yellow('!') : ok ? green('✓') : red('✗')
+    console.log(`${mark} ${label.padEnd(10)} ${detail}${ok === false && fix ? dim(`  → ${fix}`) : ''}`)
+  }
+  const [major, minor] = process.versions.node.split('.').map(Number)
+  check(major > 22 || (major === 22 && minor >= 5), 'node', `${process.versions.node} ${dim(tilde(process.execPath))}`, 'Node 22.5 or newer is required')
+  const version = async (bin: string) => (await execFileP(bin, ['--version'])).stdout.trim().split('\n')[0]
+  const claude = await version('claude').catch(() => null)
+  check(claude !== null, 'claude', claude ?? 'not found on PATH', 'install Claude Code, or fix PATH')
+  const gh = await version('gh').catch(() => null)
+  check(gh === null ? null : true, 'gh', gh ?? 'not found — GitHub watches and the GitHub source need it')
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+  check(existsSync(claudeDir) ? true : null, 'claude dir', tilde(claudeDir))
+  if (process.platform === 'darwin') {
+    const installed = launchAgentInstalled()
+    const loaded = installed ? await launchAgentLoaded() : false
+    check(installed ? loaded : null, 'agent', installed ? (loaded ? 'installed and loaded' : 'installed but not loaded') : `not installed — watches stop after a reboot`, `triage start (loads it)`)
+    if (!installed) console.log(dim(`             install it with ${cyan('triage install')}`))
+  }
+  const health = await checkHealth(port)
+  if (health === 'other') check(false, 'server', `port ${port} is in use by something else`)
+  else if (!health) check(false, 'server', `not answering on :${port}`, 'triage')
+  else check(health.version === pkgVersion(), 'server', `up on :${port} · v${health.version}${health.version === pkgVersion() ? '' : ` (this CLI is v${pkgVersion()})`}`, 'triage restart')
+  if (failures) process.exitCode = 1
+}
+
 // --- dispatch ----------------------------------------------------------------
 
 switch (command) {
@@ -557,10 +662,25 @@ switch (command) {
     break
   case 'restart': {
     const port = await resolvePort(false)
+    if (launchAgentInstalled() && (await launchAgentLoaded())) {
+      await kickstartLaunchAgent()
+      console.log(`${green('✓')} restarting via the LaunchAgent`)
+      await start(port)
+      break
+    }
     await stop(port)
     await start(port)
     break
   }
+  case 'install':
+    await install(await resolvePort(true))
+    break
+  case 'uninstall':
+    await uninstall()
+    break
+  case 'doctor':
+    await doctor(await resolvePort(false))
+    break
   case 'status':
     await status(await resolvePort(false))
     break
