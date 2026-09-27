@@ -16,8 +16,10 @@ import type { Provenance, WorkItem } from '../work/types.js'
 import type { ItemEvent, ItemEventKind, ItemStatus, StatusChange } from '../work/state.js'
 import { eventForStatus, shouldReopen } from '../work/state.js'
 import type { EffortLevel, PermissionMode } from '../../shared/protocol.js'
-import type { NewWatch, Watch, WatchCadence, WatchConnector, WatchRunResult, WatchRunStatus } from '../watch/types.js'
+import type { NewWatch, Watch, WatchCadence, WatchConnector, WatchNotify, WatchRunResult, WatchRunStart, WatchRunStatus, WatchRunTrigger } from '../watch/types.js'
+import { WATCH_NOTIFY, WATCH_RUN_STATUSES } from '../watch/types.js'
 import { cronFromCadence } from '../watch/cron.js'
+import { grantsFrom, grantsFromLegacy, type WatchToolGrant } from '../watch/tools.js'
 import type {
   ArtifactStore,
   BriefJobStore,
@@ -36,6 +38,7 @@ import type {
   StoredEvent,
   StoredSession,
   StoredTurn,
+  WatchStatePatch,
   TurnStore,
   UpsertResult,
   WatchRunRecord,
@@ -269,6 +272,21 @@ const MIGRATIONS: string[] = [
      PRIMARY KEY (session_id, seq)
    );
    CREATE INDEX IF NOT EXISTS session_turns_root ON session_turns(root);`,
+  // 21: watch-spec.md — tool grants, required project, scheduler hardening (start-time clock, catch-up, limits, streaks),
+  // and run receipts that say why a run happened and how many finds were new.
+  `ALTER TABLE watches ADD COLUMN tools TEXT;
+   ALTER TABLE watches ADD COLUMN config_error TEXT;
+   ALTER TABLE watches ADD COLUMN catch_up_window TEXT;
+   ALTER TABLE watches ADD COLUMN timeout_ms INTEGER;
+   ALTER TABLE watches ADD COLUMN max_budget_usd REAL;
+   ALTER TABLE watches ADD COLUMN notify TEXT;
+   ALTER TABLE watches ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE watches ADD COLUMN last_run_started_at INTEGER;
+   ALTER TABLE watches ADD COLUMN last_run_new INTEGER;
+   ALTER TABLE watches ADD COLUMN last_run_trigger TEXT;
+   UPDATE watches SET last_run_started_at = last_run_at WHERE last_run_started_at IS NULL;
+   ALTER TABLE sessions ADD COLUMN run_trigger TEXT;
+   ALTER TABLE sessions ADD COLUMN run_new INTEGER;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -403,6 +421,14 @@ function ensureDurableSchema(db: DatabaseSync) {
   ensure('watches', 'project_id', 'project_id TEXT', w)
   ensure('watches', 'model', 'model TEXT', w)
   ensure('watches', 'output', 'output TEXT', w)
+  for (const [col, decl] of [
+    ['tools', 'tools TEXT'], ['config_error', 'config_error TEXT'], ['catch_up_window', 'catch_up_window TEXT'],
+    ['timeout_ms', 'timeout_ms INTEGER'], ['max_budget_usd', 'max_budget_usd REAL'], ['notify', 'notify TEXT'],
+    ['consecutive_failures', 'consecutive_failures INTEGER NOT NULL DEFAULT 0'],
+    ['last_run_started_at', 'last_run_started_at INTEGER'], ['last_run_new', 'last_run_new INTEGER'], ['last_run_trigger', 'last_run_trigger TEXT'],
+  ]) ensure('watches', col, decl, w)
+  ensure('sessions', 'run_trigger', 'run_trigger TEXT', s)
+  ensure('sessions', 'run_new', 'run_new INTEGER', s)
 }
 
 function migrate(db: DatabaseSync) {
@@ -434,7 +460,9 @@ type SessionRow = {
   kind: string | null
   watch_id: string | null
   run_status: string | null
+  run_trigger: string | null
   run_matches: number | null
+  run_new: number | null
   run_tokens: number | null
   run_cost_usd: number | null
   run_error: string | null
@@ -470,7 +498,9 @@ const toSession = (r: SessionRow): StoredSession => ({
   kind: r.kind === 'watch-run' || r.kind === 'brief' ? r.kind : 'chat',
   watchId: r.watch_id,
   runStatus: toRunStatus(r.run_status),
+  runTrigger: toTrigger(r.run_trigger),
   runMatches: r.run_matches ?? undefined,
+  runNew: r.run_new ?? undefined,
   runTokens: r.run_tokens ?? undefined,
   runCostUsd: r.run_cost_usd ?? undefined,
   runError: r.run_error ?? undefined,
@@ -491,10 +521,10 @@ class SqliteSessions implements SessionStore {
     const watchId = s.watchId ?? null
     this.db
       .prepare(
-        `INSERT INTO sessions (id, title, cwd, sdk_session_id, model, effort, fast_mode, permission_mode, kind, watch_id, created_at, updated_at)
-         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (id, title, cwd, sdk_session_id, model, effort, fast_mode, permission_mode, kind, watch_id, run_trigger, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(s.id, s.title, s.cwd, model, effort, fastMode ? 1 : 0, permissionMode, kind, watchId, now, now)
+      .run(s.id, s.title, s.cwd, model, effort, fastMode ? 1 : 0, permissionMode, kind, watchId, s.runTrigger ?? null, now, now)
     return {
       id: s.id,
       title: s.title,
@@ -505,6 +535,7 @@ class SqliteSessions implements SessionStore {
       permissionMode,
       kind,
       watchId,
+      ...(s.runTrigger ? { runTrigger: s.runTrigger } : {}),
       pinned: false,
       sdkSessionId: null,
       createdAt: now,
@@ -564,8 +595,8 @@ class SqliteSessions implements SessionStore {
 
   async recordWatchRun(id: string, run: WatchRunRecord): Promise<void> {
     this.db
-      .prepare('UPDATE sessions SET run_status = ?, run_matches = ?, run_tokens = ?, run_cost_usd = ?, run_error = ?, updated_at = ? WHERE id = ?')
-      .run(run.status, run.matches, run.tokens, run.costUsd ?? null, run.error ?? null, Date.now(), id)
+      .prepare('UPDATE sessions SET run_status = ?, run_matches = ?, run_new = ?, run_tokens = ?, run_cost_usd = ?, run_error = ?, updated_at = ? WHERE id = ?')
+      .run(run.status, run.matches, run.newCount ?? null, run.tokens, run.costUsd ?? null, run.error ?? null, Date.now(), id)
   }
 }
 
@@ -740,6 +771,16 @@ type WatchRow = {
   project_id: string | null
   model: string | null
   output: string | null
+  tools: string | null
+  config_error: string | null
+  catch_up_window: string | null
+  timeout_ms: number | null
+  max_budget_usd: number | null
+  notify: string | null
+  consecutive_failures: number | null
+  last_run_started_at: number | null
+  last_run_new: number | null
+  last_run_trigger: string | null
   created_at: number
   updated_at: number
 }
@@ -757,9 +798,25 @@ function toConnectors(raw: string | null): WatchConnector[] {
   }
 }
 
-const RUN_STATUSES: WatchRunStatus[] = ['ok', 'failed', 'skipped']
 const toRunStatus = (v: string | null): WatchRunStatus | undefined =>
-  RUN_STATUSES.includes(v as WatchRunStatus) ? (v as WatchRunStatus) : undefined
+  WATCH_RUN_STATUSES.includes(v as WatchRunStatus) ? (v as WatchRunStatus) : undefined
+
+const TRIGGERS: WatchRunTrigger[] = ['scheduled', 'catch_up', 'manual']
+const toTrigger = (v: string | null): WatchRunTrigger | undefined =>
+  TRIGGERS.includes(v as WatchRunTrigger) ? (v as WatchRunTrigger) : undefined
+
+/** Stored grants; a row from before grants (NULL) migrates from its legacy connectors. */
+function toGrants(raw: string | null, legacy: string | null): WatchToolGrant[] {
+  if (raw) {
+    try {
+      const parsed = grantsFrom(JSON.parse(raw))
+      if ('grants' in parsed) return parsed.grants
+    } catch {
+      /* fall through to the legacy list */
+    }
+  }
+  return grantsFromLegacy(toConnectors(legacy))
+}
 
 const toWatch = (r: WatchRow): Watch => ({
   id: r.id,
@@ -767,8 +824,16 @@ const toWatch = (r: WatchRow): Watch => ({
   title: r.title,
   scope: r.scope,
   instruction: r.instruction,
-  connectors: toConnectors(r.connectors),
-  projectId: r.project_id ?? undefined,
+  tools: toGrants(r.tools, r.connectors),
+  // Required since watch-spec item 2; a legacy NULL is migrated to the scratch
+  // project at boot, and reads as '' (no project) until then.
+  projectId: r.project_id ?? '',
+  ...(r.config_error ? { configError: r.config_error } : {}),
+  ...(r.catch_up_window ? { catchUpWindow: r.catch_up_window } : {}),
+  ...(r.timeout_ms != null ? { timeoutMs: r.timeout_ms } : {}),
+  ...(r.max_budget_usd != null ? { maxBudgetUsd: r.max_budget_usd } : {}),
+  notify: WATCH_NOTIFY.includes(r.notify as WatchNotify) ? (r.notify as WatchNotify) : 'on_failure',
+  consecutiveFailures: r.consecutive_failures ?? 0,
   model: r.model ?? undefined,
   output: r.output === 'digest' ? 'digest' : 'items',
   cadence: r.cadence as WatchCadence,
@@ -778,8 +843,10 @@ const toWatch = (r: WatchRow): Watch => ({
   schedule: r.schedule ?? cronFromCadence(r.cadence as WatchCadence, r.window_start ?? undefined, r.window_day ?? undefined),
   enabled: r.enabled === 1,
   createsItems: r.creates_items === 1,
-  cursor: r.cursor ?? undefined,
+  lastRunStartedAt: r.last_run_started_at ?? undefined,
   lastRunAt: r.last_run_at ?? undefined,
+  lastRunNew: r.last_run_new ?? undefined,
+  lastRunTrigger: toTrigger(r.last_run_trigger),
   lastRunTokens: r.last_run_tokens ?? undefined,
   lastRunMatches: r.last_run_matches ?? undefined,
   lastRunStatus: toRunStatus(r.last_run_status),
@@ -808,8 +875,9 @@ class SqliteWatches implements WatchStore {
       .prepare(
         `INSERT INTO watches (id, source, title, scope, instruction, cadence, window_start, window_day,
            schedule, enabled, creates_items, cursor, last_run_at, last_run_tokens, last_run_matches, template_id,
-           connectors, project_id, model, output, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+           tools, project_id, model, output, catch_up_window, timeout_ms, max_budget_usd, notify,
+           config_error, last_run_started_at, consecutive_failures, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       )
       .run(
         w.id, w.source, w.title, w.scope, w.instruction, w.cadence,
@@ -817,7 +885,9 @@ class SqliteWatches implements WatchStore {
         w.schedule,
         w.enabled ? 1 : 0, w.createsItems ? 1 : 0,
         w.templateId ?? null,
-        JSON.stringify(w.connectors), w.projectId ?? null, w.model ?? null, w.output,
+        JSON.stringify(w.tools), w.projectId || null, w.model ?? null, w.output,
+        w.catchUpWindow ?? null, w.timeoutMs ?? null, w.maxBudgetUsd ?? null, w.notify,
+        w.configError ?? null, w.lastRunStartedAt ?? null,
         w.createdAt, w.updatedAt,
       )
   }
@@ -826,45 +896,62 @@ class SqliteWatches implements WatchStore {
     const current = await this.get(id)
     if (!current) return
     const next = { ...current, ...patch }
+    // null in a patch clears an optional limit back to "use the default"
+    const opt = <T,>(v: T | null | undefined): T | null => (v === undefined || v === null ? null : v)
     this.db
       .prepare(
         `UPDATE watches SET title = ?, scope = ?, instruction = ?, cadence = ?, window_start = ?,
-           window_day = ?, schedule = ?, enabled = ?, creates_items = ?, connectors = ?, project_id = ?, model = ?, output = ?, updated_at = ? WHERE id = ?`,
+           window_day = ?, schedule = ?, enabled = ?, creates_items = ?, tools = ?, project_id = ?, model = ?, output = ?,
+           catch_up_window = ?, timeout_ms = ?, max_budget_usd = ?, notify = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         next.title, next.scope ?? '', next.instruction, next.cadence,
         next.windowStart ?? null, next.windowDay ?? null,
         next.schedule,
         next.enabled ? 1 : 0, next.createsItems ? 1 : 0,
-        JSON.stringify(next.connectors), next.projectId ?? null, next.model ?? null, next.output ?? 'items',
+        JSON.stringify(next.tools), next.projectId || null, next.model ?? null, next.output ?? 'items',
+        opt(next.catchUpWindow), opt(next.timeoutMs), opt(next.maxBudgetUsd), next.notify ?? 'on_failure',
         Date.now(), id,
       )
   }
 
+  async patchState(id: string, patch: WatchStatePatch): Promise<void> {
+    const sets: string[] = []
+    const vals: (string | number | null)[] = []
+    if (patch.enabled !== undefined) { sets.push('enabled = ?'); vals.push(patch.enabled ? 1 : 0) }
+    if (patch.configError !== undefined) { sets.push('config_error = ?'); vals.push(patch.configError) }
+    if (patch.lastRunStartedAt !== undefined) { sets.push('last_run_started_at = ?'); vals.push(patch.lastRunStartedAt) }
+    if (patch.projectId !== undefined) { sets.push('project_id = ?'); vals.push(patch.projectId) }
+    if (!sets.length) return
+    this.db.prepare(`UPDATE watches SET ${sets.join(', ')} WHERE id = ?`).run(...vals, id)
+  }
+
+  async markRunStarted(id: string, start: WatchRunStart): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE watches SET last_run_started_at = ?, last_run_trigger = COALESCE(?, last_run_trigger),
+           last_run_session_id = COALESCE(?, last_run_session_id) WHERE id = ?`,
+      )
+      .run(start.startedAt, start.trigger ?? null, start.sessionId ?? null, id)
+  }
+
   /**
-   * Write back one run attempt. The cursor is advanced only when `run.cursor`
-   * is set (a successful run) — a failed/skipped run keeps the old watermark, or
-   * its window is skipped forever. Status/session/error are always recorded so
-   * the list can tell "looked, found nothing" from "the scan broke".
+   * Write back one run attempt. Status/session/error are always recorded so the
+   * list can tell "looked, found nothing" from "the scan broke". The failure
+   * streak counts failed/timeout runs in a row; an ok run resets it; skips and
+   * interruptions leave it alone.
    */
   async recordRun(id: string, run: WatchRunResult): Promise<void> {
-    if (run.cursor !== undefined) {
-      this.db
-        .prepare(
-          `UPDATE watches SET cursor = ?, last_run_at = ?, last_run_tokens = ?, last_run_matches = ?,
-             last_run_status = ?, last_run_session_id = ?, last_run_error = ? WHERE id = ?`,
-        )
-        .run(run.cursor, run.lastRunAt, run.lastRunTokens, run.lastRunMatches,
-          run.status, run.sessionId ?? null, run.error ?? null, id)
-    } else {
-      this.db
-        .prepare(
-          `UPDATE watches SET last_run_at = ?, last_run_tokens = ?, last_run_matches = ?,
-             last_run_status = ?, last_run_session_id = ?, last_run_error = ? WHERE id = ?`,
-        )
-        .run(run.lastRunAt, run.lastRunTokens, run.lastRunMatches,
-          run.status, run.sessionId ?? null, run.error ?? null, id)
-    }
+    const streak =
+      run.status === 'ok' ? '0' : run.status === 'failed' || run.status === 'timeout' ? 'consecutive_failures + 1' : 'consecutive_failures'
+    this.db
+      .prepare(
+        `UPDATE watches SET last_run_at = ?, last_run_tokens = ?, last_run_matches = ?, last_run_new = ?,
+           last_run_status = ?, last_run_session_id = COALESCE(?, last_run_session_id), last_run_error = ?,
+           last_run_trigger = COALESCE(?, last_run_trigger), consecutive_failures = ${streak} WHERE id = ?`,
+      )
+      .run(run.lastRunAt, run.lastRunTokens, run.lastRunMatches, run.lastRunNew ?? null,
+        run.status, run.sessionId ?? null, run.error ?? null, run.trigger ?? null, id)
   }
 
   async remove(id: string): Promise<void> {
@@ -1189,6 +1276,16 @@ class SqliteProjects implements ProjectStore {
     this.db
       .prepare('INSERT INTO projects (id, name, repo, path, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(p.id, p.name, p.repo, p.path, Date.now())
+  }
+
+  async retireBuiltin(): Promise<Project[]> {
+    // A short-lived dev build added a `builtin` column and a scratch project;
+    // projects are always real folders now. Remove those rows, if any.
+    const cols = new Set((this.db.prepare('PRAGMA table_info(projects)').all() as { name: string }[]).map((r) => r.name))
+    if (!cols.has('builtin')) return []
+    const rows = this.db.prepare('SELECT id, name, repo, path FROM projects WHERE builtin = 1').all() as Project[]
+    this.db.prepare('DELETE FROM projects WHERE builtin = 1').run()
+    return rows
   }
 
   async remove(id: string): Promise<void> {

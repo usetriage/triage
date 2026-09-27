@@ -1,16 +1,15 @@
 /**
- * Watches — user-defined ingestion rules (.docs/watches.md). A watch is one
- * plain-English sentence, scoped to a place, that tells the scanner what the
- * user cares about. Server-managed config rows → SQLite (storage rule).
+ * Watches — user-defined ingestion rules (.docs/watches.md, watch-spec.md). A
+ * watch is plain-English instructions, a schedule, the tools its runs may call,
+ * and the project folder its runs work in. Server-managed rows → SQLite.
  */
+import type { WatchToolGrant } from './tools.js'
+
+export type { WatchToolGrant } from './tools.js'
 
 export type WatchCadence = 'hourly' | 'daily' | 'weekly'
 
-/**
- * A connector a watch run may use. This is the real fence: the run's tool
- * allowlist is composed from these (read-only tools per connector, see
- * connectors.ts). Where to look inside a connector lives in the instruction.
- */
+/** Legacy (pre-grants) connector ids; old rows are migrated to tool grants. */
 export type WatchConnector = 'slack' | 'linear' | 'github' | 'web'
 
 /**
@@ -20,10 +19,20 @@ export type WatchConnector = 'slack' | 'linear' | 'github' | 'web'
  */
 export type WatchOutput = 'items' | 'digest'
 export const WATCH_OUTPUTS: WatchOutput[] = ['items', 'digest']
-export const WATCH_CONNECTORS: WatchConnector[] = ['web', 'slack', 'linear', 'github']
 
-/** The outcome of one watch run (.docs/watches-v2.md). */
-export type WatchRunStatus = 'ok' | 'failed' | 'skipped'
+/** The outcome of one watch run (watch-spec.md, item 3). */
+export type WatchRunStatus = 'ok' | 'failed' | 'timeout' | 'skipped' | 'interrupted'
+export const WATCH_RUN_STATUSES: WatchRunStatus[] = ['ok', 'failed', 'timeout', 'skipped', 'interrupted']
+
+/** Why a run happened. */
+export type WatchRunTrigger = 'scheduled' | 'catch_up' | 'manual'
+
+export type WatchNotify = 'never' | 'on_failure' | 'always'
+export const WATCH_NOTIFY: WatchNotify[] = ['never', 'on_failure', 'always']
+
+/** Built-in run limits when neither the watch nor the workspace sets one. */
+export const DEFAULT_WATCH_TIMEOUT_MS = 240_000
+export const MAX_WATCH_TIMEOUT_MS = 60 * 60_000
 
 export interface Watch {
   id: string
@@ -38,10 +47,19 @@ export interface Watch {
   scope: string
   /** the NL instructions: where to look and what counts; editable forever */
   instruction: string
-  /** connectors the run may use — its tool allowlist (never empty) */
-  connectors: WatchConnector[]
-  /** optional project: the run gets its folder as cwd plus read-only code tools */
-  projectId?: string
+  /** the tools runs may call, resolved at save time (never empty) */
+  tools: WatchToolGrant[]
+  /** the project whose folder every run works in, and nowhere else */
+  projectId: string
+  /** set when the watch cannot run until the user fixes it (e.g. its project was removed) */
+  configError?: string
+  /** skip a missed slot older than this: "6h" | "never" | "unlimited"; omitted = default by output */
+  catchUpWindow?: string
+  /** per-run limits; omitted = the workspace default */
+  timeoutMs?: number
+  maxBudgetUsd?: number
+  /** when to post a macOS notification about a run */
+  notify: WatchNotify
   /** model alias or wire id for the run; omitted = Claude Code's own default */
   model?: string
   /** items (default) or one rolling digest with a report */
@@ -60,10 +78,16 @@ export interface Watch {
   enabled: boolean
   /** false = FYI-only rows (fyi kind, base score 5) */
   createsItems: boolean
-  /** last-seen watermark: ISO ts of the newest scanned message window */
-  cursor?: string
-  /** epoch ms of the last run attempt (any status) */
+  /** epoch ms the last run STARTED (or was skipped) — what the due rule reads */
+  lastRunStartedAt?: number
+  /** epoch ms the last run attempt finished (any status) */
   lastRunAt?: number
+  /** items the last run filed that were not already in the inbox */
+  lastRunNew?: number
+  /** why the last run happened */
+  lastRunTrigger?: WatchRunTrigger
+  /** failed/timeout runs in a row; reset by an ok run */
+  consecutiveFailures: number
   /** what the last run cost/produced, surfaced in the watch list UI */
   lastRunTokens?: number
   lastRunMatches?: number
@@ -79,12 +103,15 @@ export interface Watch {
   updatedAt: number
 }
 
-export type NewWatch = Pick<Watch, 'title' | 'instruction' | 'schedule' | 'createsItems' | 'connectors'> & {
+export type NewWatch = Pick<Watch, 'title' | 'instruction' | 'schedule' | 'createsItems' | 'tools' | 'projectId'> & {
   /** legacy place hint; new watches leave it empty */
   scope?: string
-  projectId?: string
   model?: string
   output?: WatchOutput
+  catchUpWindow?: string | null
+  timeoutMs?: number | null
+  maxBudgetUsd?: number | null
+  notify?: WatchNotify
   /** legacy; defaults to a coarse bucket when omitted */
   cadence?: WatchCadence
   windowStart?: string
@@ -92,18 +119,27 @@ export type NewWatch = Pick<Watch, 'title' | 'instruction' | 'schedule' | 'creat
 }
 
 /**
- * What one completed run attempt writes back to the row. `cursor` is set only
- * on a successful run — a failed/timed-out/skipped run must not advance the
- * watermark, or its window is skipped forever.
+ * What one finished (or skipped, or interrupted) run attempt writes back to the
+ * row. Runs are stateless (watch-spec.md, item 4): nothing here feeds the next
+ * run's prompt.
  */
 export interface WatchRunResult {
-  cursor?: string
   lastRunAt: number
   lastRunTokens: number
   lastRunMatches: number
+  /** of the matches, how many were new to the inbox */
+  lastRunNew?: number
   status: WatchRunStatus
+  trigger?: WatchRunTrigger
   sessionId?: string
   error?: string
+}
+
+/** What starting (or skipping) a slot writes: the due rule's clock. */
+export interface WatchRunStart {
+  startedAt: number
+  trigger?: WatchRunTrigger
+  sessionId?: string
 }
 
 /** The draft step's parse of a plain-text wish — every field stays editable. */

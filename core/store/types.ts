@@ -32,7 +32,7 @@ import type {
 export type { SessionKind }
 import type { Provenance, WorkItem } from '../work/types.js'
 import type { ItemEvent, ItemStatus, StatusChange } from '../work/state.js'
-import type { NewWatch, Watch, WatchRunResult, WatchRunStatus } from '../watch/types.js'
+import type { NewWatch, Watch, WatchRunResult, WatchRunStart, WatchRunStatus, WatchRunTrigger } from '../watch/types.js'
 
 export type StoredSession = {
   id: string
@@ -56,7 +56,11 @@ export type StoredSession = {
   watchId: string | null
   /** watch-run outcome, recorded when the run finishes (else undefined). */
   runStatus?: WatchRunStatus
+  /** why this watch run happened, set when it starts */
+  runTrigger?: WatchRunTrigger
   runMatches?: number
+  /** of the matches, how many were new to the inbox */
+  runNew?: number
   runTokens?: number
   /** dollars, from the SDK's total_cost_usd */
   runCostUsd?: number
@@ -69,6 +73,7 @@ export type StoredSession = {
 export type WatchRunRecord = {
   status: WatchRunStatus
   matches: number
+  newCount?: number
   tokens: number
   costUsd?: number
   error?: string
@@ -84,6 +89,7 @@ export type NewSession = {
   permissionMode?: PermissionMode | null
   kind?: SessionKind
   watchId?: string | null
+  runTrigger?: WatchRunTrigger
 }
 
 export type StoredEvent = {
@@ -184,6 +190,18 @@ export interface ProjectStore {
   list(): Promise<Project[]>
   create(p: Project): Promise<void>
   remove(id: string): Promise<void>
+  /** Delete the retired built-in scratch projects (a dev-build leftover); returns what was removed. */
+  retireBuiltin(): Promise<Project[]>
+}
+
+/** Scheduler-owned state on a watch — never part of the user's edit. */
+export type WatchStatePatch = {
+  enabled?: boolean
+  /** null clears it */
+  configError?: string | null
+  lastRunStartedAt?: number
+  /** null clears it */
+  projectId?: string | null
 }
 
 export interface WatchStore {
@@ -192,7 +210,11 @@ export interface WatchStore {
   create(w: Watch): Promise<void>
   /** Edit the user-authored fields (and enabled). Bumps updatedAt. */
   update(id: string, patch: Partial<NewWatch> & { enabled?: boolean }): Promise<void>
-  /** What a completed scan writes back: cursor, lastRunAt, cost, matches. */
+  /** Scheduler-owned fields: config error, the due rule's clock, a forced project. */
+  patchState(id: string, patch: WatchStatePatch): Promise<void>
+  /** A run started (or a slot was skipped): moves the due rule's clock. */
+  markRunStarted(id: string, start: WatchRunStart): Promise<void>
+  /** What a finished run writes back: status, cost, matches, failure streak. */
   recordRun(id: string, run: WatchRunResult): Promise<void>
   remove(id: string): Promise<void>
 }

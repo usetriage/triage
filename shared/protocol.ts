@@ -11,7 +11,7 @@
 // Domain
 // ---------------------------------------------------------------------------
 
-import type { WatchRunStatus } from '../core/watch/types.js'
+import type { WatchRunStatus, WatchRunTrigger } from '../core/watch/types.js'
 
 export type SessionStatus = 'starting' | 'idle' | 'running' | 'error'
 
@@ -406,15 +406,42 @@ export type McpServerInfo = { name: string; status: string }
 
 export type ConnectorSource = 'claude.ai' | 'local'
 
+/** Where Claude Code found the server (watch-spec.md, item 1). */
+export type ConnectorScope = 'claudeai' | 'user' | 'local' | 'project' | 'plugin' | 'managed' | 'unknown'
+
+export type ConnectorTool = {
+  /** bare tool name, e.g. "notion-search" */
+  name: string
+  /** the allowlist name, e.g. "mcp__claude_ai_Notion__notion-search" */
+  fullName: string
+  description?: string
+  /** from the server's own annotations; absent = the server did not say */
+  readOnly?: boolean
+  destructive?: boolean
+}
+
 export type Connector = {
   /** Display name — "claude.ai " prefix already stripped for claude.ai ones. */
   name: string
+  /** the server name as Claude Code reports it ("claude.ai Slack") — what grants key on */
+  server: string
   status: string
   source: ConnectorSource
+  scope: ConnectorScope
+  error?: string
+  /** empty unless connected */
+  tools: ConnectorTool[]
 }
 
 export type ConnectorsResponse =
-  | { ok: true; probedAt: number; connectors: Connector[] }
+  | {
+      ok: true
+      probedAt: number
+      connectors: Connector[]
+      cwd?: string
+      /** local-scope servers configured for OTHER folders — usable once the watch runs there */
+      elsewhere?: Array<{ name: string; folder: string }>
+    }
   | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
@@ -550,7 +577,11 @@ export type ActivityRun = {
   watchId?: string
   watchTitle: string
   status?: WatchRunStatus
+  /** why the run happened */
+  trigger?: WatchRunTrigger
   matches?: number
+  /** of the matches, how many were new to the inbox */
+  newCount?: number
   tokens?: number
   /** dollars, when the run recorded one */
   costUsd?: number
@@ -586,7 +617,9 @@ export type SystemStatus = {
   inboxSyncedAt: number | null
   githubReconcileAt: number | null
   githubNotice: string | null
-  watches: { total: number; enabled: number; overdue: number; failing: number }
+  watches: { total: number; enabled: number; overdue: number; failing: number; configErrors: number }
+  /** the macOS LaunchAgent that keeps triage running after reboot/crash: installed? (null off macOS) */
+  launchAgent: boolean | null
   /** the workspace's global watches switch — off = the scheduler never runs a watch */
   watchesEnabled: boolean
   /** where JSONL log files are written, or null if file logging is off */
@@ -891,7 +924,7 @@ export type PickFolderResponse =
 // server-side leaks into the browser bundle.
 // ---------------------------------------------------------------------------
 
-export type { NewWatch, Watch, WatchCadence, WatchConnector, WatchDraft, WatchOutput, WatchPreviewResult, WatchPreviewRow, WatchRunStatus } from '../core/watch/types.js'
+export type { NewWatch, Watch, WatchCadence, WatchConnector, WatchDraft, WatchNotify, WatchOutput, WatchPreviewResult, WatchPreviewRow, WatchRunStatus, WatchRunTrigger, WatchToolGrant } from '../core/watch/types.js'
 
 export type WatchesResponse =
   | { ok: true; watches: import('../core/watch/types.js').Watch[] }
@@ -1190,6 +1223,10 @@ export type PlaybookResponse = { ok: true; kind: string; body: string; custom: b
 export type WorkspaceSettings = {
   /** the global watches switch; off = the scheduler never runs a watch */
   watchesEnabled: boolean
+  /** default per-run limits for watches that don't set their own */
+  watchTimeoutMs: number
+  /** null = no cap */
+  watchBudgetUsd: number | null
   /** how many brief runs may start per local day */
   briefsDailyCap: number
   /** the model briefs run on when the modal doesn't pick one; null = Claude Code's default */

@@ -15,6 +15,7 @@
     "server",
     "shared",
     "core",
+    "test",
     "vite.config.ts"
   ]
 }
