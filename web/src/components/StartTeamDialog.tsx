@@ -26,7 +26,7 @@ const DEFAULT_KICKOFF = 'Start the team on this item. Understand the scope, show
 export function StartTeamDialog({ open, item, onClose, onStarted }: Props) {
   const [lib, setLib] = useState<TeamLibrary | null>(null)
   const [team, setTeam] = useState<string>('')
-  const [draft, setDraft] = useState<TeamDraft>({ manager: { model: null, effort: null, instructions: '' }, agents: [] })
+  const [draft, setDraft] = useState<TeamDraft>({ manager: { model: null, effort: null, instructions: '' }, agents: [], budgetUsd: 15 })
   const [selected, setSelected] = useState('manager')
   const [dirty, setDirty] = useState(false)
   const [kickoff, setKickoff] = useState(DEFAULT_KICKOFF)
@@ -87,6 +87,7 @@ export function StartTeamDialog({ open, item, onClose, onStarted }: Props) {
         manager: draft.manager,
         agents: wireAgents(draft.agents),
         kickoff,
+        budgetUsd: draft.budgetUsd,
       })
       onStarted(b.managerId)
       onClose()
@@ -107,6 +108,7 @@ export function StartTeamDialog({ open, item, onClose, onStarted }: Props) {
         manager: draft.manager,
         agents: wireAgents(draft.agents),
         agentMode: 'fork',
+        budgetUsd: draft.budgetUsd,
       })
       setLib({ teams: b.library.teams, agents: b.library.agents, dir: b.library.dir })
       pick(b.team, { teams: b.library.teams, agents: b.library.agents, dir: b.library.dir })
@@ -162,9 +164,20 @@ export function StartTeamDialog({ open, item, onClose, onStarted }: Props) {
                 Folder{' '}
                 <span className="mono path">{folder === undefined ? '…' : folder === null ? 'none — set a project on the item' : tilde(folder)}</span>
               </span>
-              <span>
-                {n} agents · about {n}× a single session
-              </span>
+              <label className="teamBudget" title="The run pauses when it has spent this much; you can resume it with more.">
+                Budget $
+                <input
+                  className="teamInp"
+                  type="number"
+                  min={1}
+                  max={500}
+                  step={1}
+                  value={draft.budgetUsd}
+                  aria-label="Budget in dollars"
+                  onChange={(e) => change({ ...draft, budgetUsd: Math.max(1, Math.min(500, Number(e.target.value) || 1)) })}
+                />
+              </label>
+              <span>{n} agents</span>
               <span className="sp" />
               {error && lib && <span className="why">{error}</span>}
               {!error && reason && <span className={`why${quiet ? ' quiet' : ''}`}>{reason}</span>}

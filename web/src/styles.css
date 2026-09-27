@@ -842,6 +842,19 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .teamTab .state { font-size: 0.8462rem; color: var(--charcoal); }
 .teamTab .state { display: inline-flex; align-items: center; gap: 5px; }
 .mgrGlyph { width: 9px; height: 9px; border: 1px solid var(--ink); transform: rotate(45deg) scale(0.78); flex: none; display: inline-block; }
+.teamTab .spend { font-family: var(--mono); font-size: 0.8077rem; color: var(--charcoal); font-variant-numeric: tabular-nums; }
+/* the run's end of the strip: spend against budget, and the controls that stop spending */
+.teamRun { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; padding-left: 12px; flex: none; }
+.teamMeter { width: 64px; height: 4px; border-radius: var(--r-full); background: var(--hair-strong); overflow: hidden; }
+.teamMeter i { display: block; height: 100%; background: var(--charcoal); }
+.teamRun.paused .teamMeter i { background: var(--yellow); }
+.teamRunSpend { font-family: var(--mono); font-size: 0.8462rem; color: var(--body); font-variant-numeric: tabular-nums; }
+.teamRunSpend .of { color: var(--ash); }
+.teamRunWhy { font-size: 0.8462rem; color: var(--yellow); }
+.teamRun.stopped .teamRunWhy { color: var(--ash); }
+.teamBudget { display: inline-flex; align-items: center; gap: 4px; color: var(--ash); font-size: 0.8846rem; white-space: nowrap; }
+.teamBudget .teamInp { width: 64px; height: 26px; padding: 0 6px; }
+.teamHint.warn { color: var(--yellow); }
 
 /* ---------- teams: the Start-a-team dialog and the editor it shares with Settings ---------- */
 .teamOverlay { position: fixed; inset: 0; z-index: 90; background: var(--scrim); animation: fadeIn 0.14s ease; }

@@ -157,7 +157,9 @@ import type {
   StartTeamResponse,
   TeamLibraryResponse,
   TeamMembership,
+  TeamRunInfo,
 } from '../shared/protocol.js'
+import { DEFAULT_TEAM_BUDGET_USD } from '../shared/protocol.js'
 import {
   MANAGER_DISALLOWED,
   TEAM_MESSAGE_BUDGET,
@@ -171,6 +173,8 @@ import {
   isLibraryName,
   managerAppend,
   managerFrom,
+  budgetFrom,
+  runSpent,
   type StoredTeamRun,
 } from './teams.js'
 import type { StoredTurn } from '../core/store/types.js'
@@ -500,6 +504,10 @@ type SessionExtras = {
   mcp?: Record<string, ReturnType<typeof createSdkMcpServer>>
   /** tools the subprocess never gets (a team role's policy) */
   disallowedTools?: string[]
+  /** extra inline (flag-layer) settings, e.g. a team member's compaction window */
+  settings?: Record<string, unknown>
+  /** hard stop for this subprocess: the SDK ends the query past it (a team's remaining budget) */
+  maxBudgetUsd?: number
 }
 
 /** Tools a headless brief session never gets, whatever it asks (belt to the gate's braces). */
@@ -533,6 +541,8 @@ class LiveSession {
     }
   >()
   private readonly q: Query
+  /** The subprocess's cumulative cost at its last result — turn cost is the difference. */
+  private costSeen = 0
   /** Whether this subprocess was spawned able to bypass permission checks. */
   private readonly bypassArmed: boolean
 
@@ -580,7 +590,12 @@ class LiveSession {
         // only when it is explicitly true — a user/project setting is ignored
         // in the Agent SDK ('sdk_opt_in_required'), so it is set at spawn here
         // and cleared, not set false, when turned off (see setFastMode).
-        ...(row.fastMode ? { settings: { fastMode: true } } : {}),
+        ...(row.fastMode || extras.settings
+          ? { settings: { ...(extras.settings ?? {}), ...(row.fastMode ? { fastMode: true } : {}) } }
+          : {}),
+        // A team member's backstop: the SDK stops the query mid-turn past it,
+        // where our own accounting (per result) would only notice afterwards.
+        ...(extras.maxBudgetUsd ? { maxBudgetUsd: extras.maxBudgetUsd } : {}),
         // How much this session asks. Only the SDK's own modes are passed; for
         // 'default' (its baseline) and 'gated' (ours, enforced in canUseTool)
         // the SDK is left at that baseline so every call reaches the gate.
@@ -693,6 +708,14 @@ class LiveSession {
           this.rt.files.invalidate(this.row.cwd)
           // A brief run is one turn: its result is the run's end.
           if (this.row.kind === 'brief') void onBriefTurnDone(this.rt, this.row.id)
+          // Team spend: total_cost_usd is cumulative for this subprocess, so
+          // the turn's cost is the difference from the last result it sent.
+          if (this.rt.sessionTeam.has(this.row.id)) {
+            const cost = typeof m.total_cost_usd === 'number' ? m.total_cost_usd : null
+            const delta = cost === null ? 0 : Math.max(0, cost - this.costSeen)
+            if (cost !== null) this.costSeen = cost
+            void noteTeamSpend(this.rt, this.row.id, delta, m.subtype)
+          }
         }
       }
       this.setStatus('idle')
@@ -938,6 +961,11 @@ class LiveSession {
     if (this.status === status) return
     this.status = status
     broadcastSessionList(this.rt)
+  }
+
+  /** Write a line of triage's own into this transcript (a team paused, a stage began). */
+  notice(text: string) {
+    this.emit({ kind: 'notice', text }, true)
   }
 
   private emit(event: SessionEvent, persist: boolean) {
@@ -3311,6 +3339,11 @@ function extrasFor(rt: WorkspaceRuntime, row: StoredSession): SessionExtras {
       systemAppend: `${identity}\n${agent ? agentAppend(run, agent) : managerAppend(run)}`,
       mcp: { team: makeTeamMcp(rt, row.id, run) },
       disallowedTools: agent ? disallowedFor(agent.can) : MANAGER_DISALLOWED,
+      // Compact long before a 1M window would (it defaults to ~967K there): a
+      // member re-reads its whole history on every call, so history is cost.
+      settings: { autoCompactWindow: TEAM_COMPACT_WINDOW },
+      // What is left of the run's budget, so one runaway turn can't blow it.
+      maxBudgetUsd: Math.max(0.25, run.budgetUsd - runSpent(run)),
     }
   }
   if (row.kind !== 'brief') return { systemAppend: identity }
@@ -3577,7 +3610,15 @@ async function loadTeamRuns(rt: WorkspaceRuntime): Promise<void> {
   for (const run of (await rt.store.config.get<StoredTeamRun[]>(TEAM_RUNS_KEY)) ?? []) {
     const members = run.members.filter((m) => rt.rows.has(m.sessionId))
     if (!members.length) continue
-    rt.teamRuns.set(run.id, { ...run, members })
+    // Runs from before budgets existed get today's defaults rather than none.
+    const legacy = run as Partial<StoredTeamRun>
+    rt.teamRuns.set(run.id, {
+      ...run,
+      members,
+      budgetUsd: legacy.budgetUsd ?? DEFAULT_TEAM_BUDGET_USD,
+      spend: legacy.spend ?? {},
+      state: legacy.state ?? 'running',
+    })
     for (const m of members) rt.sessionTeam.set(m.sessionId, { runId: run.id, member: m.member })
   }
 }
@@ -3589,7 +3630,108 @@ function teamMembership(rt: WorkspaceRuntime, sessionId: string): TeamMembership
   const order = run ? run.members.findIndex((m) => m.sessionId === sessionId) : -1
   if (!t || !run || order < 0) return undefined
   const m = run.members[order]
-  return { id: run.id, member: m.member, label: m.label, ...(m.color ? { color: m.color } : {}), order }
+  return {
+    id: run.id,
+    member: m.member,
+    label: m.label,
+    ...(m.color ? { color: m.color } : {}),
+    order,
+    spentUsd: run.spend[m.member] ?? 0,
+    run: runInfo(run),
+  }
+}
+
+const runInfo = (run: StoredTeamRun): TeamRunInfo => ({
+  state: run.state,
+  spentUsd: runSpent(run),
+  budgetUsd: run.budgetUsd,
+  ...(run.reason ? { reason: run.reason } : {}),
+})
+
+/** A member's history is compacted past this many tokens (see extrasFor). */
+const TEAM_COMPACT_WINDOW = 200_000
+
+/** Write a notice into a session's transcript, live or not. */
+async function sessionNotice(rt: WorkspaceRuntime, sessionId: string, text: string): Promise<void> {
+  const live = rt.live.get(sessionId)
+  if (live) return live.notice(text)
+  const seq = (await rt.store.events.lastSeq(sessionId)) + 1
+  const event: SessionEvent = { kind: 'notice', text }
+  await rt.store.events.append(sessionId, seq, event)
+  broadcast(rt, { type: 'session_event', sessionId, event, at: Date.now() })
+}
+
+const usd = (n: number) => `$${n.toFixed(2)}`
+
+/**
+ * A member's turn ended: book its cost on the run, and pause the run when the
+ * budget is reached (or the SDK already stopped the turn at its backstop).
+ */
+async function noteTeamSpend(rt: WorkspaceRuntime, sessionId: string, delta: number, subtype?: string): Promise<void> {
+  const t = rt.sessionTeam.get(sessionId)
+  const run = t ? rt.teamRuns.get(t.runId) : undefined
+  if (!t || !run) return
+  run.spend[t.member] = (run.spend[t.member] ?? 0) + delta
+  const spent = runSpent(run)
+  if (run.state === 'running' && (spent >= run.budgetUsd || subtype === 'error_max_budget_usd')) {
+    await pauseTeamRun(rt, run, `budget reached — ${usd(spent)} of ${usd(run.budgetUsd)}`)
+    return
+  }
+  await saveTeamRuns(rt)
+  broadcastSessionList(rt)
+}
+
+/** Stop every member mid-turn and hold messages until the run is resumed. */
+async function pauseTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun, reason: string): Promise<void> {
+  run.state = 'paused'
+  run.reason = reason
+  for (const m of run.members) {
+    const live = rt.live.get(m.sessionId)
+    if (!live) continue
+    await live.interrupt()
+    live.stop()
+  }
+  await saveTeamRuns(rt)
+  const manager = run.members.find((m) => m.member === 'manager')
+  if (manager) await sessionNotice(rt, manager.sessionId, `Team paused: ${reason}. Resume to raise the budget, or stop the run.`)
+  log('info', 'teams', `run paused: ${reason}`, { teamId: run.id, workspace: rt.meta.id })
+  broadcastSessionList(rt)
+}
+
+async function resumeTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun, addUsd: number | null): Promise<void> {
+  const spent = runSpent(run)
+  // Resume always leaves room to work: at least the requested amount above what's spent.
+  const add = addUsd ?? Math.max(5, Math.round(run.budgetUsd * 0.5))
+  run.budgetUsd = Math.max(run.budgetUsd, spent) + add
+  run.state = 'running'
+  delete run.reason
+  // Members respawn on their next message with the new remaining budget as their backstop.
+  for (const m of run.members) rt.live.get(m.sessionId)?.stop()
+  await saveTeamRuns(rt)
+  const manager = run.members.find((m) => m.member === 'manager')
+  if (manager) await sessionNotice(rt, manager.sessionId, `Team resumed — budget now ${usd(run.budgetUsd)} (${usd(spent)} spent).`)
+  broadcastSessionList(rt)
+}
+
+async function stopTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
+  run.state = 'stopped'
+  for (const m of run.members) {
+    const live = rt.live.get(m.sessionId)
+    if (!live) continue
+    await live.interrupt()
+    live.stop()
+  }
+  await saveTeamRuns(rt)
+  const manager = run.members.find((m) => m.member === 'manager')
+  if (manager) await sessionNotice(rt, manager.sessionId, `Team stopped at ${usd(runSpent(run))}.`)
+  broadcastSessionList(rt)
+}
+
+function teamRunFrom(rt: WorkspaceRuntime, raw: unknown): StoredTeamRun {
+  const id = (raw as { teamId?: unknown })?.teamId
+  const run = typeof id === 'string' ? rt.teamRuns.get(id) : undefined
+  if (!run) throw new Error('no such team run')
+  return run
 }
 
 async function teamLibraryOp(rt: WorkspaceRuntime): Promise<TeamLibraryResponse & { ok: true }> {
@@ -3622,6 +3764,9 @@ async function startTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<{ teamId
     manager,
     agents,
     members: [],
+    budgetUsd: budgetFrom(r.budgetUsd) ?? DEFAULT_TEAM_BUDGET_USD,
+    spend: {},
+    state: 'running',
   }
   const mgr = await createSession(rt, `Manager · ${title}`, project.path, manager.model, manager.effort, false, 'gated', { spawn: false })
   run.members.push({ member: 'manager', label: 'Manager', sessionId: mgr.id })
@@ -3694,6 +3839,7 @@ async function saveTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<string> {
     description: typeof r.description === 'string' ? r.description.trim().slice(0, 400) : '',
     manager: managerFrom(r.manager),
     agents: names,
+    budgetUsd: budgetFrom(r.budgetUsd) ?? DEFAULT_TEAM_BUDGET_USD,
   })
   log('info', 'teams', `team saved: ${label}`, { team: name, agents: names, workspace: rt.meta.id })
   return name
@@ -3738,6 +3884,9 @@ function makeTeamMcp(rt: WorkspaceRuntime, sessionId: string, run: StoredTeamRun
             const self = rt.sessionTeam.get(sessionId)
             const cur = self ? rt.teamRuns.get(self.runId) : undefined
             if (!self || !cur) return errResult('this session is not on a team')
+            if (cur.state !== 'running') {
+              return errResult(`the team is ${cur.state}${cur.reason ? ` (${cur.reason})` : ''} — stop and report where the work stands; the user resumes it`)
+            }
             if (args.to === self.member) return errResult('that is you — message a different member')
             const target = cur.members.find((m) => m.member === args.to)
             if (!target) return errResult(`this team has no member named ${args.to}`)
@@ -5165,6 +5314,16 @@ const server = http.createServer(async (req, res) => {
         if (!isLibraryName(b.name) || (b.kind !== 'agent' && b.kind !== 'team')) throw new Error('need a kind and a name')
         await lib.reset(b.kind, b.name)
         json(200, await teamLibraryOp(rt))
+      } else if (route === 'POST /api/teams/pause') {
+        await pauseTeamRun(rt, teamRunFrom(rt, await readJsonBody(req)), 'paused by you')
+        json(200, { ok: true })
+      } else if (route === 'POST /api/teams/resume') {
+        const body = (await readJsonBody(req)) as { addUsd?: unknown } | null
+        await resumeTeamRun(rt, teamRunFrom(rt, body), budgetFrom(body?.addUsd))
+        json(200, { ok: true })
+      } else if (route === 'POST /api/teams/stop') {
+        await stopTeamRun(rt, teamRunFrom(rt, await readJsonBody(req)))
+        json(200, { ok: true })
       } else if (route === 'POST /api/teams/open') {
         await openInEditor(lib.root)
         json(200, { ok: true })

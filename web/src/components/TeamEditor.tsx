@@ -139,6 +139,7 @@ function ModelEffort({
   const models = useModels().filter((m) => m.id !== 'default')
   const known = !model || models.some((m) => m.id === model)
   return (
+    <div>
     <div className="teamPair">
       <Select className="teamSel" aria-label="Model" value={model ?? ''} onValueChange={(v) => onModel(v || null)}>
         <SelectItem value="">Default</SelectItem>
@@ -165,6 +166,12 @@ function ModelEffort({
           </SelectItem>
         ))}
       </Select>
+    </div>
+      {model?.includes('[1m]') && (
+        <div className="teamHint warn">
+          1M-context model: in a team every member compacts at 200K anyway, so the bigger window buys nothing — pick the plain model.
+        </div>
+      )}
     </div>
   )
 }

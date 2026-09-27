@@ -86,6 +86,9 @@ export function buildTranscript(
       case 'error':
         items.push({ key: `e${i}`, kind: 'error', text: ev.message })
         break
+      case 'notice':
+        items.push({ key: `n${i}`, kind: 'meta', text: `— ${ev.text} —` })
+        break
       case 'permission_request': {
         const item = {
           key: `p${i}`,

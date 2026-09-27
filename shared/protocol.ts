@@ -124,7 +124,12 @@ export type TeamSpec = {
   manager: ManagerSpec
   /** agent names, in roster order */
   agents: string[]
+  /** what one run of this team may spend before it pauses, USD */
+  budgetUsd: number
 }
+
+/** Default spend ceiling for a team run (USD) when a team file sets none. */
+export const DEFAULT_TEAM_BUDGET_USD = 15
 
 /**
  * Where a library file stands against what triage ships: untouched, edited,
@@ -149,6 +154,8 @@ export type StartTeamRequest = {
   manager: ManagerSpec
   agents: DraftAgent[]
   kickoff: string
+  /** the run's spend ceiling; it pauses when reached */
+  budgetUsd: number
 }
 export type StartTeamResponse = { ok: true; teamId: string; managerId: string } | { ok: false; error: string }
 
@@ -164,8 +171,31 @@ export type SaveTeamRequest = {
 }
 export type SaveTeamResponse = { ok: true; team: string; library: TeamLibraryResponse & { ok: true } } | { ok: false; error: string }
 
-/** A session's place on a team: the run, and which member it is. */
-export type TeamMembership = { id: string; member: string; label: string; color?: AgentColor; order: number }
+/**
+ * Where a team run stands. `paused` = stopped by its budget or by you; resume
+ * raises the budget. `stopped` = ended by you.
+ */
+export type TeamRunState = 'running' | 'paused' | 'stopped' | 'done'
+
+/** The run-level facts every member's summary carries, so any tab can show them. */
+export type TeamRunInfo = {
+  state: TeamRunState
+  spentUsd: number
+  budgetUsd: number
+  /** why it paused, when it did */
+  reason?: string
+}
+
+/** A session's place on a team: the run, which member it is, and what it has spent. */
+export type TeamMembership = {
+  id: string
+  member: string
+  label: string
+  color?: AgentColor
+  order: number
+  spentUsd: number
+  run: TeamRunInfo
+}
 
 /**
  * What the user did with one prompt. `allow_always` is `allow` plus the SDK's
@@ -1183,6 +1213,8 @@ export type SessionEvent =
       from?: string
     }
   | { kind: 'error'; message: string }
+  /** a line triage writes into the transcript itself — a team paused, a stage began */
+  | { kind: 'notice'; text: string }
   | {
       kind: 'permission_request'
       id: string

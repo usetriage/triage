@@ -5,6 +5,7 @@
  */
 import {
   AGENT_COLORS,
+  DEFAULT_TEAM_BUDGET_USD,
   MAX_TEAM_AGENTS,
   type AgentCan,
   type AgentColor,
@@ -68,7 +69,7 @@ export const canSummary = (can: AgentCan[]): string =>
 
 /** An agent in the editor: a draft plus a stable key and whether its name was touched. */
 export type EditorAgent = DraftAgent & { key: string; touched?: boolean }
-export type TeamDraft = { manager: ManagerSpec; agents: EditorAgent[] }
+export type TeamDraft = { manager: ManagerSpec; agents: EditorAgent[]; budgetUsd: number }
 
 let seq = 0
 const key = () => `a${++seq}`
@@ -84,13 +85,15 @@ export const slugify = (s: string): string =>
 export const nameOf = (a: EditorAgent): string => (a.base ? a.name : slugify(a.label))
 
 export function draftFromTeam(team: TeamEntry | null, lib: TeamLibrary): TeamDraft {
-  if (!team) return { manager: { model: null, effort: null, instructions: '' }, agents: [] }
+  if (!team) return { manager: { model: null, effort: null, instructions: '' }, agents: [], budgetUsd: DEFAULT_TEAM_BUDGET_USD }
   const agents = team.agents
     .map((n) => lib.agents.find((a) => a.name === n))
     .filter((a): a is AgentEntry => !!a)
     .map((a) => fromEntry(a))
-  return { manager: { ...team.manager }, agents }
+  return { manager: { ...team.manager }, agents, budgetUsd: team.budgetUsd }
 }
+
+export const usd = (n: number): string => `$${n < 10 ? n.toFixed(2) : n.toFixed(1)}`
 
 export function fromEntry(a: AgentEntry): EditorAgent {
   const { status: _s, path: _p, usedBy: _u, ...spec } = a

@@ -346,6 +346,7 @@ function TeamEditDialog({
         manager: draft.manager,
         agents: wireAgents(draft.agents),
         agentMode: 'update',
+        budgetUsd: draft.budgetUsd,
       })
       onSaved({ teams: b.library.teams, agents: b.library.agents, dir: b.library.dir })
     } catch (err) {
@@ -382,6 +383,18 @@ function TeamEditDialog({
           aria-label="Description"
           onChange={(e) => setDescription(e.target.value)}
         />
+        <label className="teamBudget" title="What one run may spend before it pauses">
+          Budget $
+          <input
+            className="teamInp"
+            type="number"
+            min={1}
+            max={500}
+            value={draft.budgetUsd}
+            aria-label="Budget in dollars"
+            onChange={(e) => setDraft({ ...draft, budgetUsd: Math.max(1, Math.min(500, Number(e.target.value) || 1)) })}
+          />
+        </label>
       </div>
       <TeamEditor draft={draft} onChange={setDraft} selected={selected} onSelect={setSelected} library={lib.agents} mode="library" />
     </EditShell>

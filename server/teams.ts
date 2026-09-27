@@ -22,6 +22,7 @@ import path from 'node:path'
 import {
   AGENT_CANS,
   AGENT_COLORS,
+  DEFAULT_TEAM_BUDGET_USD,
   MAX_TEAM_AGENTS,
   type AgentCan,
   type AgentColor,
@@ -32,6 +33,7 @@ import {
   type LibraryStatus,
   type ManagerSpec,
   type TeamEntry,
+  type TeamRunState,
   type TeamSpec,
 } from '../shared/protocol.js'
 import { parseFrontmatter, serializeFrontmatter, type FrontmatterValue } from './artifacts.js'
@@ -163,6 +165,7 @@ const DEFAULT_TEAMS: TeamSpec[] = [
       instructions: 'Small tasks, one at a time. Nothing moves on until the reviewer approves it.',
     },
     agents: ['implementer', 'reviewer'],
+    budgetUsd: 15,
   },
   {
     name: 'product',
@@ -175,6 +178,7 @@ const DEFAULT_TEAMS: TeamSpec[] = [
         'Evidence before opinion. Research and design can run in parallel. The deliverable is a spec artifact on the work item; decisions only the user can make go back to the user.',
     },
     agents: ['researcher', 'product-designer'],
+    budgetUsd: 10,
   },
 ]
 
@@ -243,13 +247,21 @@ export function parseTeam(name: string, text: string): TeamSpec {
       instructions: fm.body.trim(),
     },
     agents: list(fm.data.agents).filter(isLibraryName),
+    budgetUsd: budgetFrom(str(fm.data.budget_usd)) ?? DEFAULT_TEAM_BUDGET_USD,
   }
+}
+
+/** A spend ceiling in USD: a positive number, capped so a typo can't authorise a fortune. */
+export function budgetFrom(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.round(n * 100) / 100, 500) : null
 }
 
 export function serializeTeam(t: TeamSpec, source: string): string {
   const data: Record<string, FrontmatterValue> = { name: t.name, label: t.label, description: t.description, agents: t.agents }
   if (t.manager.model) data.manager_model = t.manager.model
   if (t.manager.effort) data.manager_effort = t.manager.effort
+  data.budget_usd = String(t.budgetUsd)
   data.source = source
   return serializeFrontmatter(data, `\n${t.manager.instructions.trim()}\n`)
 }
@@ -534,7 +546,15 @@ export type StoredTeamRun = {
   manager: ManagerSpec
   agents: AgentSpec[]
   members: { member: string; label: string; color?: AgentColor; sessionId: string }[]
+  /** the spend ceiling; reaching it pauses the run */
+  budgetUsd: number
+  /** USD spent so far, per member — accumulated from each turn's cost */
+  spend: Record<string, number>
+  state: TeamRunState
+  reason?: string
 }
+
+export const runSpent = (run: StoredTeamRun): number => Object.values(run.spend ?? {}).reduce((a, b) => a + b, 0)
 
 const PROTOCOL = `
 How the team talks: call message_teammate with a member's name. The message arrives in their session as a new
