@@ -27,6 +27,8 @@
     "core/work/types.ts",
     "core/work/state.ts",
     "core/watch/types.ts",
-    "core/watch/cron.ts"
+    "core/watch/cron.ts",
+    "core/watch/tools.ts",
+    "core/watch/schedule.ts"
   ]
 }

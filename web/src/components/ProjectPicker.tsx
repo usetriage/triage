@@ -124,12 +124,14 @@ type IdProps = {
   value: string
   onChange: (id: string) => void
   caption?: string
+  /** offer "No project" (default); off where a project is required, e.g. a watch */
+  allowNone?: boolean
   /** the trigger, given what to show — so each caller keeps its own chrome */
   children: (current: Project | undefined) => ReactNode
 }
 
 /** Which project a work item belongs to. Selection is an id; '' means none. */
-export function ProjectIdPicker({ projects, value, onChange, caption = 'Project', children }: IdProps) {
+export function ProjectIdPicker({ projects, value, onChange, caption = 'Project', allowNone = true, children }: IdProps) {
   const current = projects.find((p) => p.id === value)
 
   return (
@@ -141,12 +143,14 @@ export function ProjectIdPicker({ projects, value, onChange, caption = 'Project'
         isOn={(p) => p.id === value}
         onPick={(p) => onChange(p.id)}
         leading={
-          <MenuItem className={`projRowItem none${current ? '' : ' on'}`} onSelect={() => onChange('')}>
-            <span className="text">
-              <span className="name">No project</span>
-            </span>
-            {!current && <Check className="check" size={13} aria-hidden="true" />}
-          </MenuItem>
+          allowNone && (
+            <MenuItem className={`projRowItem none${current ? '' : ' on'}`} onSelect={() => onChange('')}>
+              <span className="text">
+                <span className="name">No project</span>
+              </span>
+              {!current && <Check className="check" size={13} aria-hidden="true" />}
+            </MenuItem>
+          )
         }
       />
     </Menu>

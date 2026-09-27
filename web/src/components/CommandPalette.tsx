@@ -11,6 +11,7 @@ import type {
 } from '../../../shared/protocol.js'
 import { MOD_LABEL } from '../keys.js'
 import { SETTINGS_TABS, type SettingsTab } from '../settings.js'
+import { grantLabel } from '../../../core/watch/tools.js'
 
 export type Command = {
   id: string
@@ -113,7 +114,7 @@ export function CommandPalette({
         id: `wa:${w.id}`,
         section: 'Watches',
         label: `${w.enabled ? 'Pause' : 'Resume'} watch: ${w.title}`,
-        hint: w.connectors.join(', '),
+        hint: w.tools.map(grantLabel).join(', '),
         run: () => {
           void fetch(`/api/watches?id=${encodeURIComponent(w.id)}`, {
             method: 'PUT',

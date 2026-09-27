@@ -660,9 +660,24 @@ function useWorkspaceSettings() {
   return { settings, error, save }
 }
 
-/** The global watches switch — off by default in 0.7 (.docs/next-version.md). */
+/** The global watches switch — off by default in 0.7 (.docs/next-version.md) — and default run limits. */
 function WatchesSwitchSection() {
   const { settings, error, save } = useWorkspaceSettings()
+  const [timeoutMin, setTimeoutMin] = useState('')
+  const [budget, setBudget] = useState('')
+  useEffect(() => {
+    if (!settings) return
+    setTimeoutMin(String(Math.round(settings.watchTimeoutMs / 60_000)))
+    setBudget(settings.watchBudgetUsd != null ? String(settings.watchBudgetUsd) : '')
+  }, [settings])
+  const saveTimeout = () => {
+    const n = Number(timeoutMin)
+    if (Number.isFinite(n) && n >= 1 && n <= 60 && settings && Math.round(n * 60_000) !== settings.watchTimeoutMs) void save({ watchTimeoutMs: Math.round(n * 60_000) })
+  }
+  const saveBudget = () => {
+    const b = budget.trim() ? Number(budget) : null
+    if (b === null || (Number.isFinite(b) && b > 0 && b <= 100)) void save({ watchBudgetUsd: b })
+  }
   return (
     <Section
       title="Watches"
@@ -678,6 +693,12 @@ function WatchesSwitchSection() {
         >
           <Switch.Thumb className="uiSwitchThumb" />
         </Switch.Root>
+      </Row>
+      <Row label="Default timeout" hint="Minutes a watch run may take before it is stopped and recorded as timed out. A watch can set its own.">
+        <input className="setNum" inputMode="numeric" value={timeoutMin} disabled={!settings} onChange={(e) => setTimeoutMin(e.target.value)} onBlur={saveTimeout} aria-label="Default watch timeout in minutes" />
+      </Row>
+      <Row label="Default budget per run" hint="Dollars a watch run may spend before it stops. Blank = no cap. A watch can set its own.">
+        <input className="setNum" inputMode="decimal" value={budget} placeholder="none" disabled={!settings} onChange={(e) => setBudget(e.target.value)} onBlur={saveBudget} aria-label="Default watch budget in dollars" />
       </Row>
       {error && <div className="msg error">{error}</div>}
     </Section>

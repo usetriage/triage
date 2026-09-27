@@ -1381,6 +1381,8 @@ dialog.sheet[open] { display: grid; }
 .runStatus { font-size: 0.7692rem; font-family: var(--mono); padding: 0 7px; border-radius: var(--r-full); border: 1px solid var(--hair-strong); text-transform: uppercase; letter-spacing: 0.03em; color: var(--ash); line-height: 16px; }
 .runStatus.ok { color: var(--green); border-color: var(--edge-green); }
 .runStatus.failed { color: var(--red); border-color: var(--edge-red); }
+.runStatus.timeout { color: var(--red); border-color: var(--edge-red); }
+.runStatus.interrupted { color: var(--yellow); border-color: var(--edge-yellow); }
 .sysBody.logs { display: flex; flex-direction: column; gap: 10px; }
 .logFilters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .logTabs { display: inline-flex; gap: 4px; }
@@ -2307,6 +2309,56 @@ dialog.briefDialog .knobs { display: flex; gap: 8px; align-items: center; flex-w
 .wform .foot .hint { margin-right: auto; }
 .formError { color: var(--red); font-size: 0.9231rem; font-family: var(--mono); }
 
+/* ---------- watch form: integrations picker (watch-spec.md, item 1) ---------- */
+.toolPicker { display: flex; flex-direction: column; gap: 8px; }
+.cchip.on.warn { border-color: var(--edge-yellow); }
+.cchip.on.warn .tick { color: var(--yellow); }
+.wform .hint.warnText { color: var(--yellow); display: inline-flex; align-items: center; gap: 6px; }
+.toolServers { padding: 4px 0; display: flex; flex-direction: column; }
+.toolServers .tsHead { display: flex; align-items: center; gap: 10px; padding: 6px 12px 8px; border-bottom: 1px solid var(--hair); color: var(--ink); font-size: 0.9231rem; }
+.toolServers .tsHead .m { margin-left: auto; color: var(--ash); font-size: 0.8462rem; }
+.toolServers .tsEmpty { padding: 12px; color: var(--ash); font-size: 0.9231rem; }
+.toolServers .tsGroup + .tsGroup { border-top: 1px solid var(--hair-soft); }
+.toolServers .tsScope { padding: 8px 12px 2px; color: var(--stone); font-size: 0.7692rem; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.04em; }
+.tsRow { display: flex; flex-direction: column; }
+.tsRow.orphan { flex-direction: row; align-items: center; gap: 8px; padding: 6px 12px; color: var(--mute); border-top: 1px solid var(--hair-soft); }
+.tsRow.orphan .name { color: var(--ink); }
+.tsRow.orphan .count { margin-left: auto; color: var(--ash); font-size: 0.8462rem; }
+.tsLine { display: flex; align-items: center; gap: 8px; padding: 3px 8px 3px 6px; }
+.tsLine .count { margin-left: auto; color: var(--ash); font-size: 0.8462rem; font-family: var(--mono); }
+.tsLine .pill { margin-left: auto; }
+.tsPick { display: inline-flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 6px; border: 0; background: transparent; color: var(--mute); border-radius: var(--r-sm); cursor: pointer; font-size: 0.9615rem; }
+.tsPick:hover:not(:disabled) { background: var(--elev); color: var(--ink); }
+.tsPick:disabled { cursor: not-allowed; opacity: 0.55; }
+.tsPick .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tsRow.on .tsPick { color: var(--ink); }
+.tsPick .box, .cbox { width: 14px; height: 14px; flex: none; display: inline-grid; place-items: center; border: 1px solid var(--hair-bright); border-radius: var(--r-xs); background: var(--canvas); color: var(--canvas); padding: 0; }
+.tsRow.on .tsPick .box, .cbox[data-state="checked"] { background: var(--ink); border-color: var(--ink); }
+.tsExpand svg { transition: transform 0.12s; }
+.tsExpand svg.rot { transform: rotate(90deg); }
+.tsTools { display: flex; flex-direction: column; padding: 2px 12px 8px 40px; }
+.tsTool { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: var(--body); font-size: 0.9231rem; cursor: pointer; }
+.tsTool .tname { font-family: var(--mono); font-size: 0.8462rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tsTool .pill { margin-left: auto; height: 18px; font-size: 0.7692rem; }
+.iconBtn svg.spin { animation: spin 0.9s linear infinite; }
+.tsMore { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent; cursor: pointer; text-align: left; padding-bottom: 8px; }
+.tsMore:hover { color: var(--ash); }
+.tsMore svg { transition: transform 0.12s; }
+.tsMore svg.rot { transform: rotate(90deg); }
+.tsRow.off .tsPick { cursor: default; opacity: 0.55; }
+
+/* ---------- watch form: run limits (watch-spec.md, item 3) ---------- */
+.limitsCard { padding: 0; }
+.limitsCard > .limitsHead { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; background: transparent; border: 0; color: var(--ink); cursor: pointer; font-size: 0.9615rem; text-align: left; }
+.limitsCard > .limitsHead .m { margin-left: auto; color: var(--ash); font-size: 0.8462rem; font-family: var(--mono); }
+.limitsCard > .limitsHead svg { color: var(--ash); transition: transform 0.12s; }
+.limitsCard > .limitsHead svg.rot { transform: rotate(90deg); }
+.limitsBody { display: grid; grid-template-columns: 140px 1fr; gap: 12px 16px; align-items: center; padding: 4px 14px 14px; border-top: 1px solid var(--hair); padding-top: 12px; }
+.limitsBody > label { color: var(--mute); font-size: 0.9231rem; }
+.limitsBody .ctl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.limitsBody input.num { width: 96px; padding: 4px 8px; font-family: var(--mono); font-size: 0.9231rem; }
+.checkLine { display: inline-flex; align-items: center; gap: 8px; color: var(--body); font-size: 0.9615rem; cursor: pointer; }
+
 /* ---------- watch page: health strip, tabs, runs table, items ---------- */
 .watchPageHead { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
 .watchPageHead .acts { margin-left: auto; display: flex; gap: 6px; align-items: center; flex: none; padding-top: 6px; }
@@ -2674,3 +2726,19 @@ dialog.briefDialog .knobs { display: flex; gap: 8px; align-items: center; flex-w
   background: var(--deep); color: var(--body); padding: 14px 18px;
   font-family: var(--mono); font-size: 0.9231rem; line-height: 19px; tab-size: 2; white-space: pre; overflow: auto;
 }
+/* Radix collapsible content carries `hidden` when closed; our display rules must not override it. */
+.limitsBody[hidden], .tsTools[hidden] { display: none; }
+
+/* integrations picker: tabs by source, search, bounded scroll (watch-spec.md, item 1) */
+.tsBar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--hair); flex-wrap: wrap; }
+.tsTabList { display: flex; gap: 2px; }
+.tsTab { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--ash); font-size: 0.8846rem; cursor: pointer; }
+.tsTab:hover { color: var(--ink); }
+.tsTab[data-state="active"] { background: var(--elev); color: var(--ink); }
+.tsTab .n { font-family: var(--mono); font-size: 0.7692rem; color: var(--stone); }
+.tsSearch { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border: 1px solid var(--hair-strong); border-radius: var(--r-sm); color: var(--ash); }
+.tsSearch:focus-within { border-color: var(--ink); }
+.wform .tsSearch input { width: 170px; border: 0; padding: 0; background: transparent; font-size: 0.8846rem; }
+.tsScroll { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
+.toolServers .tsEmpty.warnText { color: var(--yellow); display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--hair); }
+.toolServers .tsEmpty code { font-family: var(--mono); font-size: 0.8462rem; }

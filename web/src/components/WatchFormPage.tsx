@@ -1,25 +1,32 @@
 /**
  * The watch form, as a page (#/watches/new, #/watches/<id>/edit), in two
  * steps. Details: a name, the instructions (where to look and what counts),
- * the integrations the run may use, output, an optional project, model, and a
- * schedule. Preview: a dry run of exactly that — the transcript streams in as
+ * the project folder every run works in, the integrations and tools the run
+ * may use (watch-spec.md, items 1–2), output, model, a schedule, and run
+ * limits (item 3). Preview: a dry run of exactly that — the transcript streams in as
  * it happens, and at the end the item(s) it would have filed. Nothing is
  * saved by the preview; Create is the only write.
  */
-import { Check, ChevronDown, Clock } from 'lucide-react'
+import * as Collapsible from '@radix-ui/react-collapsible'
+import * as Checkbox from '@radix-ui/react-checkbox'
+import { Check, ChevronDown, ChevronRight, Clock } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type {
   Project,
   ProjectsResponse,
+  SettingsResponse,
   Watch,
-  WatchConnector,
+  WatchNotify,
   WatchOutput,
+  WatchToolGrant,
   WatchPreviewResult,
   WatchPreviewStartResponse,
   WatchPreviewStatusResponse,
   WatchesResponse,
 } from '../../../shared/protocol.js'
 import { describeCron, isValidCron } from '../../../core/watch/cron.js'
+import { defaultCatchUp, humanSpan, lookbackMs } from '../../../core/watch/schedule.js'
+import { builtinGrant, hasBuiltin } from '../../../core/watch/tools.js'
 import { useEvents } from '../hooks.js'
 import { relTime } from '../itemUi.js'
 import { useModels } from '../models.js'
@@ -29,7 +36,8 @@ import { Select, SelectItem } from '../ui/Select.js'
 import { ProjectIdPicker } from './ProjectPicker.js'
 import { Markdown } from './Markdown.js'
 import { Transcript } from './Transcript.js'
-import { CONNECTORS, OUTPUTS, PRESETS, cronToPreset, presetToCron, type SchedulePreset } from '../watchUi.js'
+import { OUTPUTS, PRESETS, cronToPreset, presetToCron, type SchedulePreset } from '../watchUi.js'
+import { WatchToolPicker } from './WatchToolPicker.js'
 
 // Inbox thumbs-down → refine: the correction is appended to the instructions
 // so the rule stays human-readable. sessionStorage survives the hash change.
@@ -38,7 +46,7 @@ export const REFINE_WATCH_KEY = 'triage.watch.refine'
 type Form = {
   title: string
   instruction: string
-  connectors: WatchConnector[]
+  tools: WatchToolGrant[]
   projectId: string
   /** '' = Claude Code's default */
   model: string
@@ -46,32 +54,64 @@ type Form = {
   preset: SchedulePreset
   time: string
   cron: string
+  /** '' = the default for the output */
+  catchUp: string
+  /** minutes; '' = the workspace default */
+  timeoutMin: string
+  /** dollars; '' = the workspace default */
+  budget: string
+  notify: WatchNotify
+  /** create only: run once as soon as it's saved */
+  runOnceNow: boolean
 }
 
 const EMPTY: Form = {
   title: '',
   instruction: '',
-  connectors: ['web'],
+  tools: [builtinGrant('web')],
   projectId: '',
   model: '',
   output: 'items',
   preset: 'daily',
   time: '09:00',
   cron: '0 9 * * *',
+  catchUp: '',
+  timeoutMin: '',
+  budget: '',
+  notify: 'on_failure',
+  runOnceNow: true,
 }
+
+const CATCH_UPS: Array<{ id: string; label: string }> = [
+  { id: '', label: 'Default' },
+  { id: 'unlimited', label: 'Always' },
+  { id: '6h', label: 'Within 6h' },
+  { id: '1h', label: 'Within 1h' },
+  { id: 'never', label: 'Never' },
+]
+const NOTIFY: Array<{ id: WatchNotify; label: string }> = [
+  { id: 'on_failure', label: 'On failure' },
+  { id: 'always', label: 'Always' },
+  { id: 'never', label: 'Never' },
+]
 
 function formFrom(w: Watch): Form {
   const { preset, time } = cronToPreset(w.schedule)
   return {
     title: w.title,
     instruction: w.instruction,
-    connectors: w.connectors,
+    tools: w.tools,
     projectId: w.projectId ?? '',
     model: w.model ?? '',
     output: w.output,
     preset,
     time,
     cron: w.schedule,
+    catchUp: w.catchUpWindow ?? '',
+    timeoutMin: w.timeoutMs ? String(Math.round(w.timeoutMs / 60_000)) : '',
+    budget: w.maxBudgetUsd != null ? String(w.maxBudgetUsd) : '',
+    notify: w.notify,
+    runOnceNow: false,
   }
 }
 
@@ -92,13 +132,20 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
   const [saving, setSaving] = useState(false)
   const [step, setStep] = useState<Step>('details')
   const [preview, setPreview] = useState<Preview>({ phase: 'idle' })
+  const [configError, setConfigError] = useState('')
+  const [limitsOpen, setLimitsOpen] = useState(false)
+  const [defaults, setDefaults] = useState<{ timeoutMs: number; budget: number | null }>({ timeoutMs: 240_000, budget: null })
 
   useEffect(() => {
     void fetch('/api/projects')
       .then((r) => r.json() as Promise<ProjectsResponse>)
       .then((b) => setProjects(b.ok ? b.projects : []))
       .catch(() => setProjects([]))
-  }, [])
+    void fetch('/api/settings')
+      .then((r) => r.json() as Promise<SettingsResponse>)
+      .then((b) => b.ok && setDefaults({ timeoutMs: b.settings.watchTimeoutMs, budget: b.settings.watchBudgetUsd }))
+      .catch(() => {})
+  }, [id])
 
   useEffect(() => {
     if (id === null) return
@@ -112,6 +159,7 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
           return
         }
         const f = formFrom(w)
+        setConfigError(w.configError ?? '')
         const raw = sessionStorage.getItem(REFINE_WATCH_KEY)
         if (raw) {
           sessionStorage.removeItem(REFINE_WATCH_KEY)
@@ -137,15 +185,15 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
   const cron = useMemo(() => (form.preset === 'custom' ? form.cron.trim() : presetToCron(form.preset, form.time)), [form.preset, form.time, form.cron])
   const cronOk = isValidCron(cron)
 
-  const toggleConnector = (c: WatchConnector) =>
-    setForm((f) => ({
-      ...f,
-      connectors: f.connectors.includes(c) ? f.connectors.filter((x) => x !== c) : [...f.connectors, c],
-    }))
-
-  const complete = Boolean(form.title.trim() && form.instruction.trim() && form.connectors.length > 0 && cronOk)
+  const timeoutMs = form.timeoutMin.trim() ? Math.round(Number(form.timeoutMin) * 60_000) : null
+  const budget = form.budget.trim() ? Number(form.budget) : null
+  const limitsOk =
+    (timeoutMs === null || (Number.isFinite(timeoutMs) && timeoutMs >= 30_000 && timeoutMs <= 3_600_000)) &&
+    (budget === null || (Number.isFinite(budget) && budget > 0 && budget <= 100))
+  const complete = Boolean(form.title.trim() && form.instruction.trim() && form.tools.length > 0 && form.projectId && cronOk && limitsOk)
   // The instructions talk about the web but the run would have no web tools.
-  const wantsWeb = /\b(news|web|google|internet|online|website|blog|article|search the)\b/i.test(form.instruction) && !form.connectors.includes('web')
+  const wantsWeb = /\b(news|web|google|internet|online|website|blog|article|search the)\b/i.test(form.instruction) && !hasBuiltin(form.tools, 'web')
+  const lookback = cronOk ? humanSpan(lookbackMs(cron, Date.now())) : null
 
   async function save() {
     setSaving(true)
@@ -154,11 +202,16 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
       const payload = {
         title: form.title.trim(),
         instruction: form.instruction.trim(),
-        connectors: form.connectors,
-        projectId: form.projectId || null,
+        tools: form.tools,
+        projectId: form.projectId,
         model: form.model || null,
         output: form.output,
         schedule: cron,
+        catchUpWindow: form.catchUp || null,
+        timeoutMs,
+        maxBudgetUsd: budget,
+        notify: form.notify,
+        ...(id ? {} : { runOnceNow: form.runOnceNow }),
       }
       const res = await fetch(id ? `/api/watches?id=${encodeURIComponent(id)}` : '/api/watches', {
         method: id ? 'PUT' : 'POST',
@@ -177,8 +230,8 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
 
   // The dry run depends on these fields; a change after previewing marks the
   // result stale so the user knows the transcript no longer matches the form.
-  const previewSig = JSON.stringify([form.instruction.trim(), [...form.connectors].sort(), form.projectId, form.model, form.output])
-  const canPreview = Boolean(form.instruction.trim()) && form.connectors.length > 0
+  const previewSig = JSON.stringify([form.instruction.trim(), form.tools, form.projectId, form.model, form.output, cron])
+  const canPreview = Boolean(form.instruction.trim()) && form.tools.length > 0 && Boolean(form.projectId)
 
   async function startPreview() {
     setError('')
@@ -189,10 +242,11 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           instruction: form.instruction.trim(),
-          connectors: form.connectors,
-          projectId: form.projectId || null,
+          tools: form.tools,
+          projectId: form.projectId,
           model: form.model || null,
           output: form.output,
+          schedule: cronOk ? cron : undefined,
         }),
       })
       const body = (await res.json()) as WatchPreviewStartResponse
@@ -277,21 +331,38 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
             </div>
 
             <div className="field">
-              <label>
-                Integrations <span className="hint">· the run only has these tools, read-only</span>
+              <label htmlFor="wf-project">
+                Project <span className="hint">· where the run works. It can read files here and nowhere else.</span>
               </label>
-              <div className="chipRow">
-                {CONNECTORS.map((c) => {
-                  const on = form.connectors.includes(c.id)
-                  const Icon = on ? Check : c.icon
-                  return (
-                    <button key={c.id} type="button" className={`cchip${on ? ' on' : ''}`} aria-pressed={on} onClick={() => toggleConnector(c.id)}>
-                      <Icon size={13} aria-hidden="true" className={on ? 'tick' : undefined} />
-                      {c.label}
-                    </button>
-                  )
-                })}
-              </div>
+              <ProjectIdPicker projects={projects} value={form.projectId} allowNone={false} onChange={(v) => v && set('projectId', v)}>
+                {(current) => (
+                  <button type="button" id="wf-project" className="wformSelect" aria-label="Project">
+                    {current && (
+                      <span className="pdot" style={{ background: projectColor(current.path) }} aria-hidden="true" />
+                    )}
+                    <span className="val">{current?.name ?? 'Pick a project'}</span>
+                    <ChevronDown className="caret" size={14} aria-hidden="true" />
+                  </button>
+                )}
+              </ProjectIdPicker>
+              {project && <span className="hint mono">{project.path}</span>}
+              {projects.length === 0 && (
+                <span className="hint">
+                  A watch runs in a project folder. <a href="#/settings/projects">Add a project in Settings → Projects</a> first.
+                </span>
+              )}
+              {configError && <span className="formError">{configError}</span>}
+            </div>
+
+            <div className="field">
+              <label>
+                Integrations <span className="hint">· the run only has these tools</span>
+              </label>
+              {form.projectId ? (
+                <WatchToolPicker projectId={form.projectId} value={form.tools} onChange={(t) => set('tools', t)} />
+              ) : (
+                <span className="hint">Pick a project first — which MCP servers load depends on its folder.</span>
+              )}
               {wantsWeb && <span className="hint">This sounds like a web search. Tick Web, or the run can only look in the integrations above.</span>}
             </div>
 
@@ -314,24 +385,6 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
                 ))}
               </div>
               <span className="hint">{OUTPUTS.find((o) => o.id === form.output)?.hint}</span>
-            </div>
-
-            <div className="field">
-              <label htmlFor="wf-project">
-                Project <span className="hint">· optional. Lets the run read code.</span>
-              </label>
-              <ProjectIdPicker projects={projects} value={form.projectId} onChange={(v) => set('projectId', v)}>
-                {(current) => (
-                  <button type="button" id="wf-project" className="wformSelect" aria-label="Project">
-                    {current && (
-                      <span className="pdot" style={{ background: projectColor(current.path) }} aria-hidden="true" />
-                    )}
-                    <span className="val">{current?.name ?? 'None'}</span>
-                    <ChevronDown className="caret" size={14} aria-hidden="true" />
-                  </button>
-                )}
-              </ProjectIdPicker>
-              {project && <span className="hint mono">{project.path}</span>}
             </div>
 
             <div className="field">
@@ -393,9 +446,80 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
                     </>
                   )}
                 </div>
-                <span className="hint">Missed slots run once on wake. Runs are staggered a few minutes apart.</span>
+                <span className="hint">
+                  Each run looks back {lookback ? `about ${lookback}` : 'two schedule periods'} unless your instructions say otherwise. Missed slots run once on wake.
+                </span>
               </div>
             </div>
+
+            <Collapsible.Root open={limitsOpen} onOpenChange={setLimitsOpen} className="card limitsCard">
+              <Collapsible.Trigger asChild>
+                <button type="button" className="limitsHead">
+                  <ChevronRight size={13} aria-hidden="true" className={limitsOpen ? 'rot' : undefined} />
+                  Catch-up, limits and notifications
+                  <span className="m">
+                    {form.catchUp || `catch-up ${defaultCatchUp(form.output) === 'unlimited' ? 'always' : 'within 6h'}`} ·{' '}
+                    {timeoutMs ? humanSpan(timeoutMs) : humanSpan(defaults.timeoutMs)} · {budget != null ? `$${budget}` : defaults.budget != null ? `$${defaults.budget}` : 'no cap'}
+                  </span>
+                </button>
+              </Collapsible.Trigger>
+              <Collapsible.Content className="limitsBody">
+                <label>Missed slots</label>
+                <div className="ctl">
+                  <div className="seg" role="radiogroup" aria-label="Catch-up window">
+                    {CATCH_UPS.map((c) => (
+                      <button key={c.id} type="button" role="radio" aria-checked={form.catchUp === c.id} className={`segBtn${form.catchUp === c.id ? ' active' : ''}`} onClick={() => set('catchUp', c.id)}>
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="hint">
+                    {form.catchUp === ''
+                      ? form.output === 'digest'
+                        ? 'Digests skip a slot missed by more than 6h.'
+                        : 'Item watches always catch up once on wake.'
+                      : form.catchUp === 'never'
+                        ? 'Only on-time slots run.'
+                        : form.catchUp === 'unlimited'
+                          ? 'A missed slot always runs once on wake.'
+                          : `A slot missed by more than ${form.catchUp} is skipped.`}
+                  </span>
+                </div>
+                <label htmlFor="wf-timeout">Timeout</label>
+                <div className="ctl">
+                  <input id="wf-timeout" className="num" inputMode="numeric" value={form.timeoutMin} onChange={(e) => set('timeoutMin', e.target.value)} placeholder={String(Math.round(defaults.timeoutMs / 60_000))} />
+                  <span className="hint">minutes · blank = workspace default</span>
+                </div>
+                <label htmlFor="wf-budget">Budget per run</label>
+                <div className="ctl">
+                  <input id="wf-budget" className="num" inputMode="decimal" value={form.budget} onChange={(e) => set('budget', e.target.value)} placeholder={defaults.budget != null ? String(defaults.budget) : 'none'} />
+                  <span className="hint">dollars · the run stops when it hits the cap</span>
+                </div>
+                <label>Notify</label>
+                <div className="ctl">
+                  <div className="seg" role="radiogroup" aria-label="Notify">
+                    {NOTIFY.map((n) => (
+                      <button key={n.id} type="button" role="radio" aria-checked={form.notify === n.id} className={`segBtn${form.notify === n.id ? ' active' : ''}`} onClick={() => set('notify', n.id)}>
+                        {n.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="hint">a macOS notification</span>
+                </div>
+                {!limitsOk && <span className="formError" style={{ gridColumn: '1 / -1' }}>Timeout must be 1–60 minutes; budget $0.01–$100.</span>}
+              </Collapsible.Content>
+            </Collapsible.Root>
+
+            {!id && (
+              <label className="checkLine">
+                <Checkbox.Root className="cbox" checked={form.runOnceNow} onCheckedChange={(v) => set('runOnceNow', v === true)}>
+                  <Checkbox.Indicator>
+                    <Check size={10} aria-hidden="true" />
+                  </Checkbox.Indicator>
+                </Checkbox.Root>
+                Run once as soon as it’s created
+              </label>
+            )}
 
             {error && <div className="formError">{error}</div>}
 

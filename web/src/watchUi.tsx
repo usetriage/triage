@@ -1,19 +1,50 @@
 /**
- * Shared bits for the Watches surfaces: connector labels and icons, and the
+ * Shared bits for the Watches surfaces: integration labels and icons, and the
  * schedule presets the form and the table both speak.
  */
-import { GitBranch, Globe, Hash, Layers, type LucideProps } from 'lucide-react'
+import { FilePen, GitBranch, Globe, Hash, Layers, Plug, type LucideProps } from 'lucide-react'
 import type { ComponentType } from 'react'
-import type { WatchConnector, WatchOutput } from '../../shared/protocol.js'
+import type { WatchOutput, WatchRunStatus, WatchRunTrigger, WatchToolGrant } from '../../shared/protocol.js'
+import { grantLabel, type BuiltinToolId } from '../../core/watch/tools.js'
 
-export const CONNECTORS: Array<{ id: WatchConnector; label: string; icon: ComponentType<LucideProps> }> = [
-  { id: 'web', label: 'Web', icon: Globe },
-  { id: 'slack', label: 'Slack', icon: Hash },
-  { id: 'linear', label: 'Linear', icon: Layers },
-  { id: 'github', label: 'GitHub', icon: GitBranch },
+export const BUILTINS: Array<{ id: BuiltinToolId; label: string; icon: ComponentType<LucideProps>; hint: string }> = [
+  { id: 'web', label: 'Web', icon: Globe, hint: 'Search and read web pages' },
+  { id: 'github', label: 'GitHub', icon: GitBranch, hint: 'Read PRs, issues and runs with your gh login' },
+  { id: 'files-write', label: 'Write files', icon: FilePen, hint: 'Write and edit files in the project folder — a write permission' },
 ]
 
-export const connectorLabel = (id: WatchConnector): string => CONNECTORS.find((c) => c.id === id)?.label ?? id
+const SERVER_ICONS: Record<string, ComponentType<LucideProps>> = { 'claude.ai Slack': Hash, 'claude.ai Linear': Layers }
+
+/** The icon for one grant: built-ins have their own, a known server its own, anything else a plug. */
+export function grantIcon(g: WatchToolGrant): ComponentType<LucideProps> {
+  if (g.source.kind === 'builtin') {
+    const id = g.source.id
+    return BUILTINS.find((b) => b.id === id)?.icon ?? Plug
+  }
+  return SERVER_ICONS[g.source.server] ?? Plug
+}
+
+export { grantLabel }
+
+/** "ok (caught up)", "failed ×3", … — a run status the way the list shows it. */
+export function runStatusText(status: WatchRunStatus | undefined, trigger?: WatchRunTrigger, failures = 0): string {
+  if (!status) return 'never'
+  if (status === 'ok') return trigger === 'catch_up' ? 'ok (caught up)' : 'ok'
+  if ((status === 'failed' || status === 'timeout') && failures > 1) return `${status} ×${failures}`
+  return status
+}
+
+/** A future time, compactly: "in 12m", "in 3h", "Mon 09:00". */
+export function fmtUntil(at: number, now = Date.now()): string {
+  const s = Math.round((at - now) / 1000)
+  if (s < 60) return 'in <1m'
+  if (s < 3600) return `in ${Math.round(s / 60)}m`
+  if (s < 86400) return `in ${Math.round(s / 3600)}h`
+  const d = new Date(at)
+  return `${d.toLocaleDateString(undefined, { weekday: 'short' })} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+export const TRIGGER_LABEL: Record<WatchRunTrigger, string> = { scheduled: 'scheduled', catch_up: 'caught up', manual: 'manual' }
 
 /** The schedule presets — a preset plus a local time renders to one cron line. */
 export type SchedulePreset = 'hourly' | 'daily' | 'weekdays' | 'weekly' | 'custom'

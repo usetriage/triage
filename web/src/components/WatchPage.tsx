@@ -15,7 +15,9 @@ import { kindIcon, relTime } from '../itemUi.js'
 import { store } from '../store.js'
 import { Transcript } from './Transcript.js'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
-import { CONNECTORS, connectorLabel } from '../watchUi.js'
+import { humanSpan, lookbackMs, parseCatchUp } from '../../../core/watch/schedule.js'
+import { TRIGGER_LABEL, grantIcon, grantLabel, runStatusText } from '../watchUi.js'
+import { ago, nextRunText, runDotClass } from './WatchesPage.js'
 
 type Tab = 'overview' | 'runs' | 'items'
 const WEEK_MS = 7 * 86_400_000
@@ -86,9 +88,9 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
     return {
       lastOk,
       ok: week.filter((r) => r.status === 'ok').length,
-      failed: week.filter((r) => r.status === 'failed').length,
-      skipped: week.filter((r) => r.status === 'skipped').length,
-      filed: week.reduce((n, r) => n + (r.matches ?? 0), 0),
+      failed: week.filter((r) => r.status === 'failed' || r.status === 'timeout').length,
+      skipped: week.filter((r) => r.status === 'skipped' || r.status === 'interrupted').length,
+      filed: week.reduce((n, r) => n + (r.newCount ?? r.matches ?? 0), 0),
       tokens: week.reduce((n, r) => n + (r.tokens ?? 0), 0),
       runsWithTokens: week.filter((r) => (r.tokens ?? 0) > 0).length,
       cost: week.reduce((n, r) => n + (r.costUsd ?? 0), 0),
@@ -154,7 +156,10 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
   }
 
   const project = watch.projectId ? projects.find((p) => p.id === watch.projectId) : undefined
-  const nextDue = watch.enabled ? nextScheduled(watch.schedule, Date.now()) : null
+  const nextDue = watch.enabled && !watch.configError ? nextScheduled(watch.schedule, watch.lastRunStartedAt ?? Date.now()) : null
+  const catchUp = parseCatchUp(watch.catchUpWindow, watch.output)
+  const catchUpText = catchUp.kind === 'unlimited' ? 'always, once on wake' : catchUp.kind === 'never' ? 'never — on-time slots only' : `within ${humanSpan(catchUp.ms)}`
+  const uses = watch.tools.map(grantLabel).join(', ')
   const shownRuns = showAll ? runs : runs.slice(0, SHOW_RUNS)
   const edit = () => onNavigate(`/watches/${encodeURIComponent(watch.id)}/edit`)
 
@@ -175,16 +180,16 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
             <h1 className="display">{watch.title}</h1>
             <div className="watchMetaLine">
               <span className="uses">
-                {watch.connectors.map((c) => {
-                  const Icon = CONNECTORS.find((x) => x.id === c)?.icon
+                {watch.tools.map((g) => {
+                  const Icon = grantIcon(g)
                   return (
-                    <span key={c} className="u" title={connectorLabel(c)}>
-                      {Icon && <Icon size={11} aria-hidden="true" />}
+                    <span key={grantLabel(g)} className="u" title={grantLabel(g)}>
+                      <Icon size={11} aria-hidden="true" />
                     </span>
                   )
                 })}
               </span>
-              <span>{watch.connectors.map(connectorLabel).join(', ')}</span>
+              <span>{uses}</span>
               {project && (
                 <>
                   <span className="sep">·</span>
@@ -206,11 +211,11 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
                 </>
               )}
               <span className="sep">·</span>
-              <span className="mono">{watch.cursor ? `cursor ${relTime(Date.parse(watch.cursor))} ago` : 'no cursor yet'}</span>
+              <span className="mono">last {runStatusText(watch.lastRunStatus, watch.lastRunTrigger, watch.consecutiveFailures)}</span>
               {nextDue != null && (
                 <>
                   <span className="sep">·</span>
-                  <span>next {fmtWhen(nextDue)}</span>
+                  <span>next {nextDue <= Date.now() ? nextRunText(watch) : fmtWhen(nextDue)}</span>
                 </>
               )}
             </div>
@@ -248,6 +253,19 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
         </div>
 
         {error && <div className="msg error">{error}</div>}
+        {watch.configError && (
+          <div className="msg error">
+            This watch can’t run: {watch.configError}.{' '}
+            <button type="button" className="tlink" onClick={edit}>
+              Edit the watch
+            </button>
+          </div>
+        )}
+        {!watch.configError && watch.consecutiveFailures > 1 && (
+          <div className="msg error">
+            The last {watch.consecutiveFailures} runs failed{watch.lastRunError ? `: ${watch.lastRunError}` : ''}.
+          </div>
+        )}
 
         <div className="statsCard">
         <div className="stats">
@@ -256,7 +274,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
             <div className="v">
               {health.lastOk ? (
                 <>
-                  {relTime(health.lastOk.startedAt)} ago <small>{fmtWhen(health.lastOk.startedAt)}</small>
+                  {ago(health.lastOk.startedAt)} <small>{fmtWhen(health.lastOk.startedAt)}</small>
                 </>
               ) : (
                 <small className="dim">never</small>
@@ -341,9 +359,11 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
             </div>
             <div className="card soft watchKv">
               <span className="k">Uses</span>
-              <span className="v">{watch.connectors.map(connectorLabel).join(', ')}</span>
+              <span className="v">
+                {watch.tools.map((g) => `${grantLabel(g)} (${g.tools.length} tool${g.tools.length === 1 ? '' : 's'})`).join(', ')}
+              </span>
               <span className="k">Project</span>
-              <span className="v mono">{project ? project.name : watch.projectId ? 'removed' : 'none'}</span>
+              <span className="v mono">{project ? `${project.name} · ${project.path}` : 'removed'}</span>
               <span className="k">Output</span>
               <span className="v">{watch.output === 'digest' ? 'one rolling digest with a report' : 'work items'}</span>
               <span className="k">Model</span>
@@ -352,10 +372,18 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
               <span className="v">
                 {describeCron(watch.schedule)} <span className="mono" style={{ color: 'var(--stone)' }}>{watch.schedule}</span>
               </span>
-              <span className="k">Cursor</span>
-              <span className="v mono">{watch.cursor ? new Date(watch.cursor).toLocaleString() : 'not set — the first run sets it'}</span>
+              <span className="k">Looks back</span>
+              <span className="v">about {humanSpan(lookbackMs(watch.schedule, Date.now()))} unless the instructions say otherwise</span>
+              <span className="k">Missed slots</span>
+              <span className="v">{catchUpText}</span>
+              <span className="k">Limits</span>
+              <span className="v mono">
+                {watch.timeoutMs ? humanSpan(watch.timeoutMs) : 'default timeout'} · {watch.maxBudgetUsd != null ? `$${watch.maxBudgetUsd} cap` : 'default budget'}
+              </span>
+              <span className="k">Notify</span>
+              <span className="v">{watch.notify === 'on_failure' ? 'on failure' : watch.notify}</span>
               <span className="k">Next due</span>
-              <span className="v">{nextDue != null ? fmtWhen(nextDue) : watch.enabled ? '—' : 'paused'}</span>
+              <span className="v">{watch.configError ? 'blocked' : nextDue != null ? fmtWhen(nextDue) : watch.enabled ? '—' : 'paused'}</span>
               <span className="k">Created</span>
               <span className="v">{new Date(watch.createdAt).toLocaleDateString()}</span>
               {watch.scope && (
@@ -380,7 +408,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
                     <th>Started</th>
                     <th className="r">Took</th>
                     <th>Outcome</th>
-                    <th className="r">Filed</th>
+                    <th className="r">New</th>
                     <th className="r">Tokens</th>
                     <th className="r">Cost</th>
                     <th aria-label="Transcript" />
@@ -389,14 +417,23 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
                 <tbody>
                   {shownRuns.map((r) => {
                     const live = !r.status
-                    const dot = live ? 'blue live' : r.status === 'ok' ? 'green' : r.status === 'failed' ? 'red' : 'stone'
+                    const dot = live ? 'blue live' : runDotClass(r.status)
+                    const why = r.trigger && r.trigger !== 'scheduled' ? ` · ${TRIGGER_LABEL[r.trigger]}` : ''
+                    const found =
+                      r.newCount != null
+                        ? r.matches
+                          ? ` · ${r.newCount} new${r.matches - r.newCount > 0 ? `, ${r.matches - r.newCount} already filed` : ''}`
+                          : ' · looked, found nothing'
+                        : r.matches
+                          ? ` · ${r.matches} filed`
+                          : ' · looked, found nothing'
                     const outcome = live
                       ? 'running…'
                       : r.status === 'ok'
-                        ? `ok${r.matches ? ` · ${r.matches} filed` : ' · looked, found nothing'}`
-                        : r.status === 'failed'
-                          ? `failed · ${r.error ?? 'unknown error'} · cursor held`
-                          : `skipped · ${r.error ?? 'previous run still in progress'}`
+                        ? `ok${found}${why}`
+                        : r.status === 'skipped'
+                          ? (r.error ?? 'skipped')
+                          : `${r.status} · ${r.error ?? 'unknown error'}${why}`
                     return (
                       <tr key={r.sessionId}>
                         <td className="d">
@@ -404,8 +441,8 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
                         </td>
                         <td className="mono">{fmtWhen(r.startedAt)}</td>
                         <td className="r mono">{live ? '—' : fmtDur(r.finishedAt - r.startedAt)}</td>
-                        <td className={`outcome${r.status === 'failed' ? ' bad' : r.status === 'skipped' ? ' skip' : ''}`}>{outcome}</td>
-                        <td className="r mono">{r.status === 'ok' ? (r.matches ?? 0) : '—'}</td>
+                        <td className={`outcome${r.status === 'failed' || r.status === 'timeout' ? ' bad' : r.status === 'skipped' || r.status === 'interrupted' ? ' skip' : ''}`}>{outcome}</td>
+                        <td className="r mono">{r.status === 'ok' ? (r.newCount ?? r.matches ?? 0) : '—'}</td>
                         <td className="r mono">{r.tokens ? fmtTokens(r.tokens) : '—'}</td>
                         <td className="r mono">{r.costUsd != null ? fmtUsd(r.costUsd) : '—'}</td>
                         <td className="tr r">
@@ -419,7 +456,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
                 </tbody>
               </table>
               <div className="rtblFoot">
-                <span>Every run is a session. Failed runs keep the cursor so no window is skipped.</span>
+                <span>Every run is a session. Runs are stateless: each looks back over its window, and anything found twice lands on the same item.</span>
                 {runs.length > SHOW_RUNS && (
                   <button type="button" onClick={() => setShowAll((v) => !v)}>
                     {showAll ? `Show latest ${SHOW_RUNS}` : `Show all ${runs.length}`}

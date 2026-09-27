@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { FolderOpen } from 'lucide-react'
-import type { PickFolderResponse, Project, ProjectsResponse } from '../../../shared/protocol.js'
+import type { PickFolderResponse, Project, ProjectsResponse, WatchesResponse } from '../../../shared/protocol.js'
 import { projectColor } from '../tabs.js'
 
 type LoadState =
@@ -35,8 +35,14 @@ export function ProjectsTab() {
     void load()
   }, [load])
 
-  async function remove(id: string) {
-    const res = await fetch(`/api/projects?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+  async function remove(p: Project) {
+    // Watches run only in their project; removing it pauses them (watch-spec.md, item 2).
+    const wb = (await fetch('/api/watches')
+      .then((r) => r.json())
+      .catch(() => null)) as WatchesResponse | null
+    const using = wb?.ok ? wb.watches.filter((w) => w.projectId === p.id) : []
+    if (using.length && !confirm(`Remove “${p.name}”? ${using.length === 1 ? 'This watch' : `These ${using.length} watches`} will pause until you pick another project:\n\n${using.map((w) => `· ${w.title}`).join('\n')}`)) return
+    const res = await fetch(`/api/projects?id=${encodeURIComponent(p.id)}`, { method: 'DELETE' })
     const body = (await res.json()) as ProjectsResponse
     if (body.ok) setState({ phase: 'ready', projects: body.projects })
   }
@@ -60,7 +66,7 @@ export function ProjectsTab() {
                   <span className="projPath" title={p.path}>
                     {tilde(p.path)}
                   </span>
-                  <button className="projDelete" title="Remove project" onClick={() => void remove(p.id)}>
+                  <button className="projDelete" title="Remove project" onClick={() => void remove(p)}>
                     ✕
                   </button>
                 </div>

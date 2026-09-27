@@ -160,6 +160,13 @@ function StatusTab({ conn }: { conn: ConnState }) {
         tone="dim"
       />
       <Row label="Scheduler last tick" value={rel(status.schedulerLastTickAt)} tone={status.schedulerLastTickAt ? 'ok' : 'warn'} />
+      {status.launchAgent !== null && (
+        <Row
+          label="Keeps running"
+          value={status.launchAgent ? 'LaunchAgent installed — restarts after reboot or crash' : 'not installed — run `triage install` so watches survive a reboot'}
+          tone={status.launchAgent ? 'ok' : 'warn'}
+        />
+      )}
       <Row label="Watch runs in flight" value={String(status.runningWatches)} />
       <Row label="Inbox last synced" value={rel(status.inboxSyncedAt)} />
       <Row
@@ -169,8 +176,8 @@ function StatusTab({ conn }: { conn: ConnState }) {
       />
       <Row
         label="Watches"
-        value={`${status.watches.enabled}/${status.watches.total} enabled${status.watches.failing ? ` · ${status.watches.failing} failing` : ''}${status.watches.overdue ? ` · ${status.watches.overdue} overdue` : ''}`}
-        tone={status.watches.failing ? 'bad' : status.watches.overdue ? 'warn' : 'ok'}
+        value={`${status.watches.enabled}/${status.watches.total} enabled${status.watches.failing ? ` · ${status.watches.failing} failing` : ''}${status.watches.configErrors ? ` · ${status.watches.configErrors} need fixing` : ''}${status.watches.overdue ? ` · ${status.watches.overdue} overdue` : ''}`}
+        tone={status.watches.failing || status.watches.configErrors ? 'bad' : status.watches.overdue ? 'warn' : 'ok'}
       />
       <Row label="Logs" value={status.logDir ?? 'in-memory only'} tone="dim" />
     </div>

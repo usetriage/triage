@@ -1,18 +1,39 @@
 /**
- * Watches, as a table: one row per watch — switch, name, the connectors it may
- * use, schedule, last run, the last seven outcomes, tokens this week. Active /
+ * Watches, as a table: one row per watch — switch, name, the integrations it
+ * may use and its project, schedule, last run (with failure streaks, catch-ups
+ * and config errors), next run, the last seven outcomes, tokens this week. Active /
  * Paused / All tabs, a filter, and Add watch. Runs live on each watch, not on
  * this page; the dots are the only history shown here.
  */
 import * as Switch from '@radix-ui/react-switch'
 import { Ellipsis, Pencil, Play, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { ActivityResponse, ActivityRun, SettingsResponse, Watch, WatchesResponse } from '../../../shared/protocol.js'
+import type { ActivityResponse, ActivityRun, Project, ProjectsResponse, SettingsResponse, Watch, WatchesResponse } from '../../../shared/protocol.js'
 import { rowOpen } from '../tabs.js'
-import { describeCron } from '../../../core/watch/cron.js'
+import { describeCron, nextScheduled } from '../../../core/watch/cron.js'
 import { relTime } from '../itemUi.js'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
-import { CONNECTORS, connectorLabel } from '../watchUi.js'
+import { fmtUntil, grantIcon, grantLabel, runStatusText } from '../watchUi.js'
+
+/** "5m ago", "3d ago" — or a plain date past two weeks, where "ago" would read wrong. */
+export const ago = (at: number): string => {
+  const r = relTime(at)
+  return /^\d+[mhd]$/.test(r) ? `${r} ago` : r
+}
+
+/** The dot colour for one run outcome. */
+export const runDotClass = (status: string | undefined): string =>
+  !status ? 'blue' : status === 'ok' ? 'green' : status === 'failed' || status === 'timeout' ? 'red' : status === 'interrupted' ? 'yellow' : 'stone'
+
+/** When the watch runs next, as the due rule sees it. */
+export function nextRunText(w: Watch, now = Date.now()): string {
+  if (!w.enabled) return '—'
+  if (w.configError) return 'blocked'
+  if (w.lastRunStartedAt == null) return 'now'
+  const next = nextScheduled(w.schedule, w.lastRunStartedAt)
+  if (next == null) return '—'
+  return next <= now ? 'due now' : fmtUntil(next, now)
+}
 
 type Tab = 'active' | 'paused' | 'all'
 const TABS: Array<{ id: Tab; label: string }> = [
@@ -45,8 +66,13 @@ export function WatchesPage({
   const [running, setRunning] = useState<Set<string>>(new Set())
   // The global switch (Settings → Sources). Off = the scheduler never runs a watch.
   const [enabled, setEnabled] = useState<boolean | null>(null)
+  const [projects, setProjects] = useState<Project[]>([])
 
   useEffect(() => {
+    void fetch('/api/projects')
+      .then((r) => r.json() as Promise<ProjectsResponse>)
+      .then((b) => setProjects(b.ok ? b.projects : []))
+      .catch(() => {})
     void fetch('/api/settings')
       .then((r) => r.json() as Promise<SettingsResponse>)
       .then((b) => setEnabled(b.ok ? b.settings.watchesEnabled : null))
@@ -191,6 +217,7 @@ export function WatchesPage({
                     <th>Uses</th>
                     <th>Schedule</th>
                     <th>Last run</th>
+                    <th>Next</th>
                     <th>Last 7</th>
                     <th className="r">Tokens 7d</th>
                     <th aria-label="Actions" />
@@ -199,7 +226,8 @@ export function WatchesPage({
                 <tbody>
                   {rows.map((w) => {
                     const h = history.get(w.id)
-                    const failed = w.lastRunStatus === 'failed'
+                    const failed = w.lastRunStatus === 'failed' || w.lastRunStatus === 'timeout' || Boolean(w.configError)
+                    const project = projects.find((p) => p.id === w.projectId)
                     return (
                       <tr key={w.id} className={w.enabled ? undefined : 'off'}>
                         <td className="sw">
@@ -222,35 +250,48 @@ export function WatchesPage({
                         </td>
                         <td>
                           <span className="uses">
-                            {w.connectors.map((c) => {
-                              const Icon = CONNECTORS.find((x) => x.id === c)?.icon
+                            {w.tools.map((g) => {
+                              const Icon = grantIcon(g)
                               return (
-                                <span key={c} className="u" title={connectorLabel(c)}>
-                                  {Icon && <Icon size={11} aria-hidden="true" />}
+                                <span key={grantLabel(g)} className="u" title={`${grantLabel(g)} · ${g.tools.length} tool${g.tools.length === 1 ? '' : 's'}`}>
+                                  <Icon size={11} aria-hidden="true" />
                                 </span>
                               )
                             })}
-                            {w.projectId && (
-                              <span className="u proj" title="Project">
-                                project
+                            {project && (
+                              <span className="u proj" title={project.path}>
+                                {project.name}
                               </span>
                             )}
                           </span>
                         </td>
                         <td className="mono">{describeCron(w.schedule)}</td>
                         <td>
-                          <span className={`mono${failed ? ' bad' : ''}`} title={w.lastRunError ?? undefined}>
-                            {w.lastRunAt == null
-                              ? 'never'
-                              : `${relTime(w.lastRunAt)} ago · ${!w.enabled ? 'paused' : running.has(w.id) ? 'running' : (w.lastRunStatus ?? 'ok')}`}
+                          <span className={`mono${failed ? ' bad' : ''}`} title={w.configError ?? w.lastRunError ?? undefined}>
+                            {w.configError
+                              ? 'config error'
+                              : w.lastRunAt == null
+                                ? 'never'
+                                : `${ago(w.lastRunAt)} · ${!w.enabled ? 'paused' : running.has(w.id) ? 'running' : runStatusText(w.lastRunStatus, w.lastRunTrigger, w.consecutiveFailures)}`}
                           </span>
                         </td>
+                        <td className="mono">{nextRunText(w)}</td>
                         <td>
                           <span className="runDots" aria-label="Last seven runs">
                             {Array.from({ length: 7 }, (_, i) => {
                               const r = h?.dots[i]
-                              const cls = !r ? 'none' : r.status === 'ok' ? 'green' : r.status === 'failed' ? 'red' : 'stone'
-                              return <span key={i} className={`dot ${cls}`} title={r ? `${relTime(r.startedAt)} ago · ${r.status ?? 'running'}${r.matches != null ? ` · ${r.matches} filed` : ''}` : undefined} />
+                              const cls = !r ? 'none' : runDotClass(r.status)
+                              return (
+                                <span
+                                  key={i}
+                                  className={`dot ${cls}`}
+                                  title={
+                                    r
+                                      ? `${ago(r.startedAt)} · ${r.status ?? 'running'}${r.trigger && r.trigger !== 'scheduled' ? ` (${r.trigger.replace('_', '-')})` : ''}${r.newCount != null ? ` · ${r.newCount} new` : r.matches != null ? ` · ${r.matches} filed` : ''}${r.error ? ` · ${r.error}` : ''}`
+                                      : undefined
+                                  }
+                                />
+                              )
                             })}
                           </span>
                         </td>
