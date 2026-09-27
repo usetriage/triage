@@ -26,6 +26,7 @@ export const MOD_LABEL = isMac ? '⌘' : 'Ctrl+'
 export const SHORTCUTS: ReadonlyArray<[keys: string, what: string]> = [
   [`${MOD_LABEL}K`, 'Search — sessions, items, projects, commands'],
   [`${MOD_LABEL},`, 'Settings'],
+  [`${MOD_LABEL}B`, 'Hide / show the side panel'],
   ['n', 'New session (in the inbox: new work item)'],
   ['Shift+Tab', 'Composer: cycle how much the session asks before acting'],
   ['g i', 'Go to Inbox'],

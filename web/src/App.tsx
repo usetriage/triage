@@ -558,6 +558,23 @@ export function App() {
     [navigate, route, lastRoutes, currentId, currentTerminalId, terminals, tabs, sessions, drafts, newSession],
   )
 
+  // The rail doubles as the collapse control (VS Code pattern): re-clicking
+  // the already-active section collapses the panel instead of navigating;
+  // clicking any icon while collapsed reopens it, still landing on that section.
+  const onRailGo = useCallback(
+    (section: RailSection) => {
+      if (panelSize.collapsed) {
+        panelSize.setCollapsed(false)
+        goTo(section)
+      } else if (sectionOf(route) === section) {
+        panelSize.setCollapsed(true)
+      } else {
+        goTo(section)
+      }
+    },
+    [panelSize, route, goTo],
+  )
+
   // Closing the tab you are on lands you on its neighbour, else the inbox.
   // A terminal tab closing does not kill the shell — that is the panel's menu.
   const activeTabKey = tabKeyOf(route) ?? 'home'
@@ -593,6 +610,12 @@ export function App() {
         openSettings()
         return
       }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        if (isTypingTarget(e) || anyDialogOpen()) return
+        e.preventDefault()
+        panelSize.toggleCollapsed()
+        return
+      }
       if (isTypingTarget(e) || anyDialogOpen() || e.metaKey || e.ctrlKey || e.altKey) return
 
       if (goPrefix.current !== undefined) {
@@ -625,7 +648,7 @@ export function App() {
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [navigate, newSession, newTerminal, terminalCwd, goTo, currentId, route.page])
+  }, [navigate, newSession, newTerminal, terminalCwd, goTo, currentId, route.page, panelSize])
 
   const create = useCallback((draftId: string, s: NewSession) => {
     pendingDraft.current = draftId
@@ -813,27 +836,30 @@ export function App() {
       />
 
       <div
-        className={`shell${panelSize.dragging ? ' resizing' : ''}`}
+        className={`shell${panelSize.dragging ? ' resizing' : ''}${panelSize.collapsed ? ' collapsed' : ''}`}
         style={{ '--panel-w': `${panelSize.width}px` } as CSSProperties}
       >
         <Rail
           active={railActive}
+          collapsed={panelSize.collapsed}
           inboxCount={inbox.items.length}
           runningCount={runningCount}
           terminalCount={terminals.filter((t) => t.status === 'running').length}
           changedCount={changes.projects.reduce((n, p) => n + p.files.length, 0)}
-          onGo={goTo}
+          onGo={onRailGo}
         />
 
         {panel}
-        <div
-          className="panelResize"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize the panel (double-click to reset)"
-          title="Drag to resize · double-click to reset"
-          {...panelSize.handleProps}
-        />
+        {!panelSize.collapsed && (
+          <div
+            className="panelResize"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize the panel (double-click to reset)"
+            title="Drag to resize · double-click to reset"
+            {...panelSize.handleProps}
+          />
+        )}
 
         <div id="main">
           <TabBand

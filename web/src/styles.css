@@ -1825,6 +1825,7 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 .panelResize:hover::after, .shell.resizing .panelResize::after { background: var(--hair-bright); }
 .shell.resizing, .shell.resizing * { cursor: col-resize !important; user-select: none !important; }
 .shell.resizing .panel, .shell.resizing #main { transition: none; }
+.shell.collapsed .panel { width: 0; min-width: 0; border-right: 0; }
 .tab .t.draft { font-style: italic; color: var(--mute); }
 .tab.active .t.draft { color: var(--body); }
 /* The peek slot: open, but not committed to. Borrows the draft tab's

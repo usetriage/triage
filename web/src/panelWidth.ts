@@ -10,6 +10,7 @@ export const PANEL_DEFAULT = 280
 export const PANEL_MIN = 220
 export const PANEL_MAX = 520
 const KEY = 'triage.panelWidth'
+const COLLAPSED_KEY = 'triage.panelCollapsed'
 
 const clamp = (w: number) => Math.round(Math.max(PANEL_MIN, Math.min(PANEL_MAX, w)))
 
@@ -22,9 +23,18 @@ function read(): number {
   }
 }
 
+function readCollapsed(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 export function usePanelWidth() {
   const [width, setWidth] = useState(read)
   const [dragging, setDragging] = useState(false)
+  const [collapsed, setCollapsedState] = useState(readCollapsed)
   const start = useRef<{ x: number; w: number } | null>(null)
 
   useEffect(() => {
@@ -34,6 +44,20 @@ export function usePanelWidth() {
       // storage blocked — the width still applies for this page load
     }
   }, [width])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0')
+    } catch {
+      // storage blocked — the collapse state still applies for this page load
+    }
+  }, [collapsed])
+
+  const setCollapsed = useCallback((next: boolean | ((v: boolean) => boolean)) => {
+    setCollapsedState(next)
+  }, [])
+
+  const toggleCollapsed = useCallback(() => setCollapsedState((v) => !v), [])
 
   /** Attach to the handle: pointer capture keeps the drag alive off the element. */
   const onPointerDown = useCallback(
@@ -68,6 +92,9 @@ export function usePanelWidth() {
   return {
     width,
     dragging,
+    collapsed,
+    setCollapsed,
+    toggleCollapsed,
     handleProps: {
       onPointerDown,
       onPointerMove,
