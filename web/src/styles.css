@@ -497,7 +497,7 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
   mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
 }
 .tab {
-  display: flex; align-items: center; gap: 7px; height: var(--bar-h); max-width: 240px; padding: 0 12px;
+  position: relative; display: flex; align-items: center; gap: 7px; height: var(--bar-h); max-width: 240px; padding: 0 12px;
   color: var(--charcoal); font-size: 1rem; white-space: nowrap; border: 0; border-right: 1px solid var(--hair);
   background: transparent; cursor: pointer; transition: color 0.1s ease, background 0.1s ease;
 }
@@ -508,6 +508,13 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .tab:hover { color: var(--ink); background: var(--hair-soft); }
 .tab.active { background: var(--card); color: var(--ink); box-shadow: inset 0 1px 0 var(--hair-strong); }
 .tab.dim { color: var(--ash); }
+/* Dragged tab reads as lifted out of the strip; the drop line marks where it
+   would land, drawn absolute so it never widens the flex row under the
+   cursor. */
+.tab.dragging { opacity: 0.45; }
+.tab .dropline { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--blue); pointer-events: none; z-index: 2; }
+.tab .dropline.before { left: -1px; }
+.tab .dropline.after { right: -1px; }
 .tab > svg { flex: none; }
 .tab .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; gap: 7px; }
 .tab .pdot { display: inline-block; width: 5px; height: 5px; border-radius: var(--r-full); flex: none; }

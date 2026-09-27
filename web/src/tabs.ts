@@ -111,6 +111,25 @@ export function useOpenTabs(workspaceId: string) {
     setBand((b) => (b.preview === id || b.tabs.includes(id) ? b : prune({ ...b, preview: id })))
   }, [])
 
+  /**
+   * Drag-reorder a pinned tab: move `id` to sit immediately before `before`,
+   * or to the end when `before` is null. Both are tab keys, not indices — the
+   * rendered strip (App.tsx) is a filtered subsequence of `tabs` (a dead
+   * terminal or a missing draft drops out of render but stays in the band
+   * until closed), so an index into one is not an index into the other.
+   * Keying on the neighbour instead of a position is exact regardless.
+   */
+  const move = useCallback((id: string, before: string | null) => {
+    setBand((b) => {
+      if (!b.tabs.includes(id) || before === id) return b
+      const without = b.tabs.filter((t) => t !== id)
+      const to = before === null ? without.length : without.indexOf(before)
+      if (to === -1) return b
+      const next = without.toSpliced(to, 0, id)
+      return next.every((t, i) => t === b.tabs[i]) ? b : { ...b, tabs: next }
+    })
+  }, [])
+
   /** Learn (or improve) the names of document tabs. */
   const remember = useCallback((patch: Record<string, string>) => {
     setBand((b) => {
@@ -119,7 +138,7 @@ export function useOpenTabs(workspaceId: string) {
     })
   }, [])
 
-  return { tabs, preview, titles, open, close, replace, setPreview, remember }
+  return { tabs, preview, titles, open, close, replace, setPreview, remember, move }
 }
 
 /**

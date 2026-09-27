@@ -238,7 +238,7 @@ export function App() {
   const onboarded = useOnboarded()
   const [wsModal, setWsModal] = useState<WorkspaceModalMode | null>(null)
   const activeWorkspace = workspaces.find((w) => w.id === workspaceId) ?? null
-  const { tabs, preview, titles, open: openTab, close: closeTab, replace: replaceTab, setPreview, remember } =
+  const { tabs, preview, titles, open: openTab, close: closeTab, replace: replaceTab, setPreview, remember, move: moveTab } =
     useOpenTabs(workspaceId)
 
   /** Every document the band is holding — pinned or peeked. */
@@ -871,6 +871,7 @@ export function App() {
             onInbox={() => navigate('/inbox')}
             onSelect={(key) => navigate(routeOfKey(key))}
             onClose={closeOpenTab}
+            onReorder={moveTab}
             onNew={newSession}
             onNewTerminal={newTerminal}
             terminalCwd={terminalCwd}

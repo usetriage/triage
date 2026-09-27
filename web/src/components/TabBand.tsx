@@ -1,4 +1,6 @@
 import {
+  ArrowLeft,
+  ArrowRight,
   ChevronRight,
   CircleDot,
   Eye,
@@ -15,7 +17,16 @@ import {
   X,
   type LucideProps,
 } from 'lucide-react'
-import { useEffect, useRef, useState, type ComponentType, type MouseEvent, type RefObject } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type DragEvent,
+  type MouseEvent,
+  type RefObject,
+} from 'react'
 import type { Project, ProjectsResponse } from '../../../shared/protocol.js'
 import {
   CtxMenu,
@@ -80,6 +91,8 @@ type Props = {
   onClose: (key: string) => void
   /** Promote the peeked document to a tab of its own. */
   onPin: (key: string) => void
+  /** Drag a pinned tab: move it to sit before `before`'s key, or to the end when `before` is null. */
+  onReorder: (key: string, before: string | null) => void
   onNew: () => void
   /** Open a shell — in `cwd`, or the daemon's default (home) when undefined. */
   onNewTerminal: (cwd?: string) => void
@@ -119,6 +132,95 @@ function useEdgeFade(ref: RefObject<HTMLDivElement | null>, count: number) {
   return fade
 }
 
+type DragBag = {
+  dragging: boolean
+  dropEdge: 'before' | 'after' | null
+  onDragStart: (e: DragEvent<HTMLButtonElement>) => void
+  onDragOver: (e: DragEvent<HTMLButtonElement>) => void
+  onDrop: (e: DragEvent<HTMLButtonElement>) => void
+  onDragEnd: () => void
+}
+
+/** The context-menu path to the same reorder — the keyboard route, since drag is pointer-only. */
+type ReorderBag = { canLeft: boolean; canRight: boolean; onLeft: () => void; onRight: () => void }
+
+/**
+ * A private MIME type for the drag payload, not `text/plain` — the prompt box
+ * and the inbox title field are drop targets everywhere in this app, and a
+ * plain-text tab key would land in them as typed text on an overshot drop.
+ * Nothing outside the band ever reads this payload (the dragged key lives in
+ * state, see below), so an unrecognised type costs nothing; it still has to
+ * be *something*, since Firefox won't start a drag with an empty `dataTransfer`.
+ */
+const TAB_DRAG_TYPE = 'application/x-triage-tab'
+
+/**
+ * Native HTML5 drag and drop for the strip — one horizontal list doesn't need
+ * a library. `dropBefore` names the key the dragged tab would land in front
+ * of (or `null` for the end); it drives both the reorder call and the
+ * indicator, so the two can never show a different answer than they act on.
+ * Safari won't hand back `dataTransfer` payload during `dragover`, so the
+ * dragged key lives in state instead of being read off the event.
+ */
+function useTabDrag(tabs: readonly OpenTab[], onReorder: (key: string, before: string | null) => void) {
+  const [dragKey, setDragKey] = useState<string | null>(null)
+  const [dropBefore, setDropBefore] = useState<string | null>(null)
+  // Separate from dragKey: dropBefore's own `null` already means "end of
+  // list", so it can't also mean "pointer isn't over a tab right now" — the
+  // gap past the last tab, Inbox, the +. Without this the last real target
+  // stays painted under the cursor once the drag leaves the strip.
+  const [overStrip, setOverStrip] = useState(false)
+
+  const onDragEnd = useCallback(() => {
+    setDragKey(null)
+    setDropBefore(null)
+    setOverStrip(false)
+  }, [])
+
+  const onStripDragLeave = useCallback((e: DragEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOverStrip(false)
+  }, [])
+
+  const bag = useCallback(
+    (key: string, index: number): DragBag => ({
+      dragging: dragKey === key,
+      dropEdge:
+        !dragKey || !overStrip
+          ? null
+          : dropBefore === key
+            ? 'before'
+            : dropBefore === null && index === tabs.length - 1
+              ? 'after'
+              : null,
+      onDragStart: (e) => {
+        e.dataTransfer.setData(TAB_DRAG_TYPE, key)
+        e.dataTransfer.effectAllowed = 'move'
+        setDragKey(key)
+        setDropBefore(key)
+        setOverStrip(true)
+      },
+      onDragOver: (e) => {
+        if (!dragKey) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+        setOverStrip(true)
+        const rect = e.currentTarget.getBoundingClientRect()
+        const before = e.clientX < rect.left + rect.width / 2
+        const target = before ? tabs[index].key : (tabs[index + 1]?.key ?? null)
+        setDropBefore((cur) => (cur === target ? cur : target))
+      },
+      onDrop: (e) => {
+        e.preventDefault()
+        if (dragKey) onReorder(dragKey, dropBefore)
+      },
+      onDragEnd,
+    }),
+    [dragKey, dropBefore, overStrip, tabs, onReorder, onDragEnd],
+  )
+
+  return { bag, onStripDragLeave }
+}
+
 /** The tab band: Inbox pinned, one closable tab per open session or terminal, + for a new session. */
 export function TabBand({
   activeKey,
@@ -129,6 +231,7 @@ export function TabBand({
   onSelect,
   onClose,
   onPin,
+  onReorder,
   onNew,
   onNewTerminal,
   terminalCwd,
@@ -137,6 +240,7 @@ export function TabBand({
   const count = tabs.length + (preview ? 1 : 0) + (pageTab ? 1 : 0)
   const fade = useEdgeFade(strip, count)
   const pageRef = useKeepInView(!!pageTab)
+  const { bag: dragBag, onStripDragLeave } = useTabDrag(tabs, onReorder)
 
   return (
     <div className="tabband" role="tablist">
@@ -153,9 +257,23 @@ export function TabBand({
         <span className="t">Inbox</span>
       </button>
 
-      <div className="strip" ref={strip} data-fade={fade} role="presentation">
-        {tabs.map((t) => (
-          <Tab key={t.key} tab={t} active={activeKey === t.key} onSelect={onSelect} onClose={onClose} onPin={onPin} />
+      <div className="strip" ref={strip} data-fade={fade} role="presentation" onDragLeave={onStripDragLeave}>
+        {tabs.map((t, i) => (
+          <Tab
+            key={t.key}
+            tab={t}
+            active={activeKey === t.key}
+            onSelect={onSelect}
+            onClose={onClose}
+            onPin={onPin}
+            drag={dragBag(t.key, i)}
+            reorder={{
+              canLeft: i > 0,
+              canRight: i < tabs.length - 1,
+              onLeft: () => onReorder(t.key, tabs[i - 1]?.key ?? null),
+              onRight: () => onReorder(t.key, tabs[i + 2]?.key ?? null),
+            }}
+          />
         ))}
 
         {preview && (
@@ -200,12 +318,18 @@ function Tab({
   onSelect,
   onClose,
   onPin,
+  drag,
+  reorder,
 }: {
   tab: OpenTab
   active: boolean
   onSelect: (key: string) => void
   onClose: (key: string) => void
   onPin: (key: string) => void
+  /** Present only for pinned tabs — the preview slot and page tab neither drag nor take a drop. */
+  drag?: DragBag
+  /** Present only for pinned tabs — same reasoning as `drag`, but this is the keyboard/menu route to it. */
+  reorder?: ReorderBag
 }) {
   const close = (e: MouseEvent) => {
     e.stopPropagation()
@@ -222,12 +346,18 @@ function Tab({
           ref={ref}
           role="tab"
           aria-selected={active}
-          className={`tab${active ? ' active' : ''}${tab.preview ? ' preview' : ''}`}
+          draggable={!!drag}
+          className={`tab${active ? ' active' : ''}${tab.preview ? ' preview' : ''}${drag?.dragging ? ' dragging' : ''}`}
           title={tab.preview ? `${tab.title} — double-click to keep open` : tab.title}
           onClick={() => onSelect(tab.key)}
           onDoubleClick={() => tab.preview && onPin(tab.key)}
           onAuxClick={(e) => e.button === 1 && close(e)}
+          onDragStart={drag?.onDragStart}
+          onDragOver={drag?.onDragOver}
+          onDrop={drag?.onDrop}
+          onDragEnd={drag?.onDragEnd}
         >
+          {drag?.dropEdge === 'before' && <span className="dropline before" aria-hidden="true" />}
           <Icon size={13} aria-hidden="true" />
           <span className={`t${tab.kind === 'draft' ? ' draft' : ''}`}>
             {dotted && (
@@ -238,6 +368,7 @@ function Tab({
           <span className="cl" role="button" aria-label={`Close ${tab.title}`} tabIndex={-1} onClick={close}>
             <X size={11} aria-hidden="true" />
           </span>
+          {drag?.dropEdge === 'after' && <span className="dropline after" aria-hidden="true" />}
         </button>
       </CtxMenuTrigger>
       <CtxMenuContent>
@@ -249,6 +380,19 @@ function Tab({
                 <span className="name">Keep open</span>
                 <span className="desc">Stop the next document replacing it</span>
               </span>
+            </CtxMenuItem>
+            <CtxMenuSeparator />
+          </>
+        )}
+        {reorder && (
+          <>
+            <CtxMenuItem disabled={!reorder.canLeft} onSelect={reorder.onLeft}>
+              <ArrowLeft size={14} aria-hidden="true" />
+              <span className="name">Move left</span>
+            </CtxMenuItem>
+            <CtxMenuItem disabled={!reorder.canRight} onSelect={reorder.onRight}>
+              <ArrowRight size={14} aria-hidden="true" />
+              <span className="name">Move right</span>
             </CtxMenuItem>
             <CtxMenuSeparator />
           </>
