@@ -1,8 +1,8 @@
 import { Plus } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { AGENT_CANS, AGENT_COLORS, MAX_TEAM_AGENTS, type AgentCan, type AgentEntry, type EffortLevel, type ManagerSpec } from '../../../shared/protocol.js'
+import { AGENT_CANS, AGENT_COLORS, AGENT_ROLES, MAX_TEAM_AGENTS, type AgentCan, type AgentEntry, type EffortLevel, type ManagerSpec } from '../../../shared/protocol.js'
 import { EFFORT_LABEL, useModels } from '../models.js'
-import { AGENT_HEX, CAN_META, blankAgent, canSummary, fromEntry, problems, type EditorAgent, type Problem, type TeamDraft } from '../teams.js'
+import { AGENT_HEX, CAN_META, ROLE_META, blankAgent, canSummary, fromEntry, problems, type EditorAgent, type Problem, type TeamDraft } from '../teams.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
 import { Select, SelectItem } from '../ui/Select.js'
 
@@ -75,7 +75,9 @@ export function TeamEditor({ draft, onChange, selected, onSelect, library, mode 
               {a.label.trim() || 'New agent'}
               {flagged.has(a.key) && <span className="flag" aria-label="has a problem" />}
             </span>
-            <span className="nm">{a.model ?? 'default'}</span>
+            <span className="nm">
+              <span className={`roleTag ${a.role}`}>{ROLE_META[a.role].label}</span> {a.model ?? 'default'}
+            </span>
           </button>
         ))}
         <div className="teamAddRow">
@@ -105,14 +107,14 @@ export function TeamEditor({ draft, onChange, selected, onSelect, library, mode 
             </Menu>
           )}
         </div>
-        <div className="teamTreeFoot">The manager coordinates; agents message each other and the manager.</div>
+        <div className="teamTreeFoot">Triage runs it: the manager writes a task card you approve, the builder builds, the project's checks run, checkers verify, the manager reports.</div>
       </div>
 
       {agent ? (
         <AgentForm
           key={agent.key}
           agent={agent}
-          problems={probs.filter((p) => p.key === agent.key || (p.field === 'edit' && agent.can.includes('edit')))}
+          problems={probs.filter((p) => p.key === agent.key || (p.field === 'role' && agent.role === 'builder'))}
           usedBy={mode === 'library' && agent.base ? library.find((a) => a.name === agent.base)?.usedBy ?? [] : []}
           mode={mode}
           onChange={(patch) => patchAgent(agent.key, patch)}
@@ -198,7 +200,7 @@ function ManagerForm({ manager, onChange }: { manager: ManagerSpec; onChange: (m
               <span className="box" aria-hidden="true" />
               <span>
                 <span className="ct">{CAN_META[c].label}</span>
-                <span className="cs">{c === 'read' ? CAN_META[c].hint : c === 'web' ? 'off for the manager' : 'never — the manager delegates'}</span>
+                <span className="cs">{c === 'read' ? CAN_META[c].hint : c === 'web' || c === 'browser' ? 'off for the manager' : 'never — the manager delegates'}</span>
               </span>
             </div>
           ))}
@@ -238,6 +240,7 @@ export function AgentForm({
 }) {
   const nameErr = probs.find((p) => p.field === 'name' && !p.quiet)
   const editErr = probs.find((p) => p.field === 'edit')
+  const roleErr = probs.find((p) => p.field === 'role')
   const toggle = (c: AgentCan) => onChange({ can: agent.can.includes(c) ? agent.can.filter((x) => x !== c) : [...agent.can, c] })
   const shared = usedBy.length > 1
   return (
@@ -265,6 +268,26 @@ export function AgentForm({
       <Row label="Model">
         <ModelEffort model={agent.model} effort={agent.effort} onModel={(model) => onChange({ model })} onEffort={(effort) => onChange({ effort })} />
       </Row>
+      <Row label="Role">
+        <div className="teamRoles" role="radiogroup" aria-label="Role">
+          {AGENT_ROLES.map((r) => (
+            <button
+              key={r}
+              type="button"
+              role="radio"
+              aria-checked={agent.role === r}
+              className={`teamRole${agent.role === r ? ' on' : ''}`}
+              title={ROLE_META[r].hint}
+              // Only the builder writes: leaving that role drops "Edit files" with it.
+              onClick={() => onChange({ role: r, ...(r !== 'builder' ? { can: agent.can.filter((c) => c !== 'edit') } : {}) })}
+            >
+              {ROLE_META[r].label}
+            </button>
+          ))}
+        </div>
+        <div className="teamHint">{ROLE_META[agent.role].hint}</div>
+        {roleErr && <div className="teamErr">{roleErr.message}</div>}
+      </Row>
       <Row label="Colour">
         <div className="teamPair">
           <span className="teamColors" role="radiogroup" aria-label="Colour">
@@ -287,7 +310,15 @@ export function AgentForm({
       <Row label="Can">
         <div className="teamCans">
           {AGENT_CANS.map((c) => (
-            <button key={c} type="button" aria-pressed={agent.can.includes(c)} className={`teamCan${agent.can.includes(c) ? ' on' : ''}`} onClick={() => toggle(c)}>
+            <button
+              key={c}
+              type="button"
+              aria-pressed={agent.can.includes(c)}
+              className={`teamCan${agent.can.includes(c) ? ' on' : ''}`}
+              disabled={c === 'edit' && agent.role !== 'builder' && !agent.can.includes('edit')}
+              title={c === 'edit' && agent.role !== 'builder' ? 'Only the builder edits files' : undefined}
+              onClick={() => toggle(c)}
+            >
               <span className="box" aria-hidden="true" />
               <span>
                 <span className="ct">{CAN_META[c].label}</span>
@@ -298,8 +329,8 @@ export function AgentForm({
         </div>
         {editErr && (
           <div className="teamCallout err">
-            <b>Only one agent can edit files.</b> {editErr.message} — they'd share one working tree and overwrite each other. Turn it off
-            on one of them.
+            <b>Only the builder edits files.</b> {editErr.message} — two writers in one folder overwrite each other. Turn it off, or make
+            this agent the builder.
           </div>
         )}
       </Row>

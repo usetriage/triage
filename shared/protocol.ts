@@ -90,8 +90,16 @@ export type SessionKind = 'chat' | 'watch-run' | 'brief'
 // ---------------------------------------------------------------------------
 
 /** What an agent may do. Compiled to tool rules at spawn — never a prompt-only promise. */
-export type AgentCan = 'read' | 'edit' | 'run' | 'web'
-export const AGENT_CANS: AgentCan[] = ['read', 'edit', 'run', 'web']
+export type AgentCan = 'read' | 'edit' | 'run' | 'web' | 'browser'
+export const AGENT_CANS: AgentCan[] = ['read', 'edit', 'run', 'web', 'browser']
+
+/**
+ * An agent's stage in the team pipeline (.docs/teams-industry.md): the one
+ * builder writes; checkers verify the result in a clean context; helpers are
+ * consulted by the builder and never write.
+ */
+export type AgentRole = 'builder' | 'checker' | 'helper'
+export const AGENT_ROLES: AgentRole[] = ['builder', 'checker', 'helper']
 
 /** Claude Code's own agent colours. */
 export const AGENT_COLORS = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan'] as const
@@ -111,6 +119,7 @@ export type AgentSpec = {
   effort: EffortLevel | null
   color: AgentColor
   can: AgentCan[]
+  role: AgentRole
   prompt: string
 }
 
@@ -177,6 +186,15 @@ export type SaveTeamResponse = { ok: true; team: string; library: TeamLibraryRes
  */
 export type TeamRunState = 'running' | 'paused' | 'stopped' | 'done'
 
+/**
+ * Where a run is in its pipeline. triage — not an agent — moves it along:
+ * spec (manager writes the task card) → approve (you) → build (builder) →
+ * checks (the project's own typecheck/tests, free) → verify (checkers, clean
+ * context) → fix (≤ maxRounds, back to build) → report (manager) → done.
+ * `blocked` = the builder asked you something.
+ */
+export type TeamStage = 'spec' | 'approve' | 'build' | 'blocked' | 'checks' | 'verify' | 'report' | 'done'
+
 /** The run-level facts every member's summary carries, so any tab can show them. */
 export type TeamRunInfo = {
   state: TeamRunState
@@ -184,7 +202,46 @@ export type TeamRunInfo = {
   budgetUsd: number
   /** why it paused, when it did */
   reason?: string
+  stage: TeamStage
+  /** fix rounds used so far, and the cap */
+  round: number
+  maxRounds: number
+  /** bumps whenever the run's documents change — the cue to refetch the detail */
+  rev: number
 }
+
+/** The contract the manager writes and you approve: what "done" means, checkably. */
+export type TaskCard = {
+  goal: string
+  criteria: string[]
+  outOfScope: string[]
+  files: string[]
+  notes?: string
+}
+
+export type Finding = { severity: 'P0' | 'P1'; where: string; problem: string; fix: string }
+
+/** One pipeline step's record, in order — what the run's panel lists. */
+export type TeamStep =
+  | { kind: 'card'; at: number; card: TaskCard }
+  | { kind: 'approved'; at: number }
+  | { kind: 'handoff'; at: number; round: number; summary: string; files: string[]; verification: string; uncertain?: string; rejected?: string }
+  | { kind: 'checks'; at: number; round: number; ok: boolean; commands: { cmd: string; ok: boolean; tail: string }[] }
+  | { kind: 'verdict'; at: number; round: number; checker: string; verdict: 'pass' | 'fail'; verified: string; findings: Finding[] }
+  | { kind: 'blocked'; at: number; question: string }
+  | { kind: 'failed'; at: number; why: string }
+
+export type TeamRunDetail = {
+  id: string
+  itemId: string
+  title: string
+  info: TeamRunInfo
+  card: TaskCard | null
+  steps: TeamStep[]
+  /** the run's folder: card.md, handoff-N.md, verdict-N.md, checks-N.txt */
+  dir: string
+}
+export type TeamRunResponse = { ok: true; run: TeamRunDetail } | { ok: false; error: string }
 
 /** A session's place on a team: the run, which member it is, and what it has spent. */
 export type TeamMembership = {
@@ -193,6 +250,8 @@ export type TeamMembership = {
   label: string
   color?: AgentColor
   order: number
+  /** the member's stage role; the manager is 'manager' */
+  role: AgentRole | 'manager'
   spentUsd: number
   run: TeamRunInfo
 }

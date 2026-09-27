@@ -72,7 +72,12 @@ export function StartTeamDialog({ open, item, onClose, onStarted }: Props) {
   }
 
   const probs = problems(draft.agents)
-  const reason = folder === null ? 'this item has no project folder' : probs[0]?.message
+  const reason =
+    folder === null
+      ? 'this item has no project folder'
+      : !draft.agents.length
+        ? 'add a builder — the manager only plans'
+        : probs[0]?.message
   const quiet = folder !== null && probs[0]?.quiet
   const n = draft.agents.length + 1
   const teamLabel = lib?.teams.find((t) => t.name === team)?.label

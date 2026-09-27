@@ -855,6 +855,40 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .teamBudget { display: inline-flex; align-items: center; gap: 4px; color: var(--ash); font-size: 0.8846rem; white-space: nowrap; }
 .teamBudget .teamInp { width: 64px; height: 26px; padding: 0 6px; }
 .teamHint.warn { color: var(--yellow); }
+.teamRoles { display: inline-flex; border: 1px solid var(--hair-strong); border-radius: var(--r); overflow: hidden; }
+.teamRole { height: 28px; padding: 0 12px; border: 0; border-right: 1px solid var(--hair-strong); background: transparent; color: var(--mute); font: inherit; font-size: 0.9231rem; cursor: pointer; }
+.teamRole:last-child { border-right: 0; }
+.teamRole:hover { background: var(--wash-2); color: var(--ink); }
+.teamRole.on { background: var(--elev); color: var(--ink); }
+.teamRole:focus-visible { outline: 1px solid var(--ink); outline-offset: -1px; }
+.roleTag { font-family: var(--mono); font-size: 0.7308rem; color: var(--ash); border: 1px solid var(--hair); border-radius: var(--r-xs); padding: 0 4px; margin-right: 3px; }
+.roleTag.builder { color: var(--body); border-color: var(--hair-strong); }
+.teamCan:disabled { opacity: 0.4; cursor: not-allowed; }
+/* the pipeline panel under the team strip: stages, your one decision, the step log */
+.teamPanel { border-bottom: 1px solid var(--hair); padding: 8px 20px 10px; display: flex; flex-direction: column; gap: 8px; flex: none; }
+.teamStages { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.teamStage { font-size: 0.8462rem; color: var(--stone); padding: 1px 8px; border-radius: var(--r-full); border: 1px solid transparent; white-space: nowrap; }
+.teamStage.done { color: var(--ash); }
+.teamStage.on { color: var(--ink); border-color: var(--hair-strong); background: var(--elev); }
+.teamStage.end { color: var(--green); }
+.teamCard { border: 1px solid var(--hair-strong); border-radius: var(--r-lg); background: var(--card); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; max-width: var(--measure); }
+.teamCard.ask { border-color: var(--edge-yellow); }
+.teamCard .t { font-size: 0.9615rem; color: var(--ink); font-weight: 500; }
+.teamCardHead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.teamCardHead .hint { font-size: 0.8462rem; color: var(--ash); }
+.teamCard .goal { margin: 0; color: var(--body); font-size: 1rem; line-height: 1.55; }
+.teamCardCols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.teamCard .lbl { font-family: var(--mono); font-size: 0.7692rem; color: var(--stone); margin-bottom: 4px; }
+.teamCard ul { margin: 0; padding-left: 18px; color: var(--body); font-size: 0.9231rem; line-height: 1.55; }
+.teamCard .files { font-size: 0.8462rem; color: var(--ash); }
+.teamCard .notes { margin: 0; font-size: 0.8846rem; color: var(--ash); }
+.teamCardActs { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+.teamCardActs .why { color: var(--red); font-size: 0.8846rem; }
+.teamSteps summary { cursor: pointer; font-size: 0.8846rem; color: var(--charcoal); list-style: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.teamSteps summary::-webkit-details-marker { display: none; }
+.teamSteps summary .more { color: var(--stone); }
+.teamSteps ol { margin: 6px 0 0; padding-left: 20px; font-size: 0.8846rem; color: var(--ash); line-height: 1.6; }
+.teamSteps .dir { font-size: 0.7692rem; color: var(--stone); margin-top: 4px; }
 
 /* ---------- teams: the Start-a-team dialog and the editor it shares with Settings ---------- */
 .teamOverlay { position: fixed; inset: 0; z-index: 90; background: var(--scrim); animation: fadeIn 0.14s ease; }

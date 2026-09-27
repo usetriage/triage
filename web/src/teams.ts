@@ -9,6 +9,7 @@ import {
   MAX_TEAM_AGENTS,
   type AgentCan,
   type AgentColor,
+  type AgentRole,
   type AgentEntry,
   type DraftAgent,
   type ManagerSpec,
@@ -58,6 +59,13 @@ export const CAN_META: Record<AgentCan, { label: string; hint: string; short: st
   edit: { label: 'Edit files', hint: 'Change files in the folder', short: 'edits files' },
   run: { label: 'Run commands', hint: 'Tests, builds, scripts — asks first', short: 'runs commands' },
   web: { label: 'Web', hint: 'Search and fetch pages', short: 'web' },
+  browser: { label: 'Browser', hint: 'Your chrome-devtools connector — the only one loaded', short: 'browser' },
+}
+
+export const ROLE_META: Record<AgentRole, { label: string; hint: string }> = {
+  builder: { label: 'Builds', hint: 'The one agent that writes. Gets the approved card and hands off to checks.' },
+  checker: { label: 'Checks', hint: 'Verifies the change in a clean context — card + diff — by running things.' },
+  helper: { label: 'Helps', hint: 'The builder can ask it questions. Never writes.' },
 }
 
 export const canSummary = (can: AgentCan[]): string =>
@@ -110,6 +118,8 @@ export function blankAgent(used: EditorAgent[]): EditorAgent {
     effort: null,
     color: AGENT_COLORS.find((c) => !taken.has(c)) ?? 'cyan',
     can: ['read'],
+    // A new agent checks unless the team has no builder yet.
+    role: used.some((a) => a.role === 'builder') ? 'checker' : 'builder',
     prompt: '',
     base: null,
     dirty: true,
@@ -121,7 +131,7 @@ export function blankAgent(used: EditorAgent[]): EditorAgent {
 export const wireAgents = (agents: EditorAgent[]): DraftAgent[] =>
   agents.map(({ key: _k, touched: _t, ...a }) => ({ ...a, name: nameOf({ ...a, key: '' }) }))
 
-export type Problem = { key: string; field: 'name' | 'edit'; message: string; quiet?: boolean }
+export type Problem = { key: string; field: 'name' | 'edit' | 'role'; message: string; quiet?: boolean }
 
 /** The roster rules, mirrored from server/teams.ts checkRoster — first problem is Start work's reason. */
 export function problems(agents: EditorAgent[]): Problem[] {
@@ -132,10 +142,15 @@ export function problems(agents: EditorAgent[]): Problem[] {
     else if (!names[i] || names[i] === 'manager') out.push({ key: a.key, field: 'name', message: `"${a.label}" can't be used as a name` })
     else if (names.indexOf(names[i]) !== i) out.push({ key: a.key, field: 'name', message: `two agents are named "${a.label}"` })
   })
-  const editors = agents.filter((a) => a.can.includes('edit'))
-  if (editors.length > 1) {
-    out.push({ key: editors[1].key, field: 'edit', message: `${editors.map((e) => e.label || 'a new agent').join(' and ')} can both edit files` })
+  // One writer: one builder, and only the builder edits (server/teams.ts checkRoster).
+  const builders = agents.filter((a) => a.role === 'builder')
+  if (builders.length > 1) {
+    out.push({ key: builders[1].key, field: 'role', message: `${builders.map((b) => b.label || 'a new agent').join(' and ')} are both builders` })
   }
+  for (const a of agents.filter((x) => x.can.includes('edit') && x.role !== 'builder')) {
+    out.push({ key: a.key, field: 'edit', message: `${a.label || 'a new agent'} can edit files but doesn't build` })
+  }
+  if (agents.length && !builders.length) out.push({ key: agents[0].key, field: 'role', message: 'the team needs a builder' })
   if (agents.length > MAX_TEAM_AGENTS) out.push({ key: agents[MAX_TEAM_AGENTS].key, field: 'name', message: `at most ${MAX_TEAM_AGENTS} agents` })
   return out
 }

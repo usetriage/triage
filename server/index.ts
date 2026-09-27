@@ -23,10 +23,11 @@
  * The wire format lives in shared/protocol.ts and is shared with the frontend.
  */
 import http from 'node:http'
-import { readFile, stat } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { exec, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -39,9 +40,10 @@ import {
   type SDKUserMessage,
   type PermissionResult,
   type PermissionUpdate,
+  type McpServerConfig,
 } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import { currentBranch, filePatch, repoRoot, snapshotTree, treeDiff, worktreeChanges, worktreePatch, type TreeChange } from './git.js'
+import { currentBranch, filePatch, repoRoot, snapshotTree, treeDiff, treePatch, worktreeChanges, worktreePatch, type TreeChange } from './git.js'
 import type {
   ClientMessage,
   Connector,
@@ -157,7 +159,13 @@ import type {
   StartTeamResponse,
   TeamLibraryResponse,
   TeamMembership,
+  TeamRunDetail,
   TeamRunInfo,
+  TeamRunResponse,
+  TeamStage,
+  TeamStep,
+  TaskCard,
+  AgentCan,
 } from '../shared/protocol.js'
 import { DEFAULT_TEAM_BUDGET_USD } from '../shared/protocol.js'
 import {
@@ -175,6 +183,17 @@ import {
   managerFrom,
   budgetFrom,
   runSpent,
+  builtinToolsFor,
+  buildMessage,
+  checkerMessage,
+  detectChecks,
+  fixMessage,
+  MAX_FIX_ROUNDS,
+  pipelineAgentAppend,
+  pipelineManagerAppend,
+  renderCard,
+  reportMessage,
+  isCheckCommand,
   type StoredTeamRun,
 } from './teams.js'
 import type { StoredTurn } from '../core/store/types.js'
@@ -251,6 +270,7 @@ const WEB_DIR =
     : path.join(__dirname, '..', 'dist', 'web')
 
 const pExecFile = promisify(execFile)
+const pExec = promisify(exec)
 
 // ---------------------------------------------------------------------------
 // Async queue: lets us push user messages into the SDK's streaming input.
@@ -452,6 +472,8 @@ class WorkspaceRuntime {
   readonly sessionTeam = new Map<string, { runId: string; member: string }>()
   /** run id → messages between members since the user last spoke to the team */
   readonly teamMessages = new Map<string, number>()
+  /** sessions whose next spawn starts a fresh Claude session (a checker's clean context) */
+  readonly freshNext = new Set<string>()
 
   // Session changes (.docs/session-diff-variations.md): sessions in one folder
   // share a working tree, so "what did *this* session change" is reconstructed
@@ -508,6 +530,12 @@ type SessionExtras = {
   settings?: Record<string, unknown>
   /** hard stop for this subprocess: the SDK ends the query past it (a team's remaining budget) */
   maxBudgetUsd?: number
+  /** the only built-in tools the subprocess gets (a team member's lean toolset) */
+  tools?: string[]
+  /** load only the MCP servers passed here — none of the user's other connectors or plugins */
+  strictMcpConfig?: boolean
+  /** plain MCP server configs passed through (e.g. the user's chrome-devtools for a browser-allowed agent) */
+  externalMcp?: Record<string, Record<string, unknown>>
 }
 
 /** Tools a headless brief session never gets, whatever it asks (belt to the gate's braces). */
@@ -574,7 +602,13 @@ class LiveSession {
         // work items directly — same tool surface as the stdio shim external
         // Claude Code sessions get (server/mcp.ts). Scoped to this workspace.
         // Brief sessions add their own `write_brief` server on top.
-        mcpServers: { triage: rt.triageMcp(), ...(extras.mcp ?? {}) },
+        mcpServers: {
+          triage: rt.triageMcp(),
+          ...(extras.mcp ?? {}),
+          ...((extras.externalMcp ?? {}) as Record<string, McpServerConfig>),
+        },
+        ...(extras.tools ? { tools: extras.tools } : {}),
+        ...(extras.strictMcpConfig ? { strictMcpConfig: true } : {}),
         ...(row.kind === 'brief' || extras.disallowedTools?.length
           ? { disallowedTools: [...(row.kind === 'brief' ? BRIEF_DISALLOWED_TOOLS : []), ...(extras.disallowedTools ?? [])] }
           : {}),
@@ -725,7 +759,8 @@ class LiveSession {
     } finally {
       // The subprocess is gone; any unanswered prompt can never be answered.
       this.expirePendingPermissions()
-      this.rt.live.delete(this.row.id)
+      // A fresh-context replacement may already hold the slot; only clear our own.
+      if (this.rt.live.get(this.row.id) === this) this.rt.live.delete(this.row.id)
       broadcastSessionList(this.rt)
       if (this.row.kind === 'brief') void onBriefSessionEnded(this.rt, this.row.id)
     }
@@ -828,9 +863,15 @@ class LiveSession {
     // own allow rules skip this gate.)
     const team = this.rt.sessionTeam.get(this.row.id)
     if (team) {
-      if (toolName === 'mcp__team__message_teammate') return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
-      const agent = this.rt.teamRuns.get(team.runId)?.agents.find((a) => a.name === team.member)
+      // triage's own team tools (messaging, the stage submissions) never prompt — they only record and route.
+      if (toolName.startsWith('mcp__team__')) return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
+      const run = this.rt.teamRuns.get(team.runId)
+      const agent = run?.agents.find((a) => a.name === team.member)
       if (agent && !agent.can.includes('edit') && toolName === 'Bash' && briefBashAllowed(toolInput)) {
+        return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
+      }
+      // The project's own checks (the same commands the checks stage runs) never need a click.
+      if (agent?.can.includes('run') && toolName === 'Bash' && run?.checkCmds && isCheckCommand(String(toolInput.command ?? ''), run.checkCmds)) {
         return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
       }
     }
@@ -1444,13 +1485,18 @@ async function isSearchableRoot(rt: WorkspaceRuntime, root: string): Promise<boo
 }
 
 async function getOrRevive(rt: WorkspaceRuntime, sessionId: string): Promise<LiveSession | null> {
+  // A fresh start: end the old subprocess and begin a new Claude session instead
+  // of resuming — the transcript page continues, the model's history doesn't.
+  const fresh = rt.freshNext.delete(sessionId)
   const existing = rt.live.get(sessionId)
-  if (existing) return existing
+  if (existing && !fresh) return existing
   const row = rt.rows.get(sessionId)
   if (!row) return null
+  if (existing) existing.stop()
   const lastSeq = await rt.store.events.lastSeq(row.id)
-  const revived = new LiveSession(rt, row, lastSeq, row.sdkSessionId, extrasFor(rt, row))
+  const revived = new LiveSession(rt, row, lastSeq, fresh ? null : row.sdkSessionId, extrasFor(rt, row))
   rt.live.set(row.id, revived)
+  if (fresh && row.sdkSessionId) revived.notice('fresh context — this member starts from the brief, not its earlier history')
   broadcastSessionList(rt)
   return revived
 }
@@ -3335,10 +3381,25 @@ function extrasFor(rt: WorkspaceRuntime, row: StoredSession): SessionExtras {
   const agent = team && run && team.member !== 'manager' ? run.agents.find((a) => a.name === team.member) : undefined
   if (team && run && (team.member === 'manager' || agent)) {
     // Rebuilt per spawn like the brief server: one instance, one transport.
+    const pipeline = run.mode === 'pipeline'
+    const can = agent ? agent.can : (['read'] as AgentCan[])
+    const browser = pipeline && can.includes('browser') ? userMcpServer('chrome-devtools') : null
     return {
-      systemAppend: `${identity}\n${agent ? agentAppend(run, agent) : managerAppend(run)}`,
+      systemAppend: `${identity}\n${
+        pipeline ? (agent ? pipelineAgentAppend(run, agent) : pipelineManagerAppend(run)) : agent ? agentAppend(run, agent) : managerAppend(run)
+      }`,
       mcp: { team: makeTeamMcp(rt, row.id, run) },
       disallowedTools: agent ? disallowedFor(agent.can) : MANAGER_DISALLOWED,
+      // Pipeline members load only what their stage needs: a short built-in
+      // list and triage's own servers (+ the browser if allowed) — not every
+      // connector and plugin in ~/.claude, whose schemas ride every call.
+      ...(pipeline
+        ? {
+            tools: builtinToolsFor(can, { ask: !agent }),
+            strictMcpConfig: true,
+            ...(browser ? { externalMcp: { 'chrome-devtools': browser } } : {}),
+          }
+        : {}),
       // Compact long before a 1M window would (it defaults to ~967K there): a
       // member re-reads its whole history on every call, so history is cost.
       settings: { autoCompactWindow: TEAM_COMPACT_WINDOW },
@@ -3618,6 +3679,13 @@ async function loadTeamRuns(rt: WorkspaceRuntime): Promise<void> {
       budgetUsd: legacy.budgetUsd ?? DEFAULT_TEAM_BUDGET_USD,
       spend: legacy.spend ?? {},
       state: legacy.state ?? 'running',
+      stage: legacy.stage ?? 'build',
+      round: legacy.round ?? 0,
+      maxRounds: legacy.maxRounds ?? MAX_FIX_ROUNDS,
+      rev: legacy.rev ?? 0,
+      card: legacy.card ?? null,
+      steps: legacy.steps ?? [],
+      dir: legacy.dir ?? '',
     })
     for (const m of members) rt.sessionTeam.set(m.sessionId, { runId: run.id, member: m.member })
   }
@@ -3636,6 +3704,7 @@ function teamMembership(rt: WorkspaceRuntime, sessionId: string): TeamMembership
     label: m.label,
     ...(m.color ? { color: m.color } : {}),
     order,
+    role: m.member === 'manager' ? 'manager' : run.agents.find((a) => a.name === m.member)?.role ?? 'checker',
     spentUsd: run.spend[m.member] ?? 0,
     run: runInfo(run),
   }
@@ -3646,7 +3715,25 @@ const runInfo = (run: StoredTeamRun): TeamRunInfo => ({
   spentUsd: runSpent(run),
   budgetUsd: run.budgetUsd,
   ...(run.reason ? { reason: run.reason } : {}),
+  stage: run.stage,
+  round: run.round,
+  maxRounds: run.maxRounds,
+  rev: run.rev,
 })
+
+/**
+ * One MCP server from the user's own Claude Code config (~/.claude.json), as a
+ * plain config to pass through — how a browser-allowed agent gets chrome-devtools
+ * while strictMcpConfig keeps every other connector out.
+ */
+function userMcpServer(name: string): Record<string, unknown> | null {
+  try {
+    const cfg = JSON.parse(readFileSync(path.join(os.homedir(), '.claude.json'), 'utf8')) as { mcpServers?: Record<string, Record<string, unknown>> }
+    return cfg.mcpServers?.[name] ?? null
+  } catch {
+    return null
+  }
+}
 
 /** A member's history is compacted past this many tokens (see extrasFor). */
 const TEAM_COMPACT_WINDOW = 200_000
@@ -3679,6 +3766,7 @@ async function noteTeamSpend(rt: WorkspaceRuntime, sessionId: string, delta: num
   }
   await saveTeamRuns(rt)
   broadcastSessionList(rt)
+  await advanceTeamRun(rt, run, t.member)
 }
 
 /** Stop every member mid-turn and hold messages until the run is resumed. */
@@ -3711,6 +3799,7 @@ async function resumeTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun, addUsd: n
   const manager = run.members.find((m) => m.member === 'manager')
   if (manager) await sessionNotice(rt, manager.sessionId, `Team resumed — budget now ${usd(run.budgetUsd)} (${usd(spent)} spent).`)
   broadcastSessionList(rt)
+  await continueTeamRun(rt, run)
 }
 
 async function stopTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
@@ -3753,10 +3842,11 @@ async function startTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<{ teamId
   if (!project) throw new Error('this item has no project — set one on the item so the team knows which folder to work in')
   const manager = managerFrom(r.manager)
   const agents = (Array.isArray(r.agents) ? r.agents : []).map((a) => agentFrom(a))
-  checkRoster(agents)
+  checkRoster(agents, { toStart: true })
   const title = item.title.slice(0, 80)
+  const id = randomUUID()
   const run: StoredTeamRun = {
-    id: randomUUID(),
+    id,
     itemId: item.id,
     title,
     createdAt: Date.now(),
@@ -3767,7 +3857,18 @@ async function startTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<{ teamId
     budgetUsd: budgetFrom(r.budgetUsd) ?? DEFAULT_TEAM_BUDGET_USD,
     spend: {},
     state: 'running',
+    // V2: triage runs the stages (.docs/teams-industry.md).
+    mode: 'pipeline',
+    stage: 'spec',
+    round: 0,
+    maxRounds: MAX_FIX_ROUNDS,
+    rev: 0,
+    card: null,
+    steps: [],
+    root: (await repoRoot(project.path)) ?? project.path,
+    dir: path.join(workspaceDir(rt.meta.id), 'team-runs', id),
   }
+  run.checkCmds = await detectChecks(run.root!)
   const mgr = await createSession(rt, `Manager · ${title}`, project.path, manager.model, manager.effort, false, 'gated', { spawn: false })
   run.members.push({ member: 'manager', label: 'Manager', sessionId: mgr.id })
   for (const a of agents) {
@@ -3857,58 +3958,406 @@ async function saveAgentOp(rt: WorkspaceRuntime, raw: unknown): Promise<string> 
 }
 
 /**
- * The `team` MCP server a member gets: message_teammate, addressed by member
- * name within its own run. The names are an enum built from the run's roster,
- * so the model is shown exactly who it can reach.
+ * The `team` MCP server a member gets. In a pipeline run (V2) its tools are the
+ * member's one submission — submit_task_card / submit_handoff / submit_verdict —
+ * plus builder↔helper messaging; triage acts on a submission when the member's
+ * turn ends. Open runs (V1) keep free-form message_teammate.
  */
 function makeTeamMcp(rt: WorkspaceRuntime, sessionId: string, run: StoredTeamRun) {
   const me = rt.sessionTeam.get(sessionId)
-  const others = run.members.map((m) => m.member).filter((m) => m !== me?.member)
-  const to = others.length ? z.enum(others as [string, ...string[]]) : z.string()
+  const self = run.agents.find((a) => a.name === me?.member)
+  const role = me?.member === 'manager' ? 'manager' : self?.role ?? 'checker'
+  const pipeline = run.mode === 'pipeline'
+
+  /** The run as it is now (not as it was at spawn), or an error to hand back. */
+  const current = (): { run: StoredTeamRun; member: string } | { error: ReturnType<typeof errResult> } => {
+    const t = rt.sessionTeam.get(sessionId)
+    const cur = t ? rt.teamRuns.get(t.runId) : undefined
+    if (!t || !cur) return { error: errResult('this session is not on a team') }
+    if (cur.state !== 'running') {
+      return { error: errResult(`the team is ${cur.state}${cur.reason ? ` (${cur.reason})` : ''} — stop; the user resumes it`) }
+    }
+    return { run: cur, member: t.member }
+  }
+
+  // Who this member may message: everyone (open), builder ↔ helpers (pipeline).
+  const helpers = run.agents.filter((a) => a.role === 'helper').map((a) => a.name)
+  const builderName = run.agents.find((a) => a.role === 'builder')?.name
+  const reach = !pipeline
+    ? run.members.map((m) => m.member).filter((m) => m !== me?.member)
+    : role === 'builder'
+      ? helpers
+      : role === 'helper' && builderName
+        ? [builderName]
+        : []
+
+  const messageTool = tool(
+    'message_teammate',
+    pipeline
+      ? 'Ask a teammate a question (builder ↔ helpers only). It arrives in their session as a new turn; end your turn after sending.'
+      : 'Send a message to another member of your team, by member name. It arrives in their session as a new turn. After sending, end your turn — their reply arrives as a new message.',
+    {
+      to: (reach.length ? z.enum(reach as [string, ...string[]]) : z.string()).describe('the member to message'),
+      message: z.string().describe('the full message — the member sees only this, not your conversation'),
+    },
+    async (args) => {
+      try {
+        const c = current()
+        if ('error' in c) return c.error
+        if (!reach.includes(args.to)) return errResult(`you can't message ${args.to} — ${reach.length ? `only ${reach.join(', ')}` : 'no one'}`)
+        const target = c.run.members.find((m) => m.member === args.to)
+        if (!target) return errResult(`this team has no member named ${args.to}`)
+        const sent = (rt.teamMessages.get(c.run.id) ?? 0) + 1
+        if (sent > TEAM_MESSAGE_BUDGET) {
+          return errResult(`the team has sent ${TEAM_MESSAGE_BUDGET} messages since the user last spoke — stop and report instead`)
+        }
+        const live = await getOrRevive(rt, target.sessionId)
+        if (!live) return errResult(`could not start ${target.label}'s session`)
+        rt.teamMessages.set(c.run.id, sent)
+        const from = c.run.members.find((m) => m.sessionId === sessionId)?.label ?? c.member
+        await live.sendUserMessage(args.message, undefined, undefined, { from })
+        return okResult(`delivered to ${target.label}. End your turn now; their reply will arrive as a new message.`)
+      } catch (err) {
+        return errResult(errText(err))
+      }
+    },
+  )
+
+  const tools: NonNullable<Parameters<typeof createSdkMcpServer>[0]['tools']> = []
+  if (!pipeline || reach.length) tools.push(messageTool)
+
+  if (pipeline && role === 'manager') {
+    tools.push(
+      tool(
+        'submit_task_card',
+        'Submit the task card: the contract the user approves and the checker verifies against. Replaces any earlier card. Then end your turn.',
+        {
+          goal: z.string().describe('one or two sentences: what the change achieves, for whom'),
+          criteria: z.array(z.string()).min(1).max(8).describe('3–6 observable, checkable behaviours that mean "done"'),
+          outOfScope: z.array(z.string()).max(8).optional().describe('what the builder must not touch or add'),
+          files: z.array(z.string()).max(12).optional().describe('files or areas the builder should start from'),
+          notes: z.string().optional().describe('decisions made, constraints, or "this card is the first slice of …"'),
+        },
+        async (args) => {
+          const c = current()
+          if ('error' in c) return c.error
+          if (c.run.stage !== 'spec' && c.run.stage !== 'approve') return errResult(`the card can't change now — the run is at "${c.run.stage}"`)
+          const card: TaskCard = {
+            goal: args.goal.trim(),
+            criteria: args.criteria.map((x) => x.trim()).filter(Boolean),
+            outOfScope: (args.outOfScope ?? []).map((x) => x.trim()).filter(Boolean),
+            files: (args.files ?? []).map((x) => x.trim()).filter(Boolean),
+            ...(args.notes?.trim() ? { notes: args.notes.trim() } : {}),
+          }
+          c.run.card = card
+          c.run.steps.push({ kind: 'card', at: Date.now(), card })
+          c.run.pending = { member: c.member, kind: 'card' }
+          await writeRunFile(c.run, 'card.md', `# Task card — ${c.run.title}\n\n${renderCard(card)}\n`)
+          await saveTeamRuns(rt)
+          return okResult('Task card submitted. End your turn now — the user approves it and triage runs the build.')
+        },
+      ),
+    )
+  }
+
+  if (pipeline && role === 'builder') {
+    tools.push(
+      tool(
+        'submit_handoff',
+        'Hand the finished (or fixed) work to verification. Keep it short. Then end your turn.',
+        {
+          summary: z.string().describe('what you changed, in a few lines'),
+          files: z.array(z.string()).describe('files created or modified'),
+          verification: z.string().describe('what you ran to check it and what it showed'),
+          uncertain: z.string().optional().describe('anything you are unsure about'),
+          rejected: z.string().optional().describe('findings you declined as out of scope, with the reason'),
+        },
+        async (args) => {
+          const c = current()
+          if ('error' in c) return c.error
+          if (c.run.stage !== 'build' && c.run.stage !== 'blocked') return errResult(`there's nothing to hand off — the run is at "${c.run.stage}"`)
+          const step = {
+            kind: 'handoff' as const,
+            at: Date.now(),
+            round: c.run.round,
+            summary: args.summary.trim(),
+            files: args.files,
+            verification: args.verification.trim(),
+            ...(args.uncertain?.trim() ? { uncertain: args.uncertain.trim() } : {}),
+            ...(args.rejected?.trim() ? { rejected: args.rejected.trim() } : {}),
+          }
+          c.run.steps.push(step)
+          c.run.pending = { member: c.member, kind: 'handoff' }
+          await writeRunFile(c.run, `handoff-${c.run.round}.md`, handoffText(step))
+          await saveTeamRuns(rt)
+          return okResult('Handed off. End your turn now — triage runs the checks and the review.')
+        },
+      ),
+      tool(
+        'report_blocked',
+        'Ask the user one question you cannot answer yourself. The run waits for their answer in your session.',
+        { question: z.string().describe('one specific question') },
+        async (args) => {
+          const c = current()
+          if ('error' in c) return c.error
+          c.run.steps.push({ kind: 'blocked', at: Date.now(), question: args.question.trim() })
+          c.run.pending = { member: c.member, kind: 'blocked' }
+          await saveTeamRuns(rt)
+          return okResult('Asked. End your turn now; the user answers here.')
+        },
+      ),
+    )
+  }
+
+  if (pipeline && role === 'checker') {
+    tools.push(
+      tool(
+        'submit_verdict',
+        'Submit your verdict on the change. "fail" needs at least one P0/P1 finding. Then end your turn.',
+        {
+          verdict: z.enum(['pass', 'fail']),
+          verified: z.string().describe('what you ran or checked, and what it showed'),
+          findings: z
+            .array(
+              z.object({
+                severity: z.enum(['P0', 'P1']),
+                where: z.string().describe('file:line or the behaviour'),
+                problem: z.string(),
+                fix: z.string(),
+              }),
+            )
+            .max(10)
+            .optional(),
+        },
+        async (args) => {
+          const c = current()
+          if ('error' in c) return c.error
+          if (c.run.stage !== 'verify') return errResult(`there's nothing to verify — the run is at "${c.run.stage}"`)
+          const findings = args.findings ?? []
+          if (args.verdict === 'fail' && !findings.length) return errResult('a "fail" needs at least one P0 or P1 finding')
+          const label = c.run.members.find((m) => m.sessionId === sessionId)?.label ?? c.member
+          const step = { kind: 'verdict' as const, at: Date.now(), round: c.run.round, checker: label, verdict: args.verdict, verified: args.verified.trim(), findings }
+          c.run.steps.push(step)
+          c.run.pending = { member: c.member, kind: 'verdict' }
+          await writeRunFile(c.run, `verdict-${c.run.round}-${c.member}.md`, verdictText(step))
+          await saveTeamRuns(rt)
+          return okResult('Verdict submitted. End your turn now.')
+        },
+      ),
+    )
+  }
+
   return createSdkMcpServer({
     name: 'team',
     version: VERSION,
-    // Same reason as the triage server: message_teammate is the member's one
-    // job-critical tool, so it is loaded up front, never behind tool search.
+    // A member's submit tool is its one job-critical tool: loaded up front,
+    // never behind tool search.
     alwaysLoad: true,
-    tools: [
-      tool(
-        'message_teammate',
-        'Send a message to another member of your team, by member name. It arrives in their session as a new turn. After sending, end your turn — their reply arrives as a new message.',
-        {
-          to: to.describe('the member to message'),
-          message: z.string().describe('the full message — the member sees only this, not your conversation'),
-        },
-        async (args) => {
-          try {
-            const self = rt.sessionTeam.get(sessionId)
-            const cur = self ? rt.teamRuns.get(self.runId) : undefined
-            if (!self || !cur) return errResult('this session is not on a team')
-            if (cur.state !== 'running') {
-              return errResult(`the team is ${cur.state}${cur.reason ? ` (${cur.reason})` : ''} — stop and report where the work stands; the user resumes it`)
-            }
-            if (args.to === self.member) return errResult('that is you — message a different member')
-            const target = cur.members.find((m) => m.member === args.to)
-            if (!target) return errResult(`this team has no member named ${args.to}`)
-            const sent = (rt.teamMessages.get(cur.id) ?? 0) + 1
-            if (sent > TEAM_MESSAGE_BUDGET) {
-              return errResult(
-                `the team has sent ${TEAM_MESSAGE_BUDGET} messages since the user last spoke — stop and report the state of the work to the user instead`,
-              )
-            }
-            const live = await getOrRevive(rt, target.sessionId)
-            if (!live) return errResult(`could not start ${target.label}'s session`)
-            rt.teamMessages.set(cur.id, sent)
-            const from = cur.members.find((m) => m.sessionId === sessionId)?.label ?? self.member
-            await live.sendUserMessage(args.message, undefined, undefined, { from })
-            return okResult(`delivered to ${target.label}. End your turn now; their reply will arrive as a new message.`)
-          } catch (err) {
-            return errResult(errText(err))
-          }
-        },
-      ),
-    ],
+    tools,
   })
+}
+
+// --- the pipeline engine: triage, not an agent, moves a run between stages ---
+
+async function writeRunFile(run: StoredTeamRun, name: string, text: string): Promise<void> {
+  if (!run.dir) return
+  await mkdir(run.dir, { recursive: true }).catch(() => {})
+  await writeFile(path.join(run.dir, name), text, 'utf8').catch(() => {})
+}
+
+type HandoffStep = Extract<TeamStep, { kind: 'handoff' }>
+type VerdictStep = Extract<TeamStep, { kind: 'verdict' }>
+const handoffText = (s: HandoffStep): string =>
+  [
+    `Summary: ${s.summary}`,
+    `Files: ${s.files.join(', ') || '—'}`,
+    `Verified: ${s.verification}`,
+    s.uncertain ? `Uncertain: ${s.uncertain}` : '',
+    s.rejected ? `Declined as out of scope: ${s.rejected}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+const verdictText = (s: VerdictStep): string =>
+  [
+    `${s.checker}: ${s.verdict.toUpperCase()}`,
+    `Verified: ${s.verified}`,
+    ...s.findings.map((f, i) => `${i + 1}. [${f.severity}] ${f.where} — ${f.problem}\n   Fix: ${f.fix}`),
+  ].join('\n')
+
+const memberOf = (run: StoredTeamRun, role: 'builder' | 'checker') =>
+  run.agents.filter((a) => a.role === role).map((a) => run.members.find((m) => m.member === a.name)!).filter(Boolean)
+
+/** Move to a stage: bump the revision, persist, tell every client. */
+async function setStage(rt: WorkspaceRuntime, run: StoredTeamRun, stage: TeamStage): Promise<void> {
+  run.stage = stage
+  run.rev += 1
+  delete run.nudged
+  await saveTeamRuns(rt)
+  broadcastSessionList(rt)
+}
+
+/** A message from triage itself — badged "from triage" in the transcript, framed as not-the-user for the model. */
+async function tellMember(rt: WorkspaceRuntime, sessionId: string, text: string, opts: { fresh?: boolean } = {}): Promise<void> {
+  if (opts.fresh) rt.freshNext.add(sessionId)
+  const live = await getOrRevive(rt, sessionId)
+  await live?.sendUserMessage(text, undefined, undefined, { from: 'triage' })
+}
+
+/**
+ * A pipeline member's turn ended. Act on the submission it made during the
+ * turn, if any; otherwise the run just waits (a question to the user is normal)
+ * — except a builder or checker that stopped without submitting gets one nudge.
+ */
+async function advanceTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun, member: string): Promise<void> {
+  if (run.mode !== 'pipeline' || run.state !== 'running') return
+  const p = run.pending
+  if (p && p.member === member) {
+    delete run.pending
+    if (p.kind === 'card') {
+      await setStage(rt, run, 'approve')
+      const mgr = run.members.find((m) => m.member === 'manager')
+      if (mgr) await sessionNotice(rt, mgr.sessionId, 'Task card ready — approve it above to start the build, or tell the manager what to change')
+      return
+    }
+    if (p.kind === 'blocked') {
+      await setStage(rt, run, 'blocked')
+      return
+    }
+    if (p.kind === 'handoff') return runTeamChecks(rt, run)
+    if (p.kind === 'verdict') {
+      run.awaiting = (run.awaiting ?? []).filter((m) => m !== member)
+      await saveTeamRuns(rt)
+      if (!run.awaiting.length) return decideTeamVerdicts(rt, run)
+      return
+    }
+  }
+  if (run.stage === 'report' && member === 'manager') {
+    await setStage(rt, run, 'done')
+    run.state = 'done'
+    await saveTeamRuns(rt)
+    broadcastSessionList(rt)
+    log('info', 'teams', `run done at ${usd(runSpent(run))}`, { teamId: run.id, workspace: rt.meta.id })
+    return
+  }
+  const agent = run.agents.find((a) => a.name === member)
+  const owes =
+    (run.stage === 'build' && agent?.role === 'builder' && 'submit_handoff') ||
+    (run.stage === 'verify' && agent?.role === 'checker' && run.awaiting?.includes(member) && 'submit_verdict')
+  if (owes && run.nudged !== `${run.stage}:${run.round}:${member}`) {
+    run.nudged = `${run.stage}:${run.round}:${member}`
+    await saveTeamRuns(rt)
+    const m = run.members.find((x) => x.member === member)
+    if (m) await tellMember(rt, m.sessionId, `You ended your turn without calling ${owes}. If the work is done, call it now; if you are stuck on something only the user can decide${owes === 'submit_handoff' ? ', call report_blocked' : ', say so in your verdict'}.`)
+  }
+}
+
+/** You approved the card: photograph the tree (the checker's diff base) and start the build. */
+async function approveTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
+  if (run.mode !== 'pipeline' || run.stage !== 'approve' || !run.card) throw new Error('there is no card waiting for approval')
+  if (run.state !== 'running') throw new Error(`the run is ${run.state}`)
+  const builder = memberOf(run, 'builder')[0]
+  if (!builder) throw new Error('this team has no builder')
+  run.steps.push({ kind: 'approved', at: Date.now() })
+  run.baseTree = (run.root && (await snapshotTree(run.root))) || undefined
+  await setStage(rt, run, 'build')
+  await tellMember(rt, builder.sessionId, buildMessage(run, path.join(run.dir, 'card.md')))
+}
+
+const CHECK_TIMEOUT_MS = 240_000
+
+/** The project's own typecheck/lint/test — free, and first: no checker is paid to find a type error. */
+async function runTeamChecks(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
+  await setStage(rt, run, 'checks')
+  const cmds = run.root ? await detectChecks(run.root) : []
+  const results: { cmd: string; ok: boolean; tail: string }[] = []
+  for (const cmd of cmds) {
+    try {
+      await pExec(cmd, { cwd: run.root, timeout: CHECK_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, CI: '1', FORCE_COLOR: '0' } })
+      results.push({ cmd, ok: true, tail: '' })
+    } catch (err) {
+      const e = err as { stdout?: string; stderr?: string; message?: string }
+      const out = `${e.stdout ?? ''}\n${e.stderr ?? ''}`.trim() || e.message || 'failed'
+      results.push({ cmd, ok: false, tail: out.slice(-3000) })
+    }
+  }
+  const ok = results.every((r) => r.ok)
+  run.steps.push({ kind: 'checks', at: Date.now(), round: run.round, ok, commands: results })
+  await writeRunFile(run, `checks-${run.round}.txt`, results.map((r) => `$ ${r.cmd} → ${r.ok ? 'ok' : 'FAILED'}\n${r.tail}`).join('\n\n') || 'no checks configured')
+  if (!ok) {
+    const failed = results.filter((r) => !r.ok)
+    return fixOrReport(rt, run, { checks: failed }, `checks still failing: ${failed.map((f) => f.cmd).join(', ')}`)
+  }
+  return memberOf(run, 'checker').length ? startTeamVerify(rt, run) : startTeamReport(rt, run, 'checks passed (no checker on this team)')
+}
+
+/** Another fix round, or — past the cap — report what's unresolved instead of looping. */
+async function fixOrReport(
+  rt: WorkspaceRuntime,
+  run: StoredTeamRun,
+  parts: Parameters<typeof fixMessage>[2],
+  unresolved: string,
+): Promise<void> {
+  if (run.round >= run.maxRounds) {
+    run.steps.push({ kind: 'failed', at: Date.now(), why: `${unresolved} after ${run.maxRounds} fix rounds` })
+    return startTeamReport(rt, run, `not verified — ${unresolved} after ${run.maxRounds} fix rounds`)
+  }
+  run.round += 1
+  await setStage(rt, run, 'build')
+  const builder = memberOf(run, 'builder')[0]
+  if (builder) await tellMember(rt, builder.sessionId, fixMessage(run.round, run.maxRounds, parts))
+}
+
+/** Every checker gets the card, the handoff and this run's diff — in a fresh context each round. */
+async function startTeamVerify(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
+  const checkers = memberOf(run, 'checker')
+  run.awaiting = checkers.map((c) => c.member)
+  await setStage(rt, run, 'verify')
+  let patch = ''
+  let truncated = false
+  if (run.root && run.baseTree) {
+    const now = await snapshotTree(run.root)
+    if (now) ({ patch, truncated } = await treePatch(run.root, run.baseTree, now).catch(() => ({ patch: '', truncated: false })))
+  }
+  const handoff = [...run.steps].reverse().find((s): s is HandoffStep => s.kind === 'handoff')
+  const text = checkerMessage(run, handoff ? handoffText(handoff) : '(no handoff)', patch, truncated, run.round)
+  for (const c of checkers) await tellMember(rt, c.sessionId, text, { fresh: true })
+}
+
+async function decideTeamVerdicts(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
+  const verdicts = run.steps.filter((s): s is VerdictStep => s.kind === 'verdict' && s.round === run.round)
+  const failing = verdicts.filter((v) => v.verdict === 'fail')
+  if (!failing.length) return startTeamReport(rt, run, `verified — ${verdicts.map((v) => `${v.checker} passed`).join(', ')}`)
+  return fixOrReport(
+    rt,
+    run,
+    { findings: failing.map((v) => ({ checker: v.checker, findings: v.findings })) },
+    `${failing.reduce((n, v) => n + v.findings.length, 0)} open finding(s)`,
+  )
+}
+
+async function startTeamReport(rt: WorkspaceRuntime, run: StoredTeamRun, outcome: string): Promise<void> {
+  await setStage(rt, run, 'report')
+  const mgr = run.members.find((m) => m.member === 'manager')
+  if (mgr) await tellMember(rt, mgr.sessionId, reportMessage(run, outcome))
+}
+
+/** After a resume: act on a submission the pause interrupted, or ask the stage's owner to carry on. */
+async function continueTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
+  if (run.mode !== 'pipeline') return
+  if (run.pending) return advanceTeamRun(rt, run, run.pending.member)
+  const owner =
+    run.stage === 'build'
+      ? memberOf(run, 'builder')[0]
+      : run.stage === 'verify'
+        ? memberOf(run, 'checker').find((c) => run.awaiting?.includes(c.member))
+        : run.stage === 'report' || run.stage === 'spec'
+          ? run.members.find((m) => m.member === 'manager')
+          : undefined
+  if (owner) await tellMember(rt, owner.sessionId, 'The run was paused and is now resumed. Carry on with your stage where you left off, and finish with your submit tool.')
+}
+
+function teamRunDetail(run: StoredTeamRun): TeamRunDetail {
+  return { id: run.id, itemId: run.itemId, title: run.title, info: runInfo(run), card: run.card, steps: run.steps, dir: run.dir }
 }
 
 /** What a dispatched session opens with: the kind's template, the item, and the brief as a mention. */
@@ -5314,6 +5763,12 @@ const server = http.createServer(async (req, res) => {
         if (!isLibraryName(b.name) || (b.kind !== 'agent' && b.kind !== 'team')) throw new Error('need a kind and a name')
         await lib.reset(b.kind, b.name)
         json(200, await teamLibraryOp(rt))
+      } else if (route === 'POST /api/teams/approve') {
+        await approveTeamRun(rt, teamRunFrom(rt, await readJsonBody(req)))
+        json(200, { ok: true })
+      } else if (route === 'GET /api/teams/run') {
+        const body: TeamRunResponse = { ok: true, run: teamRunDetail(teamRunFrom(rt, { teamId: url.searchParams.get('teamId') })) }
+        json(200, body)
       } else if (route === 'POST /api/teams/pause') {
         await pauseTeamRun(rt, teamRunFrom(rt, await readJsonBody(req)), 'paused by you')
         json(200, { ok: true })
