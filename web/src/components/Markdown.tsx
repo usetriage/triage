@@ -56,9 +56,17 @@ let collecting: string[] = []
 marked.use({
   renderer: {
     code(token) {
-      if (token.lang?.trim().toLowerCase() !== 'mermaid' || !closedFence(token.raw)) return false
-      const index = collecting.push(token.text) - 1
-      return `<figure class="mermaid" data-mermaid="${index}"><pre><code class="language-mermaid">${escapeHtml(token.text)}</code></pre></figure>`
+      if (token.lang?.trim().toLowerCase() === 'mermaid' && closedFence(token.raw)) {
+        const index = collecting.push(token.text) - 1
+        return `<figure class="mermaid" data-mermaid="${index}"><pre><code class="language-mermaid">${escapeHtml(token.text)}</code></pre></figure>`
+      }
+      const lang = token.lang?.trim().split(/\s+/)[0]
+      const codeClass = lang ? ` class="language-${escapeHtml(lang)}"` : ''
+      const isMarkdown = lang?.toLowerCase() === 'markdown' || lang?.toLowerCase() === 'md'
+      const previewBtn = isMarkdown
+        ? '<button type="button" class="codeCopyBtn" data-preview-code aria-label="Preview markdown">Preview</button>'
+        : ''
+      return `<div class="codeBlock"><div class="codeToolbar">${previewBtn}<button type="button" class="codeCopyBtn" data-copy-code aria-label="Copy code">Copy</button></div><pre><code${codeClass}>${escapeHtml(token.text)}</code></pre></div>`
     },
   },
 })
@@ -78,6 +86,8 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const theme = useTheme()
   const [rendered, redraw] = useReducer((n: number) => n + 1, 0)
   const [zoomed, setZoomed] = useState<string | null>(null)
+  const [preview, setPreview] = useState<string | null>(null)
+  const [previewCopied, setPreviewCopied] = useState(false)
   const host = useRef<HTMLDivElement>(null)
   const { html, diagrams } = useMemo(() => renderMarkdown(text), [text])
 
@@ -116,14 +126,61 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
 
   const onClick = useCallback(
     (e: MouseEvent) => {
-      const button = (e.target as HTMLElement).closest<HTMLElement>('[data-mermaid-expand]')
-      if (!button) return
-      const code = diagrams[Number(button.dataset.mermaidExpand)]
-      const svg = code === undefined ? undefined : diagram(theme, code)
-      if (svg) setZoomed(svg)
+      const target = e.target as HTMLElement
+      const expandButton = target.closest<HTMLElement>('[data-mermaid-expand]')
+      if (expandButton) {
+        const code = diagrams[Number(expandButton.dataset.mermaidExpand)]
+        const svg = code === undefined ? undefined : diagram(theme, code)
+        if (svg) setZoomed(svg)
+        return
+      }
+      const copyButton = target.closest<HTMLElement>('[data-copy-code]')
+      if (copyButton) {
+        const code = copyButton.closest('.codeBlock')?.querySelector('code')?.textContent ?? ''
+        void navigator.clipboard.writeText(code).then(() => {
+          copyButton.textContent = 'Copied'
+          copyButton.classList.add('copied')
+          setTimeout(() => {
+            copyButton.textContent = 'Copy'
+            copyButton.classList.remove('copied')
+          }, 1400)
+        })
+        return
+      }
+      const previewButton = target.closest<HTMLElement>('[data-preview-code]')
+      if (previewButton) {
+        const code = previewButton.closest('.codeBlock')?.querySelector('code')?.textContent ?? ''
+        setPreview(code)
+      }
     },
     [diagrams, theme],
   )
+
+  // Copies the rendered markdown as rich text (HTML + a plain-text fallback)
+  // so pasting into a rich editor — email, Slack, docs — keeps the formatting,
+  // not just the raw source the code block already offers.
+  const copyPreview = useCallback(async () => {
+    if (preview === null) return
+    const { html } = renderMarkdown(preview)
+    try {
+      if (typeof ClipboardItem !== 'undefined') {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/html': new Blob([html], { type: 'text/html' }),
+            'text/plain': new Blob([preview], { type: 'text/plain' }),
+          }),
+        ])
+      } else {
+        await navigator.clipboard.writeText(preview)
+      }
+    } catch {
+      await navigator.clipboard.writeText(preview).catch(() => {
+        /* a browser that refuses the clipboard still shows the text to select */
+      })
+    }
+    setPreviewCopied(true)
+    setTimeout(() => setPreviewCopied(false), 1400)
+  }, [preview])
 
   return (
     <>
@@ -139,6 +196,25 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
               </button>
             </Dialog.Close>
             <div className="mermaidModalBody" dangerouslySetInnerHTML={{ __html: zoomed ?? '' }} />
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+      <Dialog.Root open={preview !== null} onOpenChange={(open) => !open && setPreview(null)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="settingsOverlay" />
+          <Dialog.Content className="markdownPreviewModal" aria-describedby={undefined}>
+            <Dialog.Title className="sr-only">Markdown preview</Dialog.Title>
+            <div className="markdownPreviewToolbar">
+              <button type="button" className="btn sm" onClick={() => void copyPreview()}>
+                {previewCopied ? 'Copied' : 'Copy'}
+              </button>
+              <Dialog.Close asChild>
+                <button type="button" className="iconBtn markdownPreviewClose" title="Close (Esc)" aria-label="Close preview">
+                  <X size={15} aria-hidden="true" />
+                </button>
+              </Dialog.Close>
+            </div>
+            <div className="markdownPreviewBody">{preview !== null && <Markdown text={preview} />}</div>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>

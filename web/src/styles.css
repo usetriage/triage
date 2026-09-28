@@ -1418,6 +1418,22 @@ dialog.sheet[open] { display: grid; }
 .md code { font-family: var(--mono); font-size: 1rem; color: var(--ink); background: var(--card); border-radius: var(--r-xs); padding: 1px 5px; }
 .md pre { background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r); padding: 11px 13px; overflow-x: auto; }
 .md pre code { background: none; padding: 0; font-size: 0.9615rem; line-height: 1.6; color: var(--body); }
+.md .codeBlock { position: relative; }
+.md .codeBlock pre { margin-bottom: 0; }
+.md .codeToolbar {
+  position: absolute; top: 8px; right: 8px; z-index: 1;
+  display: flex; gap: 6px;
+  opacity: 0; transition: opacity 0.12s ease;
+}
+.md .codeBlock:hover .codeToolbar, .md .codeToolbar:focus-within { opacity: 1; }
+.md .codeCopyBtn {
+  font-family: var(--mono); font-size: 0.7692rem;
+  color: var(--mute); background: var(--card); border: 1px solid var(--hair-strong);
+  border-radius: var(--r-xs); padding: 2px 7px; cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.md .codeCopyBtn:hover { color: var(--ink); border-color: var(--hair-bright); }
+.md .codeCopyBtn.copied { color: var(--green); border-color: var(--green); }
 .md a { color: var(--blue); }
 .md a:hover { text-decoration: underline; }
 .md blockquote { border-left: 2px solid var(--hair-strong); padding: 2px 0 2px 13px; color: var(--mute); }
@@ -1470,6 +1486,20 @@ dialog.sheet[open] { display: grid; }
   display: flex; align-items: center; justify-content: center;
 }
 .mermaidModalBody svg { max-width: 100%; height: auto; }
+
+/* The rendered preview of a ```markdown code block, plus a copy that grabs
+   rich text (HTML + plain-text fallback) so pasting elsewhere keeps formatting. */
+.markdownPreviewModal {
+  position: fixed; z-index: 81; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(92vw, 900px); height: min(88vh, 760px);
+  background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
+  box-shadow: 0 0 0 1px var(--ring), 0 40px 120px var(--drop);
+  padding: 20px; outline: none; animation: settingsIn 0.16s ease;
+  display: flex; flex-direction: column;
+}
+.markdownPreviewToolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 10px; }
+.markdownPreviewClose { position: static; }
+.markdownPreviewBody { flex: 1; overflow: auto; }
 
 /* ---------- lists shared by watches / projects / connectors ---------- */
 .list { background: var(--card); border: 1px solid var(--hair-strong); border-radius: var(--r-lg); overflow: hidden; }
