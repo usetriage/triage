@@ -279,6 +279,7 @@ export function composeBriefPrompt(input: BriefPromptInput): string {
     `last activity: ${item.updatedAt}`,
     input.reason && `rank: ${input.reason}`,
     item.why && `why it surfaced: ${item.why}`,
+    item.urls?.length ? `links: ${item.urls.join(', ')}` : undefined,
     item.refs?.length ? `refs: ${item.refs.join(', ')}` : undefined,
   ].filter((l): l is string => typeof l === 'string' && l.length > 0)
 

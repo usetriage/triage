@@ -233,6 +233,8 @@ export type NewManualItem = {
   projectId?: string
   description?: string
   url?: string
+  /** extra links (see WorkItem.urls); on update, [] clears them */
+  urls?: string[]
   priority?: number
 }
 
@@ -278,6 +280,8 @@ export interface WorkItemStore {
    * (they live on disk); this only records what the item now holds.
    */
   setImages(id: string, images: ItemImage[]): Promise<void>
+  /** Replace the human's links on any item ([] clears). Never touched by ingestion. */
+  setUrls(id: string, urls: string[]): Promise<void>
 }
 
 export type NewBriefJob = {

@@ -1138,6 +1138,7 @@ class SqliteWorkItems implements WorkItemStore {
       updatedAt: iso,
       ...(item.projectId ? { projectId: item.projectId } : {}),
       ...(item.description ? { description: item.description, why: item.description } : {}),
+      ...(item.urls?.length ? { urls: item.urls } : {}),
     }
     this.db
       .prepare(
@@ -1157,6 +1158,7 @@ class SqliteWorkItems implements WorkItemStore {
     const next: WorkItem = { ...base }
     if (patch.title !== undefined) next.title = patch.title
     if (patch.url !== undefined) next.url = patch.url
+    if (patch.urls !== undefined) next.urls = patch.urls.length > 0 ? patch.urls : undefined
     if (patch.description !== undefined) {
       next.description = patch.description || undefined
       // manual items show the description as their "why" on the card
@@ -1258,6 +1260,15 @@ class SqliteWorkItems implements WorkItemStore {
     const next: WorkItem = { ...(JSON.parse(r.payload) as WorkItem) }
     if (images.length > 0) next.images = images
     else delete next.images
+    this.db.prepare('UPDATE work_items SET payload = ?, updated_at = ? WHERE id = ?').run(payloadOf(next), Date.now(), id)
+  }
+
+  async setUrls(id: string, urls: string[]): Promise<void> {
+    const r = this.row(id)
+    if (!r) throw new Error('no such work item')
+    const next: WorkItem = { ...(JSON.parse(r.payload) as WorkItem) }
+    if (urls.length > 0) next.urls = urls
+    else delete next.urls
     this.db.prepare('UPDATE work_items SET payload = ?, updated_at = ? WHERE id = ?').run(payloadOf(next), Date.now(), id)
   }
 }

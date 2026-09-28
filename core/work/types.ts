@@ -86,6 +86,12 @@ export interface WorkItem {
    * ones; never overwritten by ingestion or by a brief (.docs/next-version.md)
    */
   description?: string
+  /**
+   * links the human put on the item — a Slack thread, the PR, a doc. Like
+   * `description`, on any item and never touched by ingestion; `url` stays
+   * the source's own link.
+   */
+  urls?: string[]
   /** pre-0.7 name for `description` on manual items; read as a fallback, never written */
   note?: string
   /**

@@ -26,6 +26,7 @@
     "shared",
     "core/work/types.ts",
     "core/work/state.ts",
+    "core/work/link.ts",
     "core/watch/types.ts",
     "core/watch/cron.ts",
     "core/watch/tools.ts",

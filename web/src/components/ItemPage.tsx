@@ -42,6 +42,7 @@ import { Markdown } from './Markdown.js'
 import { StartTeamDialog } from './StartTeamDialog.js'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
 import { ProjectIdPicker } from './ProjectPicker.js'
+import { ItemLinks } from './ItemLinks.js'
 
 type Props = {
   id: string
@@ -528,6 +529,16 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
             </>
           )}
         </div>
+
+        <ItemLinks
+          item={item}
+          onDirty={onDirty}
+          onSaved={(urls) => {
+            const patch = (i: ScoredItem) => (i.id === item.id ? { ...i, urls: urls.length > 0 ? urls : undefined } : i)
+            inboxStore.patch((items) => items.map(patch))
+            setOther((o) => (o?.item ? { ...o, item: patch(o.item) } : o))
+          }}
+        />
 
         {report && (
           <div className="card briefCard">

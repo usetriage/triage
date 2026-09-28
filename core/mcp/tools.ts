@@ -95,13 +95,14 @@ export const TOOLS = [
   {
     name: 'create_work_item',
     description:
-      'Add a manual to-do to the inbox (a user-authored item). Title is required; note, url, priority (1–4), and projectId are optional.',
+      'Add a manual to-do to the inbox (a user-authored item). Title is required; note, url, urls, priority (1–4), and projectId are optional.',
     inputSchema: {
       type: 'object',
       properties: {
         title: { type: 'string', description: 'what the to-do is' },
         note: { type: 'string' },
         url: { type: 'string', description: 'an http(s) link' },
+        urls: { type: 'array', items: { type: 'string' }, description: 'more http(s) links — the Slack thread, the PR, a doc' },
         priority: { type: 'number', description: '1 urgent … 4 low' },
         projectId: { type: 'string', description: 'an existing project id' },
       },
@@ -119,6 +120,7 @@ export const TOOLS = [
         title: { type: 'string' },
         note: { type: 'string' },
         url: { type: 'string' },
+        urls: { type: 'array', items: { type: 'string' }, description: 'the complete list of extra links; [] clears them' },
         priority: { type: 'number', description: '1–4, or 0/null to clear' },
         projectId: { type: 'string' },
       },

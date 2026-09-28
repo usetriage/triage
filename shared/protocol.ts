@@ -950,6 +950,8 @@ export type WatchPreviewStatusResponse =
 export type { ItemStatus } from '../core/work/state.js'
 
 export type ItemStateResponse = { ok: true } | { ok: false; error: string }
+/** POST /api/items/urls — the links as saved (trimmed, deduplicated) */
+export type ItemUrlsResponse = { ok: true; urls: string[] } | { ok: false; error: string }
 
 // ---------------------------------------------------------------------------
 // Manual items (POST/PUT/DELETE /api/items/manual) — to-dos the user adds by
@@ -964,6 +966,8 @@ export type ManualItemInput = {
   description?: string
   note?: string
   url?: string
+  /** extra links — the Slack thread, the PR, a doc; the complete list, [] clears */
+  urls?: string[]
   priority?: number
   /** the complete desired image set — new base64 uploads and the refs to keep */
   images?: ItemImageEdit[]

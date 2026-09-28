@@ -134,6 +134,7 @@ import type {
   ItemEventsResponse,
   ItemListResponse,
   ItemStateResponse,
+  ItemUrlsResponse,
   LogLevel,
   LogsResponse,
   UsageResponse,
@@ -1458,6 +1459,7 @@ async function resolveMentions(
         scored && `rank: ${scored.score} — ${scored.reason}`,
         item.why && `why: ${item.why}`,
         item.description && `description: ${item.description}`,
+        item.urls?.length ? `links: ${item.urls.join(', ')}` : undefined,
         item.refs?.length ? `refs: ${item.refs.join(', ')}` : undefined,
       ].filter((l): l is string => typeof l === 'string' && l.length > 0)
       resolved.push({ ...m, label: item.title, inlined: true })
@@ -3133,6 +3135,7 @@ const ITEM_ID_RE = /^(github|slack|linear|web):\S+$/
 const ANY_ITEM_ID_RE = /^(github|slack|linear|web|manual):\S+$/
 /** Item saves carry images inline: the per-image cap, base64-inflated, times the per-item cap. */
 const MAX_ITEM_BODY_BYTES = Math.ceil(MAX_IMAGES_PER_ITEM * MAX_IMAGE_BYTES * 1.4) + 100_000
+const MAX_URLS_PER_ITEM = 20
 
 type WatchPatch = Partial<NewWatch> & { enabled?: boolean; runOnceNow?: boolean }
 
@@ -3301,9 +3304,29 @@ async function manualItemFrom(rt: WorkspaceRuntime, raw: unknown, opts: { partia
     else if (typeof p === 'number' && Number.isInteger(p) && p >= 1 && p <= 4) input.priority = p
     else throw new Error('priority must be 1–4')
   }
+  const urls = itemUrls(r.urls)
+  if (urls) input.urls = urls
   const images = itemImageEdits(r)
   if (images) input.images = images
   return input
+}
+
+/**
+ * The `urls` field of an item save: the complete desired list of the human's
+ * links, trimmed and deduplicated. Absent leaves them alone, `[]` clears them.
+ * Refused, not repaired, like images — a link that silently vanishes is worse.
+ */
+function itemUrls(v: unknown): string[] | undefined {
+  if (v === undefined || v === null) return undefined
+  if (!Array.isArray(v)) throw new Error('urls must be a list of http(s) links')
+  const out: string[] = []
+  for (const entry of v) {
+    const u = typeof entry === 'string' ? entry.trim() : ''
+    if (!/^https?:\/\/\S+$/.test(u) || u.length > 2000) throw new Error('each link must be an http(s) URL')
+    if (!out.includes(u)) out.push(u)
+  }
+  if (out.length > MAX_URLS_PER_ITEM) throw new Error(`up to ${MAX_URLS_PER_ITEM} links per item`)
+  return out
 }
 
 /**
@@ -4879,12 +4902,13 @@ function makeTriageMcp(rt: WorkspaceRuntime) {
       ),
       tool(
         'create_work_item',
-        'Add a manual to-do to the inbox (a user-authored item). Title is required; description, url, priority (1–4), and projectId are optional.',
+        'Add a manual to-do to the inbox (a user-authored item). Title is required; description, url, urls, priority (1–4), and projectId are optional.',
         {
           title: z.string().describe('what the to-do is'),
           description: z.string().optional().describe("the user's intent in a few sentences"),
           note: z.string().optional().describe('alias of description'),
           url: z.string().optional().describe('an http(s) link'),
+          urls: z.array(z.string()).optional().describe('more http(s) links — the Slack thread, the PR, a doc'),
           priority: z.number().int().min(1).max(4).optional(),
           projectId: z.string().optional().describe('an existing project id'),
         },
@@ -4906,6 +4930,7 @@ function makeTriageMcp(rt: WorkspaceRuntime) {
           description: z.string().optional(),
           note: z.string().optional().describe('alias of description'),
           url: z.string().optional(),
+          urls: z.array(z.string()).optional().describe('the complete list of extra links; [] clears them'),
           priority: z.number().int().min(0).max(4).nullable().optional(),
           projectId: z.string().optional(),
         },
@@ -6315,6 +6340,23 @@ const server = http.createServer(async (req, res) => {
       await rt.store.items.setDescription(id, typeof d === 'string' && d.trim() ? d.trim() : null)
       rt.inboxCache = null
       body = { ok: true }
+    } catch (err) {
+      body = { ok: false, error: errText(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  // The human's links on any item. The list sent is the complete desired set.
+  if (url.pathname === '/api/items/urls' && req.method === 'POST') {
+    let body: ItemUrlsResponse
+    try {
+      const parsed = (await readJsonBody(req)) as Record<string, unknown> | null
+      const id = typeof parsed?.id === 'string' ? parsed.id : ''
+      if (!ANY_ITEM_ID_RE.test(id)) throw new Error('need an item id')
+      const urls = itemUrls(parsed?.urls) ?? []
+      await rt.store.items.setUrls(id, urls)
+      rt.inboxCache = null
+      body = { ok: true, urls }
     } catch (err) {
       body = { ok: false, error: errText(err) }
     }

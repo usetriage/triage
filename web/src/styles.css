@@ -2176,6 +2176,25 @@ dialog.artDialog textarea { min-height: 240px; font-family: var(--mono); font-si
 .descShots .shot { display: block; width: 120px; height: 80px; border: 1px solid var(--hair-strong); border-radius: var(--r); overflow: hidden; background: var(--deep); }
 .descShots .shot:hover { border-color: var(--hair-bright); }
 .descShots .shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* an item's links — source, yours, mentioned — as quiet rows; the whole row opens it */
+.linksBlock { display: flex; flex-direction: column; gap: 2px; }
+.linksBlock .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.linkRow { display: flex; align-items: center; gap: 4px; border-radius: var(--r-sm); margin: 0 -6px; }
+.linkRow:hover { background: var(--elev); }
+.linkRow a { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 5px 6px; color: var(--body); text-decoration: none; font-size: 1rem; }
+.linkRow a > svg { flex: none; color: var(--ash); }
+.linkRow .lab { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.linkRow .origin { flex: none; font-family: var(--mono); font-size: 0.8462rem; letter-spacing: 0.3px; color: var(--stone); }
+.linkRow a .out { color: var(--stone); margin-left: auto; }
+.linkRow:hover a, .linkRow:hover .lab { color: var(--link-hover); }
+.linkRow:hover a .out { color: var(--ash); }
+.linkRow .rm { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-right: 4px; background: none; border: 0; border-radius: var(--r-sm); color: var(--stone); cursor: pointer; opacity: 0; }
+.linkRow:hover .rm, .linkRow .rm:focus-visible { opacity: 1; }
+.linkRow .rm:hover { color: var(--ink); background: var(--wash-2); }
+.linksBlock .addRow { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.linksBlock .addRow input { flex: 1; min-width: 0; height: 30px; box-sizing: border-box; background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--ink); padding: 0 10px; font-size: 0.9615rem; outline: none; }
+.linksBlock .addRow input:focus { border-color: var(--ink); }
 /* Floating bulk-action bar (inbox multi-select). The page is the scroller, so
    sticky-bottom keeps the bar inside the pane — never over the rail or Queue.
    #inboxPage is a flex column whose inner column grows, so on short lists the
