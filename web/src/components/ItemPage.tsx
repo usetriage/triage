@@ -4,7 +4,7 @@
  * why it ranked, what has happened to it, and the sessions working on it.
  * The actions live in the right column so the left reads as a page, not a form.
  */
-import { AlarmClock, Archive, Check, ChevronDown, ChevronRight, ExternalLink, FileText, Hash, ImagePlus, Play, Sparkles, Users, X } from 'lucide-react'
+import { AlarmClock, Archive, Check, ChevronDown, ChevronRight, ExternalLink, FileText, Folder, Hash, ImagePlus, Play, Sparkles, Users, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BriefJobsResponse,
@@ -28,6 +28,7 @@ import type {
 } from '../../../shared/protocol.js'
 import { itemImageUrl } from '../../../shared/protocol.js'
 import { withWorkspace } from '../workspaceUrl.js'
+import { projectColor } from '../tabs.js'
 import { MAX_SERIES, OTHER, OTHER_KEY, SERIES, modelLabel, money, tokens } from '../usageFormat.js'
 import { useAttachments } from '../attachments.js'
 import { AttachmentStrip } from './AttachmentStrip.js'
@@ -40,6 +41,7 @@ import { CreateBriefDialog } from './CreateBriefDialog.js'
 import { Markdown } from './Markdown.js'
 import { StartTeamDialog } from './StartTeamDialog.js'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
+import { ProjectIdPicker } from './ProjectPicker.js'
 
 type Props = {
   id: string
@@ -273,6 +275,16 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id: item.id, priority: priority || null }),
+    }).catch(() => {})
+  }
+
+  function setProject(projectId: string) {
+    if (!item) return
+    inboxStore.patch((items) => items.map((i) => (i.id === item.id ? { ...i, projectId: projectId || undefined } : i)))
+    void fetch(`/api/items/manual?id=${encodeURIComponent(item.id)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId }),
     }).catch(() => {})
   }
 
@@ -735,6 +747,22 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
                 ))}
               </MenuContent>
             </Menu>
+          )}
+          {isOpen && item.source === 'manual' && (
+            <ProjectIdPicker projects={projects} value={item.projectId ?? ''} onChange={setProject}>
+              {(current) => (
+                <button type="button" className="prioBar" title="Set project">
+                  {current ? (
+                    <span className="dot" style={{ background: projectColor(current.path) }} aria-hidden="true" />
+                  ) : (
+                    <Folder size={12} className="caret" aria-hidden="true" />
+                  )}
+                  <span className="lab">Project</span>
+                  <span className="val">{current?.name ?? 'None'}</span>
+                  <ChevronDown className="caret" size={13} aria-hidden="true" />
+                </button>
+              )}
+            </ProjectIdPicker>
           )}
         </div>
 
