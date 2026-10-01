@@ -783,7 +783,7 @@ function WorkRow({
         )}
         <Menu open={menuOpen} onOpenChange={setMenuOpen}>
           <MenuTrigger asChild>
-            <button type="button" className="iconBtn sm" title="More actions">
+            <button type="button" className="iconBtn sm more" title="More actions">
               <MoreHorizontal size={15} aria-hidden="true" />
             </button>
           </MenuTrigger>

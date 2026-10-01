@@ -2791,3 +2791,441 @@ dialog.briefDialog .knobs { display: flex; gap: 8px; align-items: center; flex-w
 .tsScroll { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
 .toolServers .tsEmpty.warnText { color: var(--yellow); display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--hair); }
 .toolServers .tsEmpty code { font-family: var(--mono); font-size: 0.8462rem; }
+
+/* ---------- settings → phone: QR pairing ----------
+   The QR card is the one white surface in the pane — the design system's
+   "email card inset": contrast is the elevation, no shadow. */
+.phonePair { display: flex; gap: 20px; align-items: flex-start; margin-bottom: 12px; }
+.phoneQrCard { flex: none; width: 184px; padding: 0; border-radius: var(--r-lg); overflow: hidden; background: #fff; }
+.phoneQr { display: block; width: 100%; height: auto; }
+.phoneSteps { flex: 1; min-width: 0; }
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .phonePair { flex-direction: column; align-items: stretch; }
+  .phoneQrCard { width: min(240px, 100%); align-self: center; }
+}
+
+/* =========================================================================
+   Phone layout (≤ 767px — the design system's Mobile Large ceiling — or a
+   touch screen under 500px tall, i.e. a phone on its side; keep in step with
+   MOBILE_QUERY in useMobile.ts). One column: a 48px top bar with a
+   back button, one page, and the rail turned into a bottom tab bar. A
+   section whose list is the panel opens it as a sheet over the page. Touch
+   targets grow to 44px; text sits on a 15px floor; fields hold 16px so iOS
+   never zooms into them on focus.
+   ========================================================================= */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  :root { --nav-h: 56px; font-size: max(var(--app-font-size, 13px), 15px); }
+  input, textarea, select, [contenteditable="true"] { font-size: 16px !important; }
+  /* Pinned to the whole screen — a home-screen app on iOS reports a viewport
+     shorter than the screen, and sizing to it left a dead band under the tab
+     bar. Only while the keyboard is up does the app shrink to the visible
+     height (--vvh, viewport.ts), so the keys never cover the composer. */
+  #root { position: fixed; inset: 0; width: auto; height: auto; }
+  html.kbOpen #root { top: var(--vvt, 0px); bottom: auto; height: var(--vvh); }
+  html, body { overflow: hidden; overscroll-behavior: none; }
+  .app { padding-top: env(safe-area-inset-top); }
+
+  .topbar.mobile { gap: 4px; height: 48px; padding: 0 max(6px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left)); }
+  .topbar.mobile .logo { padding-left: 6px; }
+  .topbar.mobile .logo .logoLockup { height: 21px; }
+  .topbar.mobile .topIcon { height: 40px; min-width: 40px; }
+  .topbar.mobile .topIcon .connDot { right: 8px; top: 9px; }
+  .topbar.mobile .back { color: var(--ink); margin-right: -2px; }
+  .topTitle {
+    flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--ink); font-size: 1.0667rem; font-weight: 500; letter-spacing: -0.2px;
+  }
+  .topbar.mobile .wsPill { height: 30px; max-width: 136px; padding: 0 10px; }
+  /* With a page title up, the workspace shrinks to its colour dot. */
+  .topTitle ~ .wsPill { padding: 0 9px; gap: 5px; }
+  .topTitle ~ .wsPill .wsName { display: none; }
+
+  .shell.mobile { flex-direction: column; position: relative; }
+  .shell.mobile #main { order: 1; }
+  .shell.mobile .rail {
+    order: 2; width: 100%; height: calc(var(--nav-h) + env(safe-area-inset-bottom)); flex-direction: row; gap: 0;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    border-right: 0; border-top: 1px solid var(--hair); z-index: 21;
+  }
+  .shell.mobile .railBtn { flex: 1 1 0; min-width: 0; width: auto; height: var(--nav-h); margin: 0; border-radius: 0; gap: 4px; -webkit-tap-highlight-color: transparent; }
+  .shell.mobile .railBtn.active { background: transparent; }
+  .shell.mobile .railBtn.active::before {
+    content: ""; position: absolute; top: -1px; left: 30%; right: 30%; height: 2px; border-radius: 0 0 2px 2px; background: var(--ink);
+  }
+  .shell.mobile .railBtn span.label { font-size: 0.7333rem; }
+  .shell.mobile .railBadge { top: 5px; right: auto; left: calc(50% + 4px); }
+  .shell.mobile .railBtn.active .railBadge { background: var(--elev); }
+
+  .shell.mobile .panel {
+    position: absolute; inset: 0 0 calc(var(--nav-h) + env(safe-area-inset-bottom)) 0; width: auto; z-index: 20;
+    border-right: 0; animation: sheetIn 0.16s ease-out;
+  }
+  .panelSearch { height: 52px; padding: 0 12px; }
+  .searchBtn { height: 38px; font-size: 1rem; }
+  .searchBtn .kbd { display: none; }
+  .panelHead { height: 44px; padding: 0 8px 0 14px; }
+  .panelHead .acts .iconBtn { width: 36px; height: 36px; }
+  .prow { height: 46px; margin: 0 8px; width: calc(100% - 16px); font-size: 1.0667rem; }
+  .prow .rowMenu { width: 36px; height: 36px; }
+  .panelFoot { display: none; }
+
+  /* Pointer-only chrome that means nothing under a thumb. */
+  .kbdHint, kbd.hint { display: none; }
+}
+@keyframes sheetIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+/* No hover on a touch screen: anything revealed on hover is always shown. */
+@media (hover: none) {
+  .prow .rowMenu { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell.mobile .panel { animation: none; }
+}
+/* The keyboard is up: the bottom bar would only push the composer off screen. */
+html.kbOpen .shell.mobile .rail { display: none; }
+html.kbOpen .shell.mobile .panel { bottom: 0; }
+
+/* ---------- phone: pages and the inbox ledger ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .page { padding: 20px 16px calc(32px + env(safe-area-inset-bottom)); }
+  /* The atmospheric glows are wider than a phone; they bleed, they never scroll. */
+  .page, .itemPage, .termHome { overflow-x: hidden; }
+  .pageHead { flex-wrap: wrap; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+  .display { font-size: 2.2rem; }
+  .display.md { font-size: 2rem; }
+  .display.sm { font-size: 1.8rem; }
+  .pageMeta { margin-left: 0; flex: 1 1 100%; min-width: 0; white-space: normal; }
+  /* The filters and the actions each get a line, and scroll sideways rather than wrap. */
+  .toolRow { flex-wrap: nowrap; flex-direction: column; align-items: stretch; gap: 8px; }
+  .toolRow .seg, .toolRow .right { overflow-x: auto; scrollbar-width: none; margin-left: 0; }
+  .toolRow .seg::-webkit-scrollbar, .toolRow .right::-webkit-scrollbar { display: none; }
+  .toolRow .right { margin: 0 -16px; padding: 0 16px; }
+  .toolRow .right .btn { flex: none; }
+  .segBtn { height: 34px; padding: 0 14px; flex: none; }
+  .btn.sm { height: 34px; padding: 0 12px; }
+
+  /* A ledger row on a phone: priority bar, glyph, a title allowed two lines,
+     the age, and the row menu — the full set of actions lives in that menu
+     and on the item page. No checkboxes, no shortcut legend. */
+  .wrow {
+    grid-template-columns: 3px 18px minmax(0, 1fr) auto auto; column-gap: 10px;
+    height: auto; min-height: 56px; padding: 8px 0 8px 2px;
+  }
+  .wrow .check, .wrow .keys { display: none; }
+  .wrow .t { white-space: normal; align-items: center; padding: 4px 0; }
+  .wrow .t .name {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal;
+    font-size: 1.0667rem; line-height: 1.35;
+  }
+  .wrow .t .why { display: none; }
+  .wrow .meta .c { padding-left: 0; }
+  .wrow .meta .state, .wrow .meta .src { display: none; }
+  .wrow .meta, .wrow.sel .meta, .wrow:hover .meta, .wrow:focus-within .meta, .wrow.menu .meta { opacity: 1; }
+  .wrow .acts { position: static; opacity: 1; pointer-events: auto; }
+  .wrow .acts > :not(.more) { display: none; }
+  .wrow .acts .more { width: 36px; height: 36px; color: var(--ash); }
+  .wrow.sel { background: transparent; }
+  .wrow:active { background: var(--wash-2); }
+  .homeList .secLabel { margin-top: 22px; }
+  .selDock { bottom: 8px; }
+  .selBar { max-width: calc(100vw - 24px); overflow-x: auto; }
+}
+
+/* ---------- phone: item page — one column, the actions first ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  /* The two columns dissolve into one list, re-ordered for a thumb: what the
+     item is, then what you can do with it, then the brief and the history. */
+  .itemPage {
+    display: flex; flex-direction: column; gap: 14px;
+    padding: 20px 16px calc(32px + env(safe-area-inset-bottom));
+  }
+  .itemMain, .itemAside { display: contents; }
+  .itemMain > * { order: 2; }
+  .itemMain > :nth-child(-n + 3) { order: 0; }
+  .itemAside > * { order: 3; }
+  .itemAside > .asideActions { order: 1; margin: 4px 0 10px; }
+  .itemAside > .secLabel { margin-top: 12px; }
+  .segRow button, .asideActions .btn { height: 44px; }
+  .btnGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ---------- phone: a session — transcript edge to edge, composer under the thumb ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  /* The top bar already names the session; its header keeps model and state. */
+  #chatHeader { height: 40px; padding: 0 14px; gap: 8px; }
+  #chatTitle { display: none; }
+  #chatHeader .pills { margin-left: 0; overflow: hidden; }
+  #chatHeader .pills .pill.mono { display: none; }
+
+  #transcript { padding: 14px 14px 0; }
+  #transcript .inner { gap: 14px; }
+
+  #composer { padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); }
+  html:not(.kbOpen) .shell.mobile #composer { padding-bottom: 8px; }
+  #composer .frame { min-width: 0; gap: 8px; padding: 10px 12px; }
+  #composer .frame .cardHead { margin: 0 -12px; padding: 8px 12px; overflow: hidden; }
+  .cardHead .branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .cardHead .path { display: none; }
+  #box { min-height: 44px; max-height: 30vh; }
+  /* Icons and the model name only — effort and the Fast label are a tap away —
+     and if a narrow phone still runs out of room, send drops to its own line. */
+  .statusline { gap: 6px; flex-wrap: wrap; }
+  .statusline .chip { height: 32px; padding: 0 10px; }
+  .statusline .chip.model .eff, .statusline .chip.fast .name { display: none; }
+  .statusline .chip.model { min-width: 0; flex: 0 1 auto; }
+  .statusline #sendBtn { margin-left: auto; }
+  .chip.attachBtn { padding: 0 10px; }
+  #sendBtn, #stopBtn { width: 40px; height: 40px; border-radius: var(--r-lg); }
+  #composer .hint { display: none; }
+}
+
+/* ---------- phone: settings fill the screen; the tab list becomes a strip ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .settings {
+    inset: 0; transform: none; width: auto; height: auto;
+    border: 0; border-radius: 0; box-shadow: none; padding-top: env(safe-area-inset-top);
+    animation: sheetIn 0.16s ease-out;
+  }
+  .settingsTabs { display: flex; flex-direction: column; }
+  .settingsNav { flex: none; padding: 0; border-right: 0; border-bottom: 1px solid var(--hair); order: 2; }
+  .settingsPane { flex: 1; order: 1; display: contents; }
+  .settingsHead { order: 1; }
+  .settingsBody { order: 3; }
+  /* The dialog's title stays for screen readers; the pane heading is what shows. */
+  .settingsNavHead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); padding: 0; }
+  .settingsNavGroup, .settingsNavFoot { display: none; }
+  .settingsList {
+    flex-direction: row; gap: 4px; overflow-x: auto; overflow-y: hidden; padding: 0 12px 10px;
+    scrollbar-width: none; overscroll-behavior-x: contain;
+  }
+  .settingsList::-webkit-scrollbar { display: none; }
+  .settingsTab, .settingsTabs .settingsTab {
+    flex: none; width: auto; height: 36px; padding: 0 12px; gap: 7px; font-size: 1rem; justify-content: flex-start;
+    border-radius: var(--r-full); white-space: nowrap;
+  }
+  .settingsHead { padding: 14px 12px 10px 16px; border-bottom: 0; gap: 8px; }
+  .settingsHead h2 { font-size: 1.8rem; }
+  .settingsHead p { font-size: 0.9333rem; }
+  .settingsHeadRight .iconBtn { width: 40px; height: 40px; }
+  .settingsBody { padding: 4px 16px calc(40px + env(safe-area-inset-bottom)); }
+  .settingsBody.fill { padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); }
+  .setRow { flex-wrap: wrap; gap: 10px 16px; }
+}
+
+/* ---------- phone: dialogs — full width, pinned near the top so a keyboard never covers them ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  dialog, dialog.itemComposer, dialog#palette, dialog#helpOverlay, dialog.repoDialog, dialog.briefDialog, dialog.sheet {
+    width: calc(100vw - 16px); max-width: none;
+    margin: calc(env(safe-area-inset-top) + 8px) 8px auto;
+    max-height: calc(var(--vvh, 100dvh) - env(safe-area-inset-top) - 16px); overflow-y: auto;
+  }
+  dialog { padding: 18px 16px; }
+  dialog .row button, dialog button.go, dialog button.cancel, dialog button.danger { height: 44px; padding: 0 16px; }
+  #palette .palList { max-height: none; }
+  .palRow { padding: 12px 10px; }
+  .palHint { display: none; }
+  .palLabel { max-width: 100%; }
+
+  .itemComposer .titleInput { font-size: 1.6rem !important; padding: 6px 16px 2px !important; }
+  .itemComposer .descInput { min-height: 120px; padding: 4px 16px 8px !important; }
+  .itemComposer .dropHint { display: none; }
+  .pillRow { padding: 8px 16px 14px; }
+  .pillRow .pill, .pill.uiSelect { height: 34px; padding: 0 12px; }
+  .composerHead .composerClose { width: 40px; height: 40px; }
+  .composerFoot { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
+  .composerFoot .footActions .hint { display: none; }
+  .composerFoot .footActions button { height: 44px; padding: 0 16px; white-space: nowrap; }
+  .addMore { white-space: nowrap; }
+}
+
+/* ---------- phone: the new-session page ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  #newSessionHome { padding: 16px 12px; justify-content: flex-start; padding-top: 12vh; overflow-y: auto; overflow-x: hidden; }
+  html.kbOpen #newSessionHome { padding-top: 12px; }
+  #newSessionHome h2 { font-size: 2.2rem; align-self: flex-start; padding: 0 4px; }
+  #newSessionHome .keysHint { display: none; }
+  #newSessionHome #box { min-height: 72px; }
+}
+
+/* ---------- phone: artifacts — title on its own line, tags and age under it ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .artRow { flex-wrap: wrap; row-gap: 6px; padding: 12px 14px; }
+  .artRow .artTitle { flex: 1 1 calc(100% - 40px); white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .artRow .pill { flex: none; }
+  .artRow .artTitle + .pill { margin-left: 26px; }
+  .artRow .artPath { display: none; }
+  .artRow .artWhen { margin-left: auto; }
+  .artTools .root { flex: 1 1 100%; order: 3; }
+}
+
+/* ---------- phone: an artifact — heading, then actions, then the document ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .artBack { display: none; } /* the top bar's back does this */
+  .artHead { flex-direction: column; gap: 12px; }
+  .artHead > div:first-child { width: 100%; }
+  .artHead .actions { justify-content: flex-start; }
+  .artHead .actions .btn.sm { height: 38px; }
+  .artGrid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .artBody { padding: 16px; }
+  .chipRow .pill { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .page.artEditPage { padding: 12px 12px calc(12px + env(safe-area-inset-bottom)); }
+  .artEditTitle { font-size: 1.6rem; }
+  .artEditBody { padding: 14px; min-height: 200px; }
+  .artEditBar .crumb { max-width: 100%; }
+  .artEditor .keysHint { display: none; }
+}
+
+/* ---------- phone: watches — the table becomes one block per watch ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .watchHead { flex-wrap: wrap; align-items: center; gap: 10px; }
+  .watchHead .seg { margin: 0; order: 3; flex: 1 1 100%; overflow-x: auto; scrollbar-width: none; }
+  .watchHead .filter { order: 4; margin-left: 0; flex: 1; width: auto; height: 40px; }
+  .watchHead .btn.primary { margin-left: auto; }
+  .wtbl, .wtbl tbody { display: block; }
+  .wtbl thead { display: none; }
+  .wtbl tr { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 12px; border-bottom: 1px solid var(--hair); }
+  .wtbl tbody tr:last-child { border-bottom: 0; }
+  .wtbl td, .wtbl tbody tr:hover td { display: block; height: auto; padding: 0; border: 0; background: none; }
+  .wtbl td.sw { order: 1; width: auto; }
+  .wtbl td.nm { order: 2; flex: 1 1 0; min-width: 0; white-space: normal; }
+  .wtbl td.acts { order: 3; width: auto; }
+  .wtbl td.acts .iconBtn { width: 36px; height: 36px; }
+  /* Uses on their own line under the name; then schedule, last run and the run dots. */
+  .wtbl td:nth-child(3) { order: 4; flex: 1 1 100%; padding-left: 50px; white-space: normal; }
+  .wtbl td:nth-child(4) { order: 5; padding-left: 50px; }
+  .wtbl td:nth-child(5), .wtbl td:nth-child(7) { order: 6; }
+  .wtbl td:nth-child(6), .wtbl td:nth-child(8) { display: none; }
+  .wtblFoot { flex-wrap: wrap; gap: 6px 16px; }
+}
+
+/* ---------- phone: a watch ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .page .crumbs { display: none; } /* the top bar's back does this */
+  .watchPageHead { flex-direction: column; gap: 12px; }
+  .watchPageHead > div:first-child { min-width: 0; width: 100%; }
+  .watchPageHead .acts { margin-left: 0; padding-top: 0; flex-wrap: wrap; }
+  .watchPageHead .acts .btn { height: 40px; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat, .stat:nth-child(3) { border-right: 1px solid var(--hair); }
+  .stat:nth-child(2n) { border-right: 0; }
+  .stat:nth-child(n+3) { border-top: 1px solid var(--hair); }
+  .watchTabs { overflow-x: auto; scrollbar-width: none; }
+  .watchTab { flex: none; padding: 10px 12px; }
+  .rtbl { display: block; overflow-x: auto; }
+}
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  /* A segmented control wraps rather than run off the page; the page-level filters scroll instead. */
+  .seg { flex-wrap: wrap; max-width: 100%; }
+  .toolRow .seg, .watchHead .seg { flex-wrap: nowrap; }
+}
+
+/* ---------- phone: terminals — the keys a phone keyboard lacks ---------- */
+.termKeys { display: flex; gap: 4px; padding: 6px 8px; border-top: 1px solid var(--hair); background: var(--deep); overflow-x: auto; scrollbar-width: none; flex: none; }
+.termKeys::-webkit-scrollbar { display: none; }
+.termKeys button {
+  flex: none; min-width: 44px; height: 36px; padding: 0 10px; border-radius: var(--r);
+  border: 1px solid var(--hair-strong); background: var(--elev); color: var(--body);
+  font-family: var(--mono); font-size: 0.8667rem; -webkit-tap-highlight-color: transparent;
+}
+.termKeys button:active { background: var(--wash-2); color: var(--ink); }
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  /* The top bar names the shell; its header keeps the folder. */
+  #chatHeader.termHeader .pills .pill.mono { display: inline-flex; max-width: 50vw; }
+}
+
+/* ---------- phone: a changed file — the file on one line, the view controls on the next ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .chgBar { flex-wrap: wrap; height: auto; min-height: 0; row-gap: 8px; padding-top: 8px; padding-bottom: 8px; }
+  .chgBar .crumb { flex: 1 1 0; }
+  .chgBar .crumb .dir { display: none; }
+  .chgBar .sp { flex-basis: 100%; height: 0; margin: 0; }
+  .chgBar .seg { flex-wrap: nowrap; }
+}
+
+/* ---------- phone: menus, popovers and the remaining fixed-width dialogs ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  #deleteSession, dialog.projModal, dialog.wsModal, dialog.artDialog {
+    width: calc(100vw - 16px); max-width: none;
+    margin: calc(env(safe-area-inset-top) + 8px) 8px auto;
+    max-height: calc(var(--vvh, 100dvh) - env(safe-area-inset-top) - 16px); overflow-y: auto;
+  }
+  .uiMenu, .uiMenu.models, .uiMenu.perm, .uiMenu.wide, .uiMenu.projMenu, .uiMenu.rowMenu, .wsMenu {
+    min-width: min(260px, calc(100vw - 16px)); max-width: calc(100vw - 16px);
+  }
+  .uiMenuItem { min-height: 44px; }
+  .mpop, .slPop { width: calc(100vw - 16px); max-width: none; }
+  .wformSelect { width: 100%; }
+}
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  /* Approving from the couch: permission and question buttons get a full thumb's width. */
+  .perm .actions .btn { flex: 1 1 auto; height: 44px; justify-content: center; }
+  .perm .well { max-height: 120px; }
+}
+.phoneCode { margin-top: 12px; }
+.phoneCode .cap { display: block; font-family: var(--mono); font-size: 0.7692rem; color: var(--stone); margin-bottom: 4px; }
+.phoneCode .row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r); }
+.phoneCode .digits { font-family: var(--mono); font-size: 1.8462rem; letter-spacing: 0.18em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.phoneCode .digits .gap { display: inline-block; width: 0.5em; }
+.phoneCode .row .btn { margin-left: auto; }
+.phoneCode .note { display: block; margin-top: 6px; font-size: 0.8462rem; color: var(--ash); }
+.tunnelLine { display: flex; align-items: center; gap: 8px; margin: 4px 0 0; font-size: 0.9231rem; color: var(--ash); }
+.tunnelLine code { font-family: var(--mono); color: var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* settings → phone: where you'll use it from — two cards, one chosen (the auth-card idiom) */
+.reachPick { padding: 12px 0 4px; border-top: 1px solid var(--hair-soft); }
+.reachLbl { display: block; font-weight: 500; color: var(--body); font-size: 1rem; margin-bottom: 10px; }
+.reachCards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.reachCard {
+  display: flex; flex-direction: column; gap: 5px; text-align: left; padding: 12px 14px; border-radius: var(--r-lg);
+  background: var(--canvas); border: 1px solid var(--hair-strong); color: var(--body); cursor: pointer;
+  transition: border-color 0.1s ease;
+}
+.reachCard:hover { border-color: var(--hair-bright); }
+.reachCard[data-state="checked"] { border-color: var(--ink); }
+.reachCard:disabled { cursor: default; opacity: 0.7; }
+.reachCard:focus-visible { outline: 1px solid var(--ink); outline-offset: 2px; }
+.reachHead { display: flex; align-items: center; gap: 8px; font-weight: 500; color: var(--ink); font-size: 1rem; }
+.reachHead svg { color: var(--ash); }
+.reachCard[data-state="checked"] .reachHead svg { color: var(--ink); }
+.reachDot { display: grid; place-items: center; width: 14px; height: 14px; border-radius: var(--r-full); border: 1px solid var(--hair-bright); flex: none; }
+.reachCard[data-state="checked"] .reachDot { border-color: var(--ink); }
+.reachDotOn { width: 6px; height: 6px; border-radius: var(--r-full); background: var(--ink); }
+.reachBody { font-size: 0.9231rem; line-height: 1.5; color: var(--mute); }
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .reachCards { grid-template-columns: minmax(0, 1fr); }
+  .reachCard { padding: 14px; }
+}
+.tunnelUp { margin-top: 4px; }
+.tunnelUp .mcpSnip { margin-top: 6px; }
+.reachPick + .tunnelLine, .reachPick + .tunnelUp, .reachPick + .msg { margin-top: 10px; }
+
+/* ---------- touch screens: nothing waits on a hover that never comes ---------- */
+@media (hover: none) {
+  .md .codeToolbar, .md .mermaidZoom, .linkRow .rm, .termTitle svg { opacity: 1; }
+  .libActs { opacity: 1; pointer-events: auto; }
+}
+@media (pointer: coarse) {
+  /* No double-tap-to-zoom delay on controls, no grey flash, no copy callout on the chrome. */
+  button, a, [role="button"], [role="tab"], [role="radio"], [role="menuitem"] { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  .rail, .topbar, .panelHead, .tabband, .termKeys { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  .prow:active, .railBtn:active, .listRow:active, .artRow:active { background: var(--wash-2); }
+}
+/* A phone on its side: height is what is scarce — icon-only bottom bar, slimmer top bar. */
+@media (pointer: coarse) and (max-height: 500px) {
+  :root { --nav-h: 44px; }
+  .topbar.mobile { height: 44px; }
+  .shell.mobile .railBtn span.label { display: none; }
+  .shell.mobile .railBadge { top: 4px; }
+  .itemAside > .asideActions { max-width: 520px; }
+}
+
+/* Touch keeps :hover on whatever was tapped last — a row stays lit long after
+   the finger has gone. On a touch screen, hover tints nothing. */
+@media (hover: none) {
+  .wrow:hover:not(.checked), .prow:hover:not(.sel), .listRow:hover, .libRow:hover,
+  .wtbl tbody tr:hover td, .rtbl tbody tr:hover td { background: transparent; }
+  .wrow:hover .t .name { color: var(--body); }
+  .wrow .t:hover .name, .wtbl td.nm .t:hover { text-decoration: none; }
+}
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  html.kbOpen .settings { bottom: auto; height: var(--vvh); }
+}

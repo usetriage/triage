@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { FolderOpen } from 'lucide-react'
 import type { PickFolderResponse, Project, ProjectsResponse, WatchesResponse } from '../../../shared/protocol.js'
+import { onThisMac } from '../device.js'
 import { projectColor } from '../tabs.js'
 
 type LoadState =
@@ -191,6 +192,7 @@ function AddProjectModal({
             />
 
             <label>Folder</label>
+            {onThisMac() ? (
             <div className="projPickRow">
               <button type="button" className="projPick" disabled={picking} onClick={() => void pickFolder()}>
                 <FolderOpen size={14} aria-hidden="true" />
@@ -200,6 +202,16 @@ function AddProjectModal({
                 {path ? tilde(path) : 'No folder selected'}
               </span>
             </div>
+            ) : (
+              <input
+                placeholder="~/Code/project"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+              />
+            )}
 
             {error && <div className="projError">{error}</div>}
 

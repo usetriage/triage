@@ -13,6 +13,23 @@ import type { TerminalSummary } from '../../../shared/protocol.js'
 import { useTheme } from '../appearance.js'
 import { store } from '../store.js'
 import { terminalTheme } from '../themes.js'
+import { useIsMobile } from '../useMobile.js'
+
+/**
+ * The keys a phone's keyboard does not have, as a row of buttons under the
+ * shell. Each one sends its bytes straight to the PTY.
+ */
+const PHONE_KEYS: ReadonlyArray<{ label: string; data: string; title: string }> = [
+  { label: 'esc', data: '\x1b', title: 'Escape' },
+  { label: 'tab', data: '\t', title: 'Tab' },
+  { label: '^C', data: '\x03', title: 'Ctrl-C' },
+  { label: '^D', data: '\x04', title: 'Ctrl-D' },
+  { label: '^R', data: '\x12', title: 'Ctrl-R' },
+  { label: '←', data: '\x1b[D', title: 'Left' },
+  { label: '↑', data: '\x1b[A', title: 'Up' },
+  { label: '↓', data: '\x1b[B', title: 'Down' },
+  { label: '→', data: '\x1b[C', title: 'Right' },
+]
 
 type Props = {
   terminal: TerminalSummary
@@ -26,6 +43,7 @@ const homely = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
 export function TerminalPage({ terminal, onRename, onClose, onNewHere }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const emulator = useRef<Terminal | null>(null)
+  const mobile = useIsMobile()
   const [renaming, setRenaming] = useState(false)
   const running = terminal.status === 'running'
   // xterm paints to a canvas and cannot read the CSS tokens, so each theme
@@ -138,6 +156,23 @@ export function TerminalPage({ terminal, onRename, onClose, onNewHere }: Props) 
         </button>
       </div>
       <div className={`termHost${running ? '' : ' exited'}`} ref={host} onClick={() => host.current?.querySelector('textarea')?.focus()} />
+      {mobile && running && (
+        <div className="termKeys" role="toolbar" aria-label="Special keys">
+          {PHONE_KEYS.map((k) => (
+            <button
+              key={k.label}
+              type="button"
+              title={k.title}
+              aria-label={k.title}
+              // Keep focus (and the phone's keyboard) on the terminal.
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={() => store.send({ type: 'terminal_input', terminalId: terminal.id, data: k.data })}
+            >
+              {k.label}
+            </button>
+          ))}
+        </div>
+      )}
       {!running && (
         <div className="termExited">
           <span>

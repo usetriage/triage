@@ -4,6 +4,7 @@ import type { Artifact, ArtifactContentResponse, ArtifactResponse, Link } from '
 import { itemHash, useSessions } from '../hooks.js'
 import { useInbox } from '../inboxStore.js'
 import { artifactStore } from '../artifactStore.js'
+import { onThisMac } from '../device.js'
 import { store } from '../store.js'
 import { ArtifactEditor } from './ArtifactEditor.js'
 import { Markdown } from './Markdown.js'
@@ -221,9 +222,12 @@ function ExistingArtifactPage({ id, onNavigate, onDirty }: { id: string; onNavig
                 <button type="button" className="btn sm" onClick={() => setEditing(true)} title="Full-page editor (⌘S saves)">
                   <Pencil size={13} aria-hidden="true" /> Edit
                 </button>
-                <button type="button" className="btn sm" onClick={() => void openInEditor()} disabled={busy !== null} title={abs}>
-                  <ExternalLink size={13} aria-hidden="true" /> Open in editor
-                </button>
+                {/* The editor opens on the Mac's screen — no use to a phone. */}
+                {onThisMac() && (
+                  <button type="button" className="btn sm" onClick={() => void openInEditor()} disabled={busy !== null} title={abs}>
+                    <ExternalLink size={13} aria-hidden="true" /> Open in editor
+                  </button>
+                )}
                 <button type="button" className="btn sm" onClick={() => void copyMention()} title="Copy the @ token for a composer">
                   <AtSign size={13} aria-hidden="true" /> Mention
                 </button>
