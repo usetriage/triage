@@ -1,4 +1,4 @@
-import { Activity, Check, ChevronsUpDown, CircleHelp, Gauge, Plus, Settings, Settings2, SquareArrowOutUpRight } from 'lucide-react'
+import { Activity, Check, ChevronLeft, ChevronsUpDown, CircleHelp, Gauge, Plus, Settings, Settings2, SquareArrowOutUpRight } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { MOD_LABEL } from '../keys.js'
 import type { Workspace } from '../../../shared/protocol.js'
@@ -8,6 +8,11 @@ import { basePath } from '../workspaceUrl.js'
 import { TriageLogo } from './Logo.js'
 
 type Props = {
+  /** Phone layout: a back button and the page title take the logo's place. */
+  mobile?: boolean
+  title?: string | null
+  /** Where back goes from this page; absent on a section's own page. */
+  onBack?: () => void
   workspaces: readonly Workspace[]
   workspaceId: string
   conn: ConnState
@@ -27,6 +32,9 @@ const CONN_TITLE: Record<ConnState, string> = {
 
 /** 44px top bar: the logo lockup, the workspace pill, then system / activity / settings / help. */
 export function TopBar({
+  mobile,
+  title,
+  onBack,
   workspaces,
   workspaceId,
   conn,
@@ -37,6 +45,35 @@ export function TopBar({
   onOpenSettings,
   onHelp,
 }: Props) {
+  if (mobile) {
+    return (
+      <header className="topbar mobile">
+        {onBack ? (
+          <button type="button" className="topIcon back" aria-label="Back" onClick={onBack}>
+            <ChevronLeft size={20} aria-hidden="true" />
+          </button>
+        ) : (
+          <TriageLogo />
+        )}
+        {onBack && title && <span className="topTitle">{title}</span>}
+        <span className="spacer" />
+        <WorkspaceSwitcher
+          workspaces={workspaces}
+          workspaceId={workspaceId}
+          onSwitch={onSwitchWorkspace}
+          onNew={onNewWorkspace}
+          onSettings={onWorkspaceSettings}
+        />
+        <button type="button" className="topIcon" aria-label={CONN_TITLE[conn]} onClick={() => onOpenSystem('status')}>
+          <Gauge size={17} aria-hidden="true" />
+          <span className={`connDot ${conn === 'connected' ? '' : conn === 'connecting' ? 'connecting' : 'down'}`} aria-hidden="true" />
+        </button>
+        <button type="button" className="topIcon" aria-label="Settings" onClick={onOpenSettings}>
+          <Settings size={17} aria-hidden="true" />
+        </button>
+      </header>
+    )
+  }
   return (
     <header className="topbar">
       <TriageLogo />

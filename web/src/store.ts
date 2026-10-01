@@ -114,14 +114,39 @@ export class Store {
       for (const id of this.#subscribedTerminals) this.send({ type: 'terminal_subscribe', terminalId: id })
       this.#notify()
     }
-    ws.onclose = () => {
+    ws.onclose = (e) => {
+      if (this.#ws !== ws) return
       this.#ws = null
       this.#conn = 'disconnected'
       this.#notify()
+      // A paired phone whose access was switched off or whose code was reset:
+      // reload onto the server's pairing page rather than retrying forever.
+      // A refused upgrade only says 1006, so ask the API what it thinks of us.
+      if (e.code === 4401) return location.reload()
+      void fetch('/api/health', { cache: 'no-store' })
+        .then((r) => r.status === 401 && location.reload())
+        .catch(() => {})
       clearTimeout(this.#reconnectTimer)
       this.#reconnectTimer = setTimeout(() => this.connect(), 1500)
     }
     ws.onmessage = (e) => this.#handle(JSON.parse(String(e.data)) as ServerMessage)
+  }
+
+  /**
+   * Coming back to the page — a phone unlocked, a laptop woken, the network
+   * back — reconnects now instead of waiting out the retry timer. A socket
+   * the OS killed in the background often still claims to be connecting.
+   */
+  resume() {
+    if (this.#ws?.readyState === WebSocket.OPEN) return
+    if (this.#ws) {
+      const dead = this.#ws
+      this.#ws = null
+      dead.onclose = null
+      dead.close()
+    }
+    clearTimeout(this.#reconnectTimer)
+    this.connect()
   }
 
   send(msg: ClientMessage) {

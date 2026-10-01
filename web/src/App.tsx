@@ -62,6 +62,7 @@ import { EFFORT_LABEL, findModel, useModels } from './models.js'
 import { openSettings } from './settings.js'
 import { store } from './store.js'
 import { usePanelWidth } from './panelWidth.js'
+import { useIsMobile } from './useMobile.js'
 import { projectColor, useLastRoutes, useOpenTabs } from './tabs.js'
 
 /** `/Users/you/Code/x` → `~/Code/x` — display only. */
@@ -79,6 +80,17 @@ const PAGE_TABS: Record<'watches' | 'terminals' | 'artifacts' | 'changes', PageT
   artifacts: { key: 'page:artifacts', label: 'Artifacts', icon: FileText },
   changes: { key: 'page:changes', label: 'Changes', icon: FileDiff },
   watches: { key: 'page:watches', label: 'Watches', icon: Eye },
+}
+
+/** The sections whose list is the panel: on a phone, their bottom-bar tab opens it as a sheet. */
+const MOBILE_SHEETS: readonly RailSection[] = ['sessions', 'terminals', 'changes']
+const SHEET_LABEL: Record<RailSection, string> = {
+  inbox: 'Queue',
+  sessions: 'Sessions',
+  artifacts: 'Artifacts',
+  changes: 'Changes',
+  terminals: 'Terminals',
+  watches: 'Watches',
 }
 
 const termKey = (id: string) => `term:${id}`
@@ -258,6 +270,12 @@ export function App() {
   )
   const { lastRoutes, record: recordRoute } = useLastRoutes(workspaceId)
   const panelSize = usePanelWidth()
+  // On a phone the panel is a sheet over the page, opened from the bottom bar
+  // for the sections whose list *is* the panel (see onRailGo); it closes on
+  // any navigation, which is how picking a row in it lands you on the row.
+  const mobile = useIsMobile()
+  const [sheet, setSheet] = useState<RailSection | null>(null)
+  useEffect(() => setSheet(null), [route, mobile])
 
   // First run: the workspace modal doubles as onboarding — introduce the
   // concept, name the default workspace, pick the Claude auth method.
@@ -573,7 +591,16 @@ export function App() {
   // clicking any icon while collapsed reopens it, still landing on that section.
   const onRailGo = useCallback(
     (section: RailSection) => {
-      if (panelSize.collapsed) {
+      if (mobile) {
+        // Sessions, Terminals and Changes have no index page worth a phone
+        // screen — their list is the panel — so those open it as a sheet; the
+        // rest go to their page, and a second tap pops to its root.
+        if (MOBILE_SHEETS.includes(section)) setSheet((s) => (s === section ? null : section))
+        else {
+          setSheet(null)
+          goTo(section)
+        }
+      } else if (panelSize.collapsed) {
         panelSize.setCollapsed(false)
         goTo(section)
       } else if (sectionOf(route) === section) {
@@ -582,7 +609,7 @@ export function App() {
         goTo(section)
       }
     },
-    [panelSize, route, goTo],
+    [mobile, panelSize, route, goTo],
   )
 
   // Closing the tab you are on lands you on its neighbour, else the inbox.
@@ -735,6 +762,8 @@ export function App() {
   // --- derived shell state -------------------------------------------------
 
   const railActive: RailSection | null = sectionOf(route)
+  // Which list the panel shows: the route's section, or on a phone the open sheet (none when shut).
+  const panelSection: RailSection | null = mobile ? sheet : railActive
 
   const openTabs = useMemo<OpenTab[]>(
     () =>
@@ -771,14 +800,45 @@ export function App() {
     return t ? { ...t, preview: true } : null
   }, [preview, docTab])
 
+  // The phone's top bar: what is in front, and where "back" goes. Back is
+  // *up* — to the page's list — rather than browser history, so it means the
+  // same thing in a home-screen app, which has no browser back at all.
+  const mobileTitle = sheet
+    ? SHEET_LABEL[sheet]
+    : route.page === 'inbox'
+      ? 'Inbox'
+      : [...openTabs, ...(previewTab ? [previewTab] : [])].find((t) => t.key === activeTabKey)?.title ?? pageTab?.label ?? null
+  const mobileUp = useMemo((): (() => void) | null => {
+    // An open sheet sits over the page: back closes it.
+    if (sheet) return () => setSheet(null)
+    switch (route.page) {
+      case 'item':
+        return () => navigate('/inbox')
+      case 'artifact':
+        return () => navigate('/artifacts')
+      case 'watch':
+        return () => navigate('/watches')
+      case 'watch-form':
+        return () => navigate(route.id ? `/watches/${encodeURIComponent(route.id)}` : '/watches')
+      case 'session':
+      case 'draft':
+        return () => setSheet('sessions')
+      case 'terminal':
+        return () => setSheet('terminals')
+      case 'change':
+        return () => setSheet('changes')
+      default:
+        return null
+    }
+  }, [sheet, route, navigate])
+
   // Brief runs are sessions too, but they belong to their item: the Sessions
   // panel and the palette list only chats.
   const chatSessions = useMemo(() => sessions.filter((s) => s.kind !== 'brief'), [sessions])
   const runningCount = chatSessions.filter((s) => s.status === 'running' || s.status === 'starting').length
   const modelName = current ? findModel(models, current.model)?.name ?? current.model : undefined
 
-  const panel =
-    railActive === 'terminals' ? (
+  const panel = !panelSection ? null : panelSection === 'terminals' ? (
       <TerminalsPanel
         terminals={terminals}
         currentId={currentTerminalId}
@@ -789,7 +849,7 @@ export function App() {
         onClose={closeTerminal}
         onSearch={() => setPaletteOpen(true)}
       />
-    ) : railActive === 'artifacts' ? (
+    ) : panelSection === 'artifacts' ? (
       <ArtifactsPanel
         artifacts={artifacts.artifacts}
         loaded={artifacts.loaded}
@@ -800,7 +860,7 @@ export function App() {
         onRefresh={() => void fetch('/api/artifacts/reindex', { method: 'POST' }).then(() => artifactStore.refresh())}
         onSearch={() => setPaletteOpen(true)}
       />
-    ) : railActive === 'changes' ? (
+    ) : panelSection === 'changes' ? (
       <ChangesPanel
         projects={changes.projects}
         loaded={changes.loaded}
@@ -810,7 +870,7 @@ export function App() {
         onPin={(projectId, path) => pin(`change:${changeId(projectId, path)}`)}
         onSearch={() => setPaletteOpen(true)}
       />
-    ) : railActive === 'inbox' ? (
+    ) : panelSection === 'inbox' ? (
       <QueuePanel
         items={inbox.items}
         loaded={inbox.loaded}
@@ -844,6 +904,9 @@ export function App() {
   return (
     <div className="app">
       <TopBar
+        mobile={mobile}
+        title={mobileTitle}
+        onBack={mobileUp ?? undefined}
         workspaces={workspaces}
         workspaceId={workspaceId}
         conn={conn}
@@ -856,12 +919,12 @@ export function App() {
       />
 
       <div
-        className={`shell${panelSize.dragging ? ' resizing' : ''}${panelSize.collapsed ? ' collapsed' : ''}`}
+        className={`shell${panelSize.dragging ? ' resizing' : ''}${panelSize.collapsed ? ' collapsed' : ''}${mobile ? ' mobile' : ''}${sheet ? ' sheetOpen' : ''}`}
         style={{ '--panel-w': `${panelSize.width}px` } as CSSProperties}
       >
         <Rail
-          active={railActive}
-          collapsed={panelSize.collapsed}
+          active={mobile ? sheet ?? railActive : railActive}
+          collapsed={mobile ? !sheet : panelSize.collapsed}
           inboxCount={inbox.items.length}
           runningCount={runningCount}
           terminalCount={terminals.filter((t) => t.status === 'running').length}
@@ -870,7 +933,7 @@ export function App() {
         />
 
         {panel}
-        {!panelSize.collapsed && (
+        {!panelSize.collapsed && !mobile && (
           <div
             className="panelResize"
             role="separator"
@@ -882,7 +945,7 @@ export function App() {
         )}
 
         <div id="main">
-          <TabBand
+          {!mobile && <TabBand
             activeKey={activeTabKey}
             tabs={openTabs}
             preview={previewTab}
@@ -896,7 +959,7 @@ export function App() {
             onNew={newSession}
             onNewTerminal={newTerminal}
             terminalCwd={terminalCwd}
-          />
+          />}
 
           <div className="content">
             {route.page === 'inbox' ? (
