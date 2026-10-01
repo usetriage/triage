@@ -44,6 +44,7 @@ export function PermissionModePicker({ mode, onChange, disabled }: Props) {
             className={`chip perm risk-${selected.risk}`}
             disabled={disabled}
             title={`${selected.name} — ${selected.description}`}
+            aria-label={`Permissions: ${selected.name}`}
           >
             <ShieldCheck size={14} aria-hidden="true" />
             <span className="name">{selected.name}</span>
@@ -55,7 +56,7 @@ export function PermissionModePicker({ mode, onChange, disabled }: Props) {
           {PERMISSION_MODES.map((m) => (
             <MenuItem
               key={m.id}
-              className={`wrap risk-${m.risk}`}
+              className={`wrap risk-${m.risk}${m.id === selected.id ? ' on' : ''}`}
               onSelect={(e) => pick(m.id, e)}
             >
               <span className="text">
@@ -88,7 +89,7 @@ export function PermissionModePicker({ mode, onChange, disabled }: Props) {
             </div>
           ) : (
             <p className="uiMenuBlurb">
-              Applies to this session, from the next tool call on. <kbd>Shift+Tab</kbd> cycles.
+              Applies to this session, from the next tool call on.<span className="kbdHint"> <kbd>Shift+Tab</kbd> cycles.</span>
             </p>
           )}
         </MenuContent>

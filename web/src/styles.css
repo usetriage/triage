@@ -2948,36 +2948,50 @@ html.kbOpen .shell.mobile .panel { bottom: 0; }
   .btnGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-/* ---------- phone: a session — transcript edge to edge, composer under the thumb ---------- */
+/* ---------- phone: a session — transcript edge to edge, composer under the thumb ----------
+   Every pixel of height goes to the transcript. The header is one slim line
+   (state, model, project · branch — the top bar already names the session);
+   the composer is a one-line box over a row of icon buttons. Model and
+   permissions are icons here; tapping one opens its picker with the current
+   choice checked. */
 @media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
-  /* The top bar already names the session; its header keeps model and state. */
-  #chatHeader { height: 40px; padding: 0 14px; gap: 8px; }
+  #chatHeader { height: 34px; padding: 0 12px; gap: 8px; }
   #chatTitle { display: none; }
-  #chatHeader .pills { margin-left: 0; overflow: hidden; }
-  #chatHeader .pills .pill.mono { display: none; }
+  #chatHeader .pills { flex: 1 1 auto; margin-left: 0; min-width: 0; overflow: hidden; gap: 6px; }
+  #chatHeader .pills .pill { flex: 0 1 auto; min-width: 0; max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #chatHeader .pills .pill.mono { display: inline-block; }
+  /* The model is the one place its name still shows: it keeps its width; the path gives way. */
+  #chatHeader .pills .pill:not(.mono) { flex: none; }
+  #chatHeader .state { font-size: 0.8667rem; }
 
-  #transcript { padding: 14px 14px 0; }
+  #transcript { padding: 12px 14px 0; }
   #transcript .inner { gap: 14px; }
 
-  #composer { padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); }
-  html:not(.kbOpen) .shell.mobile #composer { padding-bottom: 8px; }
-  #composer .frame { min-width: 0; gap: 8px; padding: 10px 12px; }
-  #composer .frame .cardHead { margin: 0 -12px; padding: 8px 12px; overflow: hidden; }
+  #composer { padding: 6px 8px 8px; }
+  #composer .frame { min-width: 0; gap: 6px; padding: 8px 8px 6px 12px; }
+  /* A session's project is fixed and the header shows it; only a new session's composer keeps its head (the project picker). */
+  #composer .frame .cardHead { display: none; }
+  #newSessionHome #composer .frame .cardHead { display: flex; margin: 0 -8px 0 -12px; padding: 8px 12px; overflow: hidden; }
+  #composer .frame { padding-top: 8px; }
   .cardHead .branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .cardHead .path { display: none; }
-  #box { min-height: 44px; max-height: 30vh; }
-  /* Icons and the model name only — effort and the Fast label are a tap away —
-     and if a narrow phone still runs out of room, send drops to its own line. */
-  .statusline { gap: 6px; flex-wrap: wrap; }
-  .statusline .chip { height: 32px; padding: 0 10px; }
-  .statusline .chip.model .eff, .statusline .chip.fast .name { display: none; }
-  .statusline .chip.model { min-width: 0; flex: 0 1 auto; }
+  #box, #composer .frame #box { min-height: 24px; max-height: 30vh; padding: 2px 0 0; line-height: 1.4; scrollbar-width: none; }
+  #box::-webkit-scrollbar { display: none; }
+  #newSessionHome #box { min-height: 72px; }
+
+  .statusline { gap: 4px; flex-wrap: nowrap; }
+  .statusline .chip {
+    width: 34px; height: 34px; padding: 0; justify-content: center; flex: none;
+    border-radius: var(--r-full); border-color: transparent; background: transparent;
+  }
+  .statusline .chip svg { width: 17px; height: 17px; }
+  .statusline .chip .name, .statusline .chip .eff, .statusline .chip > svg.lucide-chevron-down { display: none; }
+  .statusline .chip[data-state="open"] { background: var(--elev); border-color: var(--hair-strong); }
+  .statusline .chip.fast.on, .statusline .chip.perm.risk-high { border-color: transparent; }
   .statusline #sendBtn { margin-left: auto; }
-  .chip.attachBtn { padding: 0 10px; }
-  #sendBtn, #stopBtn { width: 40px; height: 40px; border-radius: var(--r-lg); }
+  #sendBtn, #stopBtn { width: 36px; height: 36px; border-radius: var(--r-full); }
   #composer .hint { display: none; }
 }
-
 /* ---------- phone: settings fill the screen; the tab list becomes a strip ---------- */
 @media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
   .settings {
@@ -3228,4 +3242,42 @@ html.kbOpen .shell.mobile .panel { bottom: 0; }
 }
 @media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
   html.kbOpen .settings { bottom: auto; height: var(--vvh); }
+}
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  /* The model picker under a thumb: taller rows, effort levels wrap instead of running off the edge. */
+  .mpOpt { min-height: 44px; }
+  .mpFoot { flex-wrap: wrap; row-gap: 6px; }
+  .mpFoot .eff { white-space: nowrap; min-height: 34px; }
+  .mpList { max-height: 40vh; }
+}
+/* The mode in force reads as chosen at a glance, not only by its check. */
+.uiMenu.perm .uiMenuItem.on { background: var(--wash-2); }
+
+/* ---------- phone: a session's changes — a bar that opens a full sheet over the transcript ---------- */
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .changesBar { padding: 0 8px; }
+  .changesOpen { height: 36px; }
+  .changesOpen .kbd { display: none; }
+  .changesDrawer { position: absolute; inset: 0; height: auto !important; z-index: 10; border-top: 0; animation: sheetIn 0.16s ease-out; }
+  .changesDrawer .grip, .changesDrawer .dbar .seg, .changesDrawer .dbar .pill.mute { display: none; }
+  .changesDrawer .dbar { height: 44px; padding: 0 6px 0 14px; }
+  .changesDrawer .dbar .iconBtn { width: 40px; height: 40px; }
+  /* Files on top (a short scrolling list), the diff under them. */
+  .changesDrawer .dmain { flex-direction: column; }
+  .changesDrawer .flist { width: auto; max-height: 30%; border-right: 0; border-bottom: 1px solid var(--hair); }
+  .frow { padding: 8px 10px; }
+}
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  /* A team's strip scrolls sideways; on a phone each member is name and state — model and spend live on desktop. */
+  #teamStrip { padding: 4px 10px; scrollbar-width: none; }
+  #teamStrip::-webkit-scrollbar { display: none; }
+  #teamStrip .teamLabel, .teamTab .model, .teamTab .spend { display: none; }
+  .teamTab { height: 34px; }
+}
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  /* Tool calls: the verb takes only its own width, so what was run gets the rest of the line. */
+  .tline .tlVerb { min-width: 0; }
+  .tline .tlNote, .toolGroup .tgCount { font-size: 0.8rem; }
+  .toolGroup .tgBody { margin-left: 6px; padding-left: 10px; }
+  .tool { padding: 10px 12px; }
 }

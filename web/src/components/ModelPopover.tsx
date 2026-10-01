@@ -10,6 +10,7 @@ import { useMemo, useState } from 'react'
 import type { EffortLevel, ModelOption } from '../../../shared/protocol.js'
 import { useWorkspaceId, useWorkspaces } from '../hooks.js'
 import { EFFORT_LABEL, findModel, useModels } from '../models.js'
+import { isMobile } from '../useMobile.js'
 
 type Props = {
   /** The current model — an alias the user picked, or the wire id the SDK reported. */
@@ -79,6 +80,7 @@ export function ModelPopover({
           className="chip model"
           disabled={disabled || models.length === 0}
           title="Model and effort for this session"
+          aria-label={`Model: ${label}${effort ? `, ${EFFORT_LABEL[effort].toLowerCase()} effort` : ''}`}
         >
           <Sparkles size={12} aria-hidden="true" />
           <span className="name">{label}</span>
@@ -88,12 +90,25 @@ export function ModelPopover({
       </Popover.Trigger>
 
       <Popover.Portal>
-        <Popover.Content className="mpop" side="top" align="start" sideOffset={8} collisionPadding={12}>
+        <Popover.Content
+          className="mpop"
+          side="top"
+          align="start"
+          sideOffset={8}
+          collisionPadding={12}
+          // Desktop: Radix focuses the search box, the first thing in here. A
+          // phone would pop its keyboard over the list — show the current
+          // model instead.
+          onOpenAutoFocus={(e) => {
+            if (!isMobile()) return
+            e.preventDefault()
+            requestAnimationFrame(() => document.querySelector('.mpOpt.sel')?.scrollIntoView({ block: 'nearest' }))
+          }}
+        >
           <label className="mpSearch">
             <Search size={13} aria-hidden="true" />
             <input
               id="modelSearch"
-              autoFocus
               placeholder="Search models…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
