@@ -1356,6 +1356,36 @@ export type QuestionAnswers = Record<string, string>
 // they live in the daemon's memory and die with it, so nothing here is stored.
 // ---------------------------------------------------------------------------
 
+/**
+ * GET / POST /api/remote — phone access (server/remote.ts). Only this machine
+ * sees the token; a paired device gets `{ local: false }`.
+ */
+export type RemoteStatus =
+  | { local: false }
+  | {
+      local: true
+      enabled: boolean
+      /** the pairing token — the QR code carries it; never shown as text */
+      token: string
+      /** the 6-digit code a phone can type instead: single use, short-lived (null while access is off) */
+      code: { digits: string; expiresAt: number } | null
+      port: number
+      /** IPv4 addresses on this machine's networks, Wi-Fi first */
+      addresses: { name: string; address: string }[]
+      /** `Your-Mac.local`, when the OS has one */
+      hostname: string | null
+      /** "Anywhere" is chosen: also reachable from the internet through ngrok */
+      tunnel: boolean
+      tunnelStatus: TunnelStatus
+    }
+
+/** server/tunnel.ts — the ngrok tunnel behind "Anywhere". */
+export type TunnelStatus =
+  | { state: 'off' }
+  | { state: 'starting' }
+  | { state: 'up'; url: string }
+  | { state: 'error'; error: string }
+
 export type TerminalStatus = 'running' | 'exited'
 
 export type TerminalSummary = {

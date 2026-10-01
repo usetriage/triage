@@ -49,6 +49,7 @@ import { z } from 'zod'
 import { currentBranch, filePatch, repoRoot, snapshotTree, treeDiff, treePatch, worktreeChanges, worktreePatch, type TreeChange } from './git.js'
 import type {
   ClientMessage,
+  RemoteStatus,
   Connector,
   ConnectorScope,
   ConnectorsResponse,
@@ -269,6 +270,25 @@ import {
   type WorkspaceMeta,
 } from './workspaces.js'
 import { TerminalManager } from './terminals.js'
+import { NgrokTunnel } from './tunnel.js'
+import {
+  accessOf,
+  bonjourName,
+  codesAllowed,
+  lanAddresses,
+  loadRemote,
+  newToken,
+  pairCookie,
+  pairPageHtml,
+  isLoopbackAddress,
+  livePairCode,
+  tryPairCode,
+  type PairCode,
+  sameOrigin,
+  saveRemote,
+  tokenMatches,
+  type Access,
+} from './remote.js'
 import { launchAgentInstalled } from './launchd.js'
 import { applyImageEdits, itemImageAttachments, readItemImage } from './itemImages.js'
 import { FileIndexes, readProjectFile, resolveFileMention, writeProjectFile } from './files.js'
@@ -291,6 +311,20 @@ import {
 } from './briefs.js'
 
 const PORT = Number(process.env.PORT || 5178)
+/** Phone access (server/remote.ts): off until switched on in Settings → Phone. */
+let remote = loadRemote()
+/** The 6-digit code Settings → Phone shows; memory only — a restart just mints another. */
+let pairCode: PairCode | null = null
+/** Phone access from anywhere — the user's ngrok, run while access and "Anywhere" are both on. */
+const tunnel = new NgrokTunnel((): void => {
+  const s = tunnel.status
+  if (s.state === 'up') log('info', 'remote', `tunnel up at ${s.url}`)
+  else if (s.state === 'error') log('warn', 'remote', `tunnel failed: ${s.error}`)
+})
+function syncTunnel() {
+  if (remote.enabled && remote.tunnel) tunnel.start(PORT)
+  else tunnel.stop()
+}
 const VERSION = pkgVersion()
 const SERVER_STARTED = Date.now()
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -5098,6 +5132,47 @@ const NO_BUILD_HTML = `<!doctype html><meta charset="utf-8">
 <p>For a production-style run: <code>npm run build &amp;&amp; npm start</code>.</p>
 </body>`
 
+/**
+ * The bundled manifest, with the start URL swapped per device: a paired phone's
+ * home-screen app opens through /api/pair, because iOS gives a standalone web
+ * app its own cookie jar and the pairing cookie would not follow it there.
+ */
+function webManifest(access: Access): Record<string, unknown> {
+  let base: Record<string, unknown> = { name: 'Triage', short_name: 'Triage', display: 'standalone' }
+  try {
+    base = JSON.parse(readFileSync(path.join(WEB_DIR, 'manifest.webmanifest'), 'utf8')) as Record<string, unknown>
+  } catch {
+    // no build yet: the minimal manifest is fine
+  }
+  return { ...base, start_url: access === 'paired' ? `/api/pair?token=${encodeURIComponent(remote.token)}` : '/', scope: '/' }
+}
+
+function remoteStatus(): RemoteStatus {
+  if (remote.enabled) pairCode = livePairCode(pairCode, Date.now())
+  return {
+    local: true,
+    enabled: remote.enabled,
+    token: remote.token,
+    code: remote.enabled && pairCode ? { digits: pairCode.code, expiresAt: pairCode.expiresAt } : null,
+    port: PORT,
+    addresses: lanAddresses(),
+    hostname: bonjourName(),
+    tunnel: remote.tunnel,
+    tunnelStatus: tunnel.status,
+  }
+}
+
+/** Sockets and WebSockets from other devices, so switching access off or resetting the token cuts them at once. */
+const remoteSockets = new Set<import('node:net').Socket>()
+const remoteWs = new Set<WebSocket>()
+
+function dropRemoteClients() {
+  for (const ws of remoteWs) ws.close(4401, 'unpaired')
+  remoteWs.clear()
+  for (const sock of remoteSockets) sock.destroy()
+  remoteSockets.clear()
+}
+
 async function serveWeb(pathname: string, res: http.ServerResponse) {
   // Any path that is not a real asset falls back to index.html (SPA routing).
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
@@ -5131,21 +5206,6 @@ async function serveWeb(pathname: string, res: http.ServerResponse) {
  * server as failed instead of quietly filing work into the default inbox.
  */
 const MCP_PATH = '/mcp'
-
-/**
- * A browser can POST to localhost from any page it likes, so a local HTTP MCP
- * server must check where the request claims to come from (the MCP spec says
- * so for exactly this reason). Non-browser clients send no Origin at all.
- */
-function localOrigin(origin: string | undefined): boolean {
-  if (!origin) return true
-  try {
-    const h = new URL(origin).hostname
-    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]'
-  } catch {
-    return false
-  }
-}
 
 /** Loopback into this daemon's own API, so one route table serves every door. */
 function mcpApi(workspace: string | null): (path: string, body?: unknown, method?: string) => Promise<unknown> {
@@ -5200,8 +5260,60 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(body))
   }
+  const access = accessOf(req, remote)
+  if (url.pathname === '/api/pair') {
+    // The QR code's link: trade the token for the cookie, then go home. Also
+    // the home-screen app's start URL, so a standalone web app with its own
+    // cookie jar pairs itself on every launch.
+    const given = url.searchParams.get('token')
+    const typed = url.searchParams.get('code')
+    let ok = access === 'local' || (remote.enabled && tokenMatches(given?.trim(), remote.token))
+    if (!ok && remote.enabled && typed && codesAllowed(req)) {
+      const spent = tryPairCode(pairCode, typed, Date.now())
+      pairCode = spent.next
+      ok = spent.ok
+      log(ok ? 'info' : 'warn', 'remote', ok ? 'device paired with the code' : 'wrong pairing code')
+    }
+    if (ok) {
+      res.writeHead(302, { location: '/', ...(access === 'local' ? {} : { 'set-cookie': pairCookie(remote.token) }) })
+      res.end()
+    } else {
+      res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(
+        pairPageHtml(
+          typed
+            ? 'That code did not match, or it has expired. Check the code on your Mac — it changes after each use.'
+            : given
+              ? 'That link has stopped working — the code was reset on the Mac. Scan the new QR code.'
+              : undefined,
+          codesAllowed(req),
+        ),
+      )
+    }
+    return
+  }
+  if (access === 'denied') {
+    if (url.pathname.startsWith('/api/') || url.pathname === MCP_PATH) {
+      json(401, { error: 'this device is not paired with triage' })
+    } else {
+      res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(pairPageHtml(undefined, codesAllowed(req)))
+    }
+    return
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !sameOrigin(req, access)) {
+    // Any page can make a browser POST to us; only our own page gets to write.
+    json(403, { ok: false, error: 'cross-origin writes are not accepted' })
+    return
+  }
+  if (url.pathname === '/manifest.webmanifest') {
+    // Served, not bundled: a paired device's start URL carries the token (see /api/pair).
+    res.writeHead(200, { 'content-type': 'application/manifest+json', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(webManifest(access)))
+    return
+  }
   if (url.pathname === MCP_PATH) {
-    if (!localOrigin(req.headers.origin)) {
+    if (!sameOrigin(req, access)) {
       json(403, { error: 'cross-origin requests are not accepted on /mcp' })
       return
     }
@@ -5253,6 +5365,37 @@ const server = http.createServer(async (req, res) => {
       liveSessions: [...runtimes.values()].reduce((n, rt) => n + rt.live.size, 0),
       workspaces: runtimes.size,
     })
+    return
+  }
+
+  if (url.pathname === '/api/remote') {
+    // Phone access is managed from the Mac only: a paired phone can use triage
+    // but cannot read the token, rotate it, or switch access off and on.
+    if (access !== 'local') {
+      json(200, { local: false } satisfies RemoteStatus)
+      return
+    }
+    if (req.method === 'POST') {
+      let body: { enabled?: unknown; rotate?: unknown; newCode?: unknown; tunnel?: unknown } | null
+      try {
+        body = (await readJsonBody(req, 10_000)) as typeof body
+      } catch (err) {
+        json(400, { error: errText(err) })
+        return
+      }
+      const next = { ...remote }
+      if (typeof body?.enabled === 'boolean') next.enabled = body.enabled
+      if (typeof body?.tunnel === 'boolean') next.tunnel = body.tunnel
+      if (body?.rotate === true) next.token = newToken()
+      if (body?.rotate === true || body?.newCode === true || !next.enabled) pairCode = null
+      await saveRemote(next)
+      const unpair = !next.enabled || next.token !== remote.token
+      remote = next
+      if (unpair) dropRemoteClients()
+      syncTunnel()
+      log('info', 'remote', `phone access ${remote.enabled ? (remote.tunnel ? 'on, anywhere' : 'on, same network') : 'off'}${body?.rotate === true ? ', token reset' : ''}`)
+    }
+    json(200, remoteStatus())
     return
   }
 
@@ -5510,7 +5653,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/changes/file' && req.method === 'PUT') {
       // A write to disk: any page in the browser can POST to localhost, so
       // only our own origin gets to do it.
-      if (!localOrigin(req.headers.origin)) {
+      if (!sameOrigin(req, access)) {
         json(403, { ok: false, error: 'cross-origin writes are not accepted' })
         return
       }
@@ -5613,6 +5756,11 @@ const server = http.createServer(async (req, res) => {
     return
   }
   if (url.pathname === '/api/pick-folder' && req.method === 'POST') {
+    if (access !== 'local') {
+      // The chooser would open on the Mac's screen, not the phone asking for it.
+      json(200, { ok: false, error: 'the folder picker opens on the Mac — type the folder path instead' } satisfies PickFolderResponse)
+      return
+    }
     let body: PickFolderResponse
     try {
       const picked = await pickNativeFolder()
@@ -6515,7 +6663,30 @@ const server = http.createServer(async (req, res) => {
 // (?workspace= param, else the triage_ws cookie, else the default), and only
 // ever sees that workspace's sessions and events.
 // ---------------------------------------------------------------------------
-const wss = new WebSocketServer({ server, path: '/ws' })
+// Drop other devices at accept while phone access is off — the same as a
+// loopback-only bind, without a restart to switch it on (server/remote.ts).
+server.on('connection', (sock) => {
+  if (isLoopbackAddress(sock.remoteAddress)) return
+  if (!remote.enabled) {
+    sock.destroy()
+    return
+  }
+  remoteSockets.add(sock)
+  sock.on('close', () => remoteSockets.delete(sock))
+})
+
+const wss = new WebSocketServer({
+  server,
+  path: '/ws',
+  // Browsers let any page open a WebSocket to localhost; only our own page,
+  // from this machine or a paired device, gets one.
+  verifyClient: ({ req }, done) => {
+    const access = accessOf(req, remote)
+    if (access === 'denied') done(false, 401, 'not paired')
+    else if (!sameOrigin(req, access)) done(false, 403, 'cross-origin')
+    else done(true)
+  },
+})
 
 function send(ws: WebSocket, msg: ServerMessage) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg))
@@ -6771,6 +6942,10 @@ wss.on('connection', (ws, req) => {
   const url = new URL(req.url ?? '/ws', `http://localhost:${PORT}`)
   const rt = resolveRuntime(req, url)
   rt.clients.add(ws)
+  if (accessOf(req, remote) !== 'local') {
+    remoteWs.add(ws)
+    ws.on('close', () => remoteWs.delete(ws))
+  }
   send(ws, {
     type: 'hello',
     sessions: summaries(rt),
@@ -6974,6 +7149,7 @@ function onListenError(err: NodeJS.ErrnoException) {
   throw err
 }
 server.listen(PORT, () => {
+  syncTunnel()
   log('info', 'server', `triage v${VERSION} started on :${PORT} (${runtimes.size} workspace${runtimes.size === 1 ? '' : 's'}, default: ${registry.defaultId})`)
   // Record where we are so `triage stop/status` can find a --port server.
   writeState({ pid: process.pid, port: PORT, version: VERSION, startedAt: new Date().toISOString() }).catch(
@@ -6984,6 +7160,7 @@ server.listen(PORT, () => {
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     log('info', 'server', `received ${sig} — shutting down`)
+    tunnel.stop()
     for (const rt of runtimes.values()) rt.terminals.killAll()
     clearState(process.pid).finally(() => process.exit(0))
   })
