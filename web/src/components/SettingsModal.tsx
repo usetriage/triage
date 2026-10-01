@@ -27,6 +27,7 @@ import {
   RefreshCw,
   ScrollText,
   Settings2,
+  Smartphone,
   Sparkles,
   SwatchBook,
   Users,
@@ -72,6 +73,7 @@ import { ModelPopover } from './ModelPopover.js'
 import { PermissionModePicker } from './PermissionModePicker.js'
 import { ConnectorsPanel } from './Connectors.js'
 import { McpTab } from './McpTab.js'
+import { PhoneTab } from './PhoneTab.js'
 import { ProjectsTab } from './ProjectsTab.js'
 import { TeamsTab } from './TeamsTab.js'
 import { RepoScopeEditor } from './RepoScope.js'
@@ -95,6 +97,7 @@ const ICONS: Record<SettingsTab, ComponentType<LucideProps>> = {
   themes: SwatchBook,
   sessions: MessagesSquare,
   shortcuts: Keyboard,
+  phone: Smartphone,
   about: Info,
 }
 
@@ -112,6 +115,13 @@ export function SettingsModal({ workspace, onOpenSystem }: Props) {
   const fill = meta.fill === true
   const [nonce, setNonce] = useState(0)
   useEffect(() => setNonce(0), [tab])
+  // On a phone the tab list is a sideways strip: keep the open tab in view.
+  useEffect(() => {
+    if (!open) return
+    requestAnimationFrame(() =>
+      document.querySelector('.settingsTab[data-state="active"]')?.scrollIntoView({ inline: 'center', block: 'nearest' }),
+    )
+  }, [open, tab])
 
   const openSystem = useCallback(
     (t: SystemTab) => {
@@ -226,6 +236,9 @@ export function SettingsModal({ workspace, onOpenSystem }: Props) {
                   </Tabs.Content>
                   <Tabs.Content value="shortcuts">
                     <ShortcutsTab />
+                  </Tabs.Content>
+                  <Tabs.Content value="phone">
+                    <PhoneTab />
                   </Tabs.Content>
                   <Tabs.Content value="about">
                     <AboutTab onOpenSystem={openSystem} />
@@ -1145,7 +1158,7 @@ function AboutTab({ onOpenSystem }: { onOpenSystem: (t: SystemTab) => void }) {
 
   return (
     <>
-      <Section title="triage" hint="A local web UI over the Claude Agent SDK. Everything runs on this machine; the daemon binds to localhost and holds no Slack or GitHub credentials.">
+      <Section title="triage" hint="A local web UI over the Claude Agent SDK. Everything runs on this machine; the daemon answers only this Mac (and phones you pair under Phone) and holds no Slack or GitHub credentials.">
         {error && <div className="msg error">{error}</div>}
         {status && (
           <>

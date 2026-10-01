@@ -22,7 +22,7 @@ const CLIENTS: ReadonlyArray<{ id: Client; label: string }> = [
 ]
 
 /** A copyable line. Code lives in a well — mono on the card surface, never bare. */
-function Snippet({ text, label }: { text: string; label?: string }) {
+export function Snippet({ text, label }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false)
   const copy = async () => {
     try {
@@ -46,7 +46,7 @@ function Snippet({ text, label }: { text: string; label?: string }) {
   )
 }
 
-function Step({ n, children }: { n: number; children: ReactNode }) {
+export function Step({ n, children }: { n: number; children: ReactNode }) {
   return (
     <div className="mcpStep">
       <span className="n">{n}</span>
