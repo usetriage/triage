@@ -6,7 +6,9 @@
     <meta name="theme-color" content="#000000" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- Not black-translucent: iOS 26 gives a translucent home-screen app a
+         viewport one status bar short, leaving a dead band at the bottom. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <meta name="apple-mobile-web-app-title" content="Triage" />
     <title>triage</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />

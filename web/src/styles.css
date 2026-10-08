@@ -2764,9 +2764,12 @@ dialog.briefDialog .knobs { display: flex; gap: 8px; align-items: center; flex-w
 
   .shell.mobile { flex-direction: column; position: relative; }
   .shell.mobile #main { order: 1; }
+  /* The home indicator's full inset leaves a dead-looking band under the
+     icons; like a native tab bar, the buttons may sit over its top part. */
+  .shell.mobile { --nav-inset: max(0px, env(safe-area-inset-bottom) - 16px); }
   .shell.mobile .rail {
-    order: 2; width: 100%; height: calc(var(--nav-h) + env(safe-area-inset-bottom)); flex-direction: row; gap: 0;
-    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    order: 2; width: 100%; height: calc(var(--nav-h) + var(--nav-inset)); flex-direction: row; gap: 0;
+    padding: 0 env(safe-area-inset-right) var(--nav-inset) env(safe-area-inset-left);
     border-right: 0; border-top: 1px solid var(--hair); z-index: 21;
   }
   .shell.mobile .railBtn { flex: 1 1 0; min-width: 0; width: auto; height: var(--nav-h); margin: 0; border-radius: 0; gap: 4px; -webkit-tap-highlight-color: transparent; }
@@ -2779,7 +2782,7 @@ dialog.briefDialog .knobs { display: flex; gap: 8px; align-items: center; flex-w
   .shell.mobile .railBtn.active .railBadge { background: var(--elev); }
 
   .shell.mobile .panel {
-    position: absolute; inset: 0 0 calc(var(--nav-h) + env(safe-area-inset-bottom)) 0; width: auto; z-index: 20;
+    position: absolute; inset: 0 0 calc(var(--nav-h) + var(--nav-inset)) 0; width: auto; z-index: 20;
     border-right: 0; animation: sheetIn 0.16s ease-out;
   }
   .panelSearch { height: 52px; padding: 0 12px; }
