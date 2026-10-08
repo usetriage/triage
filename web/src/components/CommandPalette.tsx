@@ -176,27 +176,33 @@ export function CommandPalette({
 
   return (
     <dialog ref={dialog} id="palette" onClose={onClose} onClick={(e) => e.target === dialog.current && onClose()}>
-      <input
-        autoFocus
-        placeholder="Search sessions, items, projects, commands…"
-        value={query}
-        onChange={(e) => {
-          setQuery(e.target.value)
-          setSel(0)
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'ArrowDown') {
-            e.preventDefault()
-            setSel((s) => Math.min(s + 1, shown.length - 1))
-          } else if (e.key === 'ArrowUp') {
-            e.preventDefault()
-            setSel((s) => Math.max(s - 1, 0))
-          } else if (e.key === 'Enter') {
-            e.preventDefault()
-            runSelected()
-          }
-        }}
-      />
+      <div className="palHead">
+        <input
+          autoFocus
+          placeholder="Search sessions, items, projects, commands…"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value)
+            setSel(0)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault()
+              setSel((s) => Math.min(s + 1, shown.length - 1))
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault()
+              setSel((s) => Math.max(s - 1, 0))
+            } else if (e.key === 'Enter') {
+              e.preventDefault()
+              runSelected()
+            }
+          }}
+        />
+        {/* A phone has no Escape, and the palette fills the screen, leaving no backdrop to tap. */}
+        <button type="button" className="palCancel" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
       <div className="palList">
         {shown.map((cmd, i) => (
           <div key={cmd.id}>

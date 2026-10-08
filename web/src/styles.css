@@ -1340,8 +1340,9 @@ dialog p { color: var(--body); font-size: 1rem; line-height: 1.55; }
 
 /* command palette */
 dialog#palette { width: 580px; padding: 0; margin-top: 12vh; overflow: hidden; }
-#palette input { width: 100%; background: transparent; border: none; border-bottom: 1px solid var(--hair); border-radius: 0; color: var(--ink); padding: 15px 17px; font-size: 1.1154rem; outline: none; }
-#palette input:focus { border-color: var(--hair); }
+#palette .palHead { display: flex; align-items: center; border-bottom: 1px solid var(--hair); }
+#palette input { flex: 1; min-width: 0; background: transparent; border: none; border-radius: 0; color: var(--ink); padding: 15px 17px; font-size: 1.1154rem; outline: none; }
+#palette .palCancel { display: none; flex: none; height: 44px; padding: 0 14px; border: 0; background: transparent; color: var(--body); font-size: 1rem; }
 #palette .palList { max-height: 380px; overflow-y: auto; padding: 6px; }
 .palSection { padding: 9px 10px 4px; font-size: 0.7692rem; letter-spacing: 0.07em; color: var(--stone); text-transform: uppercase; font-weight: 500; }
 .palRow { display: flex; align-items: baseline; gap: 12px; padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; }
@@ -3036,6 +3037,7 @@ html.kbOpen .shell.mobile .panel { bottom: 0; }
   dialog { padding: 18px 16px; }
   dialog .row button, dialog button.go, dialog button.cancel, dialog button.danger { height: 44px; padding: 0 16px; }
   #palette .palList { max-height: none; }
+  #palette .palCancel { display: block; }
   .palRow { padding: 12px 10px; }
   .palHint { display: none; }
   .palLabel { max-width: 100%; }
