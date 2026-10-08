@@ -15,7 +15,7 @@ import { WebSocket } from 'ws'
 
 const PORT = Number(process.env.PORT || 5178)
 const BASE = `http://localhost:${PORT}`
-const CWD = process.env.SMOKE_CWD || '~/Code/prnl/triage-dev'
+const CWD = process.env.SMOKE_CWD || '~/Code/prnl/novus-triage/triage-dev'
 
 let failures = 0
 const check = (name, ok, detail = '') => {

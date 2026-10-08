@@ -34,6 +34,7 @@
     "dev:web": "vite",
     "build": "rm -rf dist && vite build && tsc -p tsconfig.publish.json",
     "start": "tsx server/index.ts",
+    "prod:local": "npm run build && npm pack && npm i -g ./usetriage-$npm_package_version.tgz && rm -f ./usetriage-$npm_package_version.tgz && triage restart",
     "prepublishOnly": "npm run typecheck && npm run build",
     "postinstall": "node scripts/postinstall.mjs"
   },

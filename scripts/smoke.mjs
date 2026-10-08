@@ -12,7 +12,7 @@ ws.on('open', () => {
   ws.send(JSON.stringify({
     type: 'create_session',
     title: 'smoke test',
-    cwd: '~/Code/prnl/triage-dev',
+    cwd: '~/Code/prnl/novus-triage/triage-dev',
     firstMessage: 'Reply with exactly the text: POC OK. Nothing else, no tools.',
   }))
 })
