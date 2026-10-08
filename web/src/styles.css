@@ -2543,88 +2543,6 @@ dialog.briefDialog .knobs { display: flex; gap: 8px; align-items: center; flex-w
 .pl { color: var(--green); }
 .mn { color: var(--red); }
 
-/* collapsed: a single quiet bar, only when the session actually changed files */
-.changesBar { flex: none; padding: 0 40px; background: var(--canvas); }
-.changesOpen {
-  display: flex; align-items: center; gap: 9px; width: 100%; max-width: var(--measure); margin: 0 auto;
-  height: 30px; padding: 0 12px; border: 0; border-top: 1px solid var(--hair);
-  background: transparent; color: var(--mute); font-size: 0.9231rem; text-align: left;
-  transition: color 0.1s ease, background 0.1s ease;
-}
-.changesOpen:hover { color: var(--ink); background: var(--wash-1); }
-.changesOpen .n { color: var(--body); }
-.changesOpen .num { font-family: var(--mono); font-size: 0.8462rem; }
-.changesOpen .warn { display: inline-flex; align-items: center; gap: 4px; color: var(--yellow); font-size: 0.8462rem; }
-.changesOpen .kbd { margin-left: auto; }
-
-/* open: takes its height from the transcript, never from the composer */
-.changesDrawer {
-  flex: none; display: flex; flex-direction: column; min-height: 0;
-  background: var(--card); border-top: 1px solid var(--hair-strong);
-}
-.changesDrawer .grip { height: 6px; flex: none; display: flex; align-items: center; justify-content: center; cursor: ns-resize; }
-.changesDrawer .grip span { width: 28px; height: 2px; border-radius: var(--r-full); background: var(--hair-strong); }
-.changesDrawer .grip:hover span { background: var(--hair-bright); }
-
-.changesDrawer .dbar {
-  flex: none; display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 14px;
-  border-bottom: 1px solid var(--hair); color: var(--ash);
-}
-.changesDrawer .dbar .t { color: var(--ink); font-size: 1rem; }
-.changesDrawer .dbar .dim { color: var(--stone); font-size: 0.8462rem; }
-.changesDrawer .dbar .sp { margin-left: auto; }
-.changesDrawer .segBtn { gap: 6px; }
-
-/* files down the left, diff on the right — a row per file stays readable at
-   any count, where a chip strip across the top scrolls them out of reach */
-.changesDrawer .dmain { flex: 1; min-height: 0; display: flex; }
-.changesDrawer .flist {
-  flex: none; width: 236px; overflow-y: auto; overflow-x: hidden;
-  display: flex; flex-direction: column; gap: 1px; padding: 6px;
-  border-right: 1px solid var(--hair);
-}
-.frow {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 0 7px; padding: 5px 8px; text-align: left;
-  border: 1px solid transparent; border-radius: var(--r-sm); background: transparent;
-  color: var(--ash); font-family: var(--mono); font-size: 0.8462rem;
-}
-.frow:hover { color: var(--ink); background: var(--wash-1); }
-.frow.on { background: var(--elev); border-color: var(--hair); color: var(--ink); }
-.frow .st { flex: none; width: 8px; text-align: center; }
-.frow .st.modified { color: var(--yellow); }
-.frow .st.added { color: var(--green); }
-.frow .st.deleted { color: var(--red); }
-.frow .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.frow .warnIcon { flex: none; color: var(--yellow); }
-.frow .num { flex: none; }
-/* the folder wraps to its own line, indented under the name it qualifies */
-.frow .dir {
-  flex: 0 0 100%; margin-left: 15px; color: var(--stone); font-size: 0.7692rem;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-.changesDrawer .dbody { flex: 1; min-width: 0; min-height: 0; overflow: auto; background: var(--deep); }
-.changesDrawer .dnote { margin: 0; padding: 18px 16px; color: var(--stone); font-size: 0.9231rem; }
-.changesDrawer .dnote.err { color: var(--red-ink); font-family: var(--mono); }
-
-/* one line, always: everything here is untrusted length (paths, and session
-   titles that are whole prompts), so each part clips rather than wraps */
-.changesDrawer .dfoot {
-  flex: none; display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 14px;
-  border-top: 1px solid var(--hair); color: var(--ash); font-size: 0.8462rem; overflow: hidden;
-}
-.changesDrawer .dfoot > * { white-space: nowrap; }
-.changesDrawer .dfoot .path {
-  color: var(--body); font-size: 0.9231rem; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-}
-.changesDrawer .dfoot .path .dir { color: var(--stone); }
-.changesDrawer .dfoot .warn { display: inline-flex; align-items: center; gap: 5px; color: var(--yellow); min-width: 0; }
-.changesDrawer .dfoot .warn svg { flex: none; }
-.changesDrawer .dfoot .warn .tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.changesDrawer .dfoot .ok { color: var(--stone); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.changesDrawer .dfoot .sp { margin-left: auto; }
-.changesDrawer .dfoot .hint { color: var(--stone); flex: none; }
-
 /* --- the diff primitive: one renderer for git patches and tool inputs ----- */
 .diffView { position: relative; }
 .diffBody { font-family: var(--mono); font-size: 0.9231rem; line-height: 19px; }
@@ -3258,20 +3176,6 @@ html.kbOpen .shell.mobile .panel { bottom: 0; }
 /* The mode in force reads as chosen at a glance, not only by its check. */
 .uiMenu.perm .uiMenuItem.on { background: var(--wash-2); }
 
-/* ---------- phone: a session's changes — a bar that opens a full sheet over the transcript ---------- */
-@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
-  .changesBar { padding: 0 8px; }
-  .changesOpen { height: 36px; }
-  .changesOpen .kbd { display: none; }
-  .changesDrawer { position: absolute; inset: 0; height: auto !important; z-index: 10; border-top: 0; animation: sheetIn 0.16s ease-out; }
-  .changesDrawer .grip, .changesDrawer .dbar .seg, .changesDrawer .dbar .pill.mute { display: none; }
-  .changesDrawer .dbar { height: 44px; padding: 0 6px 0 14px; }
-  .changesDrawer .dbar .iconBtn { width: 40px; height: 40px; }
-  /* Files on top (a short scrolling list), the diff under them. */
-  .changesDrawer .dmain { flex-direction: column; }
-  .changesDrawer .flist { width: auto; max-height: 30%; border-right: 0; border-bottom: 1px solid var(--hair); }
-  .frow { padding: 8px 10px; }
-}
 @media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
   /* A team's strip scrolls sideways; on a phone each member is name and state — model and spend live on desktop. */
   #teamStrip { padding: 4px 10px; scrollbar-width: none; }

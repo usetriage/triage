@@ -1,9 +1,5 @@
 /**
- * One session's changes, fetched once and shared.
- *
- * Both the transcript (per-turn summaries) and the changes drawer (the file
- * list and diffs) read the same payload, so the fetch lives here rather than
- * in either component — one request per turn, not two.
+ * One session's changes, fetched once — the transcript's per-turn summaries.
  */
 import { useEffect, useState } from 'react'
 import type { SessionChanges, SessionChangesResponse } from '../../shared/protocol.js'
