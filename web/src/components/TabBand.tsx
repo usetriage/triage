@@ -9,7 +9,7 @@ import {
   Folder,
   Home,
   Inbox,
-  MessagesSquare,
+  MessageSquare,
   PanelLeftOpen,
   PenLine,
   Pin,
@@ -57,7 +57,7 @@ const homely = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
 export type TabKind = 'session' | 'terminal' | 'draft' | 'item' | 'artifact' | 'watch' | 'watch-form' | 'change'
 
 const ICON: Record<TabKind, ComponentType<LucideProps>> = {
-  session: MessagesSquare,
+  session: MessageSquare,
   terminal: Terminal,
   draft: PenLine,
   item: CircleDot,
@@ -458,7 +458,7 @@ function NewTabMenu({ onNew, onNewTerminal, terminalCwd }: Pick<Props, 'onNew' |
       </MenuTrigger>
       <MenuContent align="start" className="wide">
         <MenuItem onSelect={onNew}>
-          <MessagesSquare size={14} aria-hidden="true" />
+          <MessageSquare size={14} aria-hidden="true" />
           <span className="text">
             <span className="name">New session</span>
             <span className="desc">Pick the project in the composer</span>
