@@ -7,6 +7,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import type { Mention } from '../../shared/protocol.js'
+import { uuid } from './uuid.js'
 
 export type Draft = {
   id: string
@@ -73,7 +74,7 @@ export const draftStore = {
   },
 
   create(init: Partial<Omit<Draft, 'id' | 'createdAt'>> = {}): Draft {
-    const d: Draft = { id: crypto.randomUUID(), text: '', createdAt: Date.now(), ...init }
+    const d: Draft = { id: uuid(), text: '', createdAt: Date.now(), ...init }
     drafts = [...drafts, d]
     persist()
     notify()

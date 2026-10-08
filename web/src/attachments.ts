@@ -5,6 +5,7 @@ import {
   isImageMediaType,
   type ImageAttachment,
 } from '../../shared/protocol.js'
+import { uuid } from './uuid.js'
 
 /** An attachment plus the bits only the composer needs — a key and a preview URL. */
 export type PendingImage = ImageAttachment & { id: string; url: string }
@@ -43,7 +44,7 @@ export function useAttachments() {
         continue
       }
       accepted.push({
-        id: crypto.randomUUID(),
+        id: uuid(),
         name: file.name || undefined,
         mediaType: file.type,
         data: await readAsBase64(file),
