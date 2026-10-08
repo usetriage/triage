@@ -3,7 +3,7 @@
  * three views (status · activity · logs) beside the body, the way the design's
  * "Usage & providers" sheet is laid out.
  */
-import { Activity, Gauge, RefreshCw, ScrollText } from 'lucide-react'
+import { Activity, Gauge, RefreshCw, ScrollText, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   ActivityResponse,
@@ -93,6 +93,9 @@ export function SystemModal({
           <span className="right">
             <button type="button" className="iconBtn" title="Refresh" onClick={() => setNonce((n) => n + 1)}>
               <RefreshCw size={13} aria-hidden="true" />
+            </button>
+            <button type="button" className="iconBtn" title="Close (Esc)" aria-label="Close" onClick={onClose}>
+              <X size={14} aria-hidden="true" />
             </button>
           </span>
         </div>
