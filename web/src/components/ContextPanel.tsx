@@ -11,6 +11,7 @@ import {
   Folder,
   Home,
   MoreHorizontal,
+  PanelLeftClose,
   Pencil,
   PenLine,
   Pin,
@@ -22,7 +23,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import type { ArtifactWithLinks, Project, ProjectsResponse, ScoredItem, SessionSummary, TerminalSummary } from '../../../shared/protocol.js'
 import { draftTitle, type Draft } from '../drafts.js'
 import { GROUP_ORDER, GROUP_SHORT, itemTone, kindIcon } from '../itemUi.js'
@@ -30,7 +31,11 @@ import { MOD_LABEL } from '../keys.js'
 import { rowOpen } from '../tabs.js'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
 
+/** Hides the panel; provided by the desktop shell only (a phone sheet closes from its tab). */
+export const PanelCollapseContext = createContext<(() => void) | null>(null)
+
 export function PanelSearch({ onSearch, placeholder }: { onSearch: () => void; placeholder: string }) {
+  const collapse = useContext(PanelCollapseContext)
   return (
     <div className="panelSearch">
       <button type="button" className="searchBtn" onClick={onSearch} title={`Search (${MOD_LABEL}K)`}>
@@ -38,6 +43,11 @@ export function PanelSearch({ onSearch, placeholder }: { onSearch: () => void; p
         <span className="t">{placeholder}</span>
         <span className="kbd">{MOD_LABEL}K</span>
       </button>
+      {collapse && (
+        <button type="button" className="iconBtn" onClick={collapse} title={`Hide panel (${MOD_LABEL}B)`} aria-label="Hide panel">
+          <PanelLeftClose size={15} aria-hidden="true" />
+        </button>
+      )}
     </div>
   )
 }

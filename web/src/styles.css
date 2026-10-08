@@ -424,7 +424,7 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
   width: var(--panel-w); flex: none; display: flex; flex-direction: column; overflow: hidden;
   background: var(--card); border-right: 1px solid var(--hair);
 }
-.panelSearch { display: flex; align-items: center; height: var(--bar-h); padding: 0 10px; border-bottom: 1px solid var(--hair); flex: none; }
+.panelSearch { display: flex; align-items: center; gap: 4px; height: var(--bar-h); padding: 0 6px 0 10px; border-bottom: 1px solid var(--hair); flex: none; }
 .searchBtn {
   flex: 1; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; min-width: 0;
   border: 1px solid var(--hair-strong); border-radius: var(--r); color: var(--stone); font-size: 0.9231rem;
@@ -526,6 +526,7 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .tab.active .cl { color: var(--ash); }
 .tabband .add { display: flex; align-items: center; justify-content: center; width: 34px; flex: none; color: var(--ash); background: transparent; border: 0; }
 .tabband .add:hover { color: var(--ink); }
+.tabband .add.showPanel { border-right: 1px solid var(--hair); }
 .content { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 
 /* ---------- page shell (inbox / item / watches / projects / connectors) ---------- */

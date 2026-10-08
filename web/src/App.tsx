@@ -21,7 +21,7 @@ import { ChangePage } from './components/ChangePage.js'
 import { ChangesPanel } from './components/ChangesPanel.js'
 import { changeId, changesStore, useChanges } from './changesStore.js'
 import { Composer } from './components/Composer.js'
-import { ArtifactsPanel, NewTerminalMenu, QueuePanel, SessionsPanel, TerminalsPanel } from './components/ContextPanel.js'
+import { ArtifactsPanel, NewTerminalMenu, PanelCollapseContext, QueuePanel, SessionsPanel, TerminalsPanel } from './components/ContextPanel.js'
 import { HelpOverlay } from './components/HelpOverlay.js'
 import { InboxPage } from './components/InboxPage.js'
 import { ItemPage } from './components/ItemPage.js'
@@ -586,9 +586,9 @@ export function App() {
     [navigate, route, lastRoutes, currentId, currentTerminalId, terminals, tabs, sessions, drafts, newSession],
   )
 
-  // The rail doubles as the collapse control (VS Code pattern): re-clicking
-  // the already-active section collapses the panel instead of navigating;
-  // clicking any icon while collapsed reopens it, still landing on that section.
+  // The rail only navigates — hiding the panel is its own button beside the
+  // search field (and ⌘B). Clicking any icon while collapsed reopens it,
+  // still landing on that section.
   const onRailGo = useCallback(
     (section: RailSection) => {
       if (mobile) {
@@ -600,17 +600,15 @@ export function App() {
           setSheet(null)
           goTo(section)
         }
-      } else if (panelSize.collapsed) {
-        panelSize.setCollapsed(false)
-        goTo(section)
-      } else if (sectionOf(route) === section) {
-        panelSize.setCollapsed(true)
       } else {
+        if (panelSize.collapsed) panelSize.setCollapsed(false)
         goTo(section)
       }
     },
-    [mobile, panelSize, route, goTo],
+    [mobile, panelSize, goTo],
   )
+
+  const collapsePanel = useCallback(() => panelSize.setCollapsed(true), [panelSize])
 
   // Closing the tab you are on lands you on its neighbour, else the inbox.
   // A terminal tab closing does not kill the shell — that is the panel's menu.
@@ -924,7 +922,7 @@ export function App() {
       >
         <Rail
           active={mobile ? sheet ?? railActive : railActive}
-          collapsed={mobile ? !sheet : panelSize.collapsed}
+          collapsed={mobile ? !sheet : undefined}
           inboxCount={inbox.items.length}
           runningCount={runningCount}
           terminalCount={terminals.filter((t) => t.status === 'running').length}
@@ -932,7 +930,7 @@ export function App() {
           onGo={onRailGo}
         />
 
-        {panel}
+        <PanelCollapseContext.Provider value={mobile ? null : collapsePanel}>{panel}</PanelCollapseContext.Provider>
         {!panelSize.collapsed && !mobile && (
           <div
             className="panelResize"
@@ -952,6 +950,7 @@ export function App() {
             onPin={pin}
             pageTab={pageTab}
             onInbox={() => navigate('/inbox')}
+            onShowPanel={panelSize.collapsed ? () => panelSize.setCollapsed(false) : undefined}
             onSelect={(key) => navigate(routeOfKey(key))}
             onClose={closeOpenTab}
             onCloseAll={closeAllOpenTabs}

@@ -10,6 +10,7 @@ import {
   Home,
   Inbox,
   MessagesSquare,
+  PanelLeftOpen,
   PenLine,
   Pin,
   Plus,
@@ -44,6 +45,7 @@ import {
   MenuSubTrigger,
   MenuTrigger,
 } from '../ui/Menu.js'
+import { MOD_LABEL } from '../keys.js'
 
 const homely = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
 
@@ -88,6 +90,8 @@ type Props = {
   /** A transient tab for a rail *index* (Watches, Terminals, Artifacts). */
   pageTab?: PageTab | null
   onInbox: () => void
+  /** Set while the panel is hidden: its show button leads the band. */
+  onShowPanel?: () => void
   onSelect: (key: string) => void
   onClose: (key: string) => void
   /** Close every open tab at once, preview included. */
@@ -231,6 +235,7 @@ export function TabBand({
   preview,
   pageTab,
   onInbox,
+  onShowPanel,
   onSelect,
   onClose,
   onCloseAll,
@@ -250,6 +255,11 @@ export function TabBand({
     <div className="tabband" role="tablist">
       {/* Inbox and the + sit outside the scroller: the way out of a crowded
           band must never be the thing that scrolled off it. */}
+      {onShowPanel && (
+        <button type="button" className="add showPanel" onClick={onShowPanel} title={`Show panel (${MOD_LABEL}B)`} aria-label="Show panel">
+          <PanelLeftOpen size={15} aria-hidden="true" />
+        </button>
+      )}
       <button
         type="button"
         role="tab"

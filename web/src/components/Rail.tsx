@@ -5,7 +5,8 @@ export type RailSection = 'inbox' | 'sessions' | 'artifacts' | 'changes' | 'term
 
 type Props = {
   active: RailSection | null
-  collapsed: boolean
+  /** Set only where the active icon toggles the panel (the phone sheet). */
+  collapsed?: boolean
   inboxCount: number
   runningCount: number
   terminalCount: number
@@ -37,9 +38,9 @@ export function Rail({ active, collapsed, inboxCount, runningCount, terminalCoun
                 : id === 'changes'
                   ? changedCount
                   : 0
-        // The active icon doubles as the panel's collapse control, so its own
-        // tooltip and aria-expanded speak to that instead of just naming itself.
-        const isToggle = active === id
+        // On a phone the active tab toggles its sheet, so its own tooltip and
+        // aria-expanded speak to that instead of just naming itself.
+        const isToggle = collapsed !== undefined && active === id
         return (
           <button
             key={id}
