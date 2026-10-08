@@ -1,3 +1,4 @@
+import { X } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { SHORTCUTS } from '../keys.js'
 
@@ -12,7 +13,12 @@ export function HelpOverlay({ open, onClose }: { open: boolean; onClose: () => v
 
   return (
     <dialog ref={dialog} id="helpOverlay" onClose={onClose} onClick={(e) => e.target === dialog.current && onClose()}>
-      <h3>Keyboard shortcuts</h3>
+      <div className="helpHead">
+        <h3>Keyboard shortcuts</h3>
+        <button type="button" className="iconBtn" title="Close (Esc)" aria-label="Close" onClick={onClose}>
+          <X size={14} aria-hidden="true" />
+        </button>
+      </div>
       <table>
         <tbody>
           {SHORTCUTS.map(([keys, what]) => (

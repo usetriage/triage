@@ -1353,6 +1353,8 @@ dialog#palette { width: 580px; padding: 0; margin-top: 12vh; overflow: hidden; }
 
 /* help */
 dialog#helpOverlay { width: 400px; }
+#helpOverlay .helpHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -4px -6px 14px 0; }
+#helpOverlay .helpHead h3 { margin: 0; }
 #helpOverlay table { width: 100%; border-collapse: collapse; }
 #helpOverlay td { padding: 6px 0; font-size: 1rem; color: var(--body); vertical-align: top; }
 #helpOverlay td:first-child { width: 120px; }
