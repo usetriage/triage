@@ -26,6 +26,7 @@ const PID_FILE = path.join(TRIAGE_DIR, 'ngrok.pid')
 function explain(raw: string): string {
   if (/ERR_NGROK_4018|authtoken/i.test(raw)) return 'ngrok needs your authtoken: sign up free at ngrok.com, then run `ngrok config add-authtoken <token>`.'
   if (/ERR_NGROK_108|simultaneous|session limit/i.test(raw)) return 'ngrok is already running somewhere else on this account (the free plan allows one at a time). Stop it, then try again.'
+  if (/ERR_NGROK_334|already online/i.test(raw)) return 'Your ngrok domain is already in use by another ngrok on this account (the free plan has one domain). Stop that one (`pkill ngrok`), then try again.'
   return raw.trim() || 'ngrok stopped unexpectedly.'
 }
 
@@ -69,11 +70,13 @@ export class NgrokTunnel {
       try {
         rec = JSON.parse(line) as LogRecord
       } catch {
-        if (line.trim()) lastError = line
+        // ngrok also echoes its fatal error as plain `ERROR:` lines; keep the first useful one, the JSON record wins
+        const text = line.replace(/^ERROR:\s*/, '').trim()
+        if (text && !lastError) lastError = text
         return
       }
       if (rec.msg === 'started tunnel' && rec.url?.startsWith('https://')) this.#set({ state: 'up', url: rec.url })
-      else if (rec.lvl === 'eror' || rec.lvl === 'crit' || rec.err) lastError = rec.err || rec.msg || lastError
+      else if (rec.lvl === 'eror' || rec.lvl === 'crit') lastError = rec.err || rec.msg || lastError
     }
     for (const stream of [child.stdout, child.stderr]) {
       stream?.setEncoding('utf8')
