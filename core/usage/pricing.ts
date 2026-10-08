@@ -18,6 +18,10 @@ export type Price = {
   output: number
   /** $ per million cache-read tokens. Defaults to 0.1 × input. */
   cacheRead?: number
+  /** Fast-mode rates, for the models that have one. */
+  fast?: Price
+  /** Rates once a prompt (input + cache reads/writes) runs past `over` tokens. */
+  long?: { over: number; price: Price }
 }
 
 /** Cache writes cost a premium over base input: 1.25× at 5m TTL, 2× at 1h. */
@@ -29,19 +33,19 @@ const PRICES: Record<string, Price> = {
   'claude-mythos-5-1': { input: 10, output: 50, cacheRead: 0.25 },
   'claude-fable-5': { input: 10, output: 50 },
   'claude-mythos-5': { input: 10, output: 50 },
-  'claude-opus-5': { input: 5, output: 25 },
-  'claude-opus-4-8': { input: 5, output: 25 },
+  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2, fast: { input: 8, output: 40, cacheRead: 0.4 } },
+  'claude-opus-5': { input: 5, output: 25, fast: { input: 10, output: 50 } },
+  'claude-opus-4-8': { input: 5, output: 25, fast: { input: 10, output: 50 } },
   'claude-opus-4-7': { input: 5, output: 25 },
   'claude-opus-4-6': { input: 5, output: 25 },
   'claude-opus-4-5': { input: 5, output: 25 },
+  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.2 },
   'claude-sonnet-5': { input: 2, output: 10 },
   'claude-sonnet-4-6': { input: 3, output: 15 },
   'claude-sonnet-4-5': { input: 3, output: 15 },
+  'claude-haiku-5-5': { input: 0.1, output: 0.5, long: { over: 100_000, price: { input: 0.5, output: 2.5 } } },
   'claude-haiku-4-5': { input: 1, output: 5 },
 }
-
-/** Fast mode runs the same model hotter, at premium rates (Opus 5 / 4.8). */
-const FAST_PRICE: Price = { input: 10, output: 50 }
 
 /**
  * `claude-opus-5[1m]`, `claude-opus-5-20260401` → `claude-opus-5`. The context
@@ -59,7 +63,7 @@ export function priceOf(model: string, fast = false): Price | undefined {
   const id = normalizeModel(model)
   const base = PRICES[id]
   if (!base) return undefined
-  return fast && (id === 'claude-opus-5' || id === 'claude-opus-4-8') ? FAST_PRICE : base
+  return fast && base.fast ? base.fast : base
 }
 
 export type TokenCounts = {
@@ -74,8 +78,9 @@ export type TokenCounts = {
 
 /** Dollars for one message's tokens, or `undefined` when the model has no row. */
 export function costOf(model: string, t: TokenCounts, fast = false): number | undefined {
-  const p = priceOf(model, fast)
+  let p = priceOf(model, fast)
   if (!p) return undefined
+  if (p.long && t.input + t.cacheWrite5m + t.cacheWrite1h + t.cacheRead > p.long.over) p = p.long.price
   const read = p.cacheRead ?? p.input * 0.1
   return (
     (t.input * p.input +
