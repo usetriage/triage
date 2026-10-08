@@ -519,7 +519,7 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .tab .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; gap: 7px; }
 .tab .pdot { display: inline-block; width: 5px; height: 5px; border-radius: var(--r-full); flex: none; }
 .tab .cl {
-  display: inline-flex; align-items: center; justify-content: center; flex: none; margin-left: 2px; margin-right: -4px;
+  display: inline-flex; align-items: center; justify-content: center; flex: none; margin-left: auto; margin-right: -4px;
   width: 18px; height: 18px; border-radius: var(--r-xs); color: var(--stone); background: transparent; border: 0; padding: 0;
 }
 .tab .cl:hover { color: var(--ink); background: var(--elev); }
