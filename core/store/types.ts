@@ -32,7 +32,7 @@ import type {
 export type { SessionKind }
 import type { Provenance, WorkItem } from '../work/types.js'
 import type { ItemEvent, ItemStatus, StatusChange } from '../work/state.js'
-import type { NewWatch, Watch, WatchRunResult, WatchRunStart, WatchRunStatus, WatchRunTrigger } from '../watch/types.js'
+import type { NewWatch, NewWatchSlotRun, Watch, WatchRunResult, WatchRunStart, WatchRunStatus, WatchRunTrigger, WatchSlotFinish, WatchSlotRun } from '../watch/types.js'
 
 export type StoredSession = {
   id: string
@@ -219,6 +219,34 @@ export interface WatchStore {
   remove(id: string): Promise<void>
 }
 
+/**
+ * The slot ledger (`watch_runs`): one durable row per (watch, slot) — scheduled,
+ * catch-up, manual or skipped. Additive: the watch row and session receipts
+ * stay the source for what the UI reads today.
+ */
+export interface WatchRunLedger {
+  /** INSERT OR IGNORE on (watchId, slot): the first write wins. True when a row was written. */
+  insert(run: NewWatchSlotRun): Promise<boolean>
+  /** Point a row at the session holding its transcript, as soon as there is one. */
+  attachSession(watchId: string, slot: number, sessionId: string): Promise<void>
+  /** Close a still-`running` row for (watchId, slot). True when a row was updated. */
+  finish(watchId: string, slot: number, end: WatchSlotFinish): Promise<boolean>
+  /**
+   * The slots a catch-up run collapsed: one `missed` row each, reason
+   * `covered by <runId>`. INSERT OR IGNORE — an existing row keeps its own
+   * story. Returns how many were written.
+   */
+  insertMissed(watchId: string, slots: number[], runId: string, at: number): Promise<number>
+  /** One watch's rows, newest slot first. */
+  list(watchId: string, limit?: number): Promise<WatchSlotRun[]>
+  /** Dollars one watch's runs recorded since `since` (epoch ms) — the daily budget's meter. */
+  spentSince(watchId: string, since: number): Promise<number>
+  /** When each watch's latest `ok` row ended — the overdue rule's clock. */
+  lastOkAt(): Promise<Map<string, number>>
+  /** Boot: every `running` row died with the previous process. Returns how many. */
+  sweepInterrupted(endedAt: number, reason: string): Promise<number>
+}
+
 export type UpsertOutcome = 'inserted' | 'updated' | 'unchanged'
 
 export type UpsertResult = {
@@ -358,6 +386,7 @@ export interface Store {
   config: ConfigStore
   projects: ProjectStore
   watches: WatchStore
+  watchRuns: WatchRunLedger
   items: WorkItemStore
   artifacts: ArtifactStore
   links: LinkStore

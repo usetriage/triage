@@ -16,7 +16,7 @@ import type { Provenance, WorkItem } from '../work/types.js'
 import type { ItemEvent, ItemEventKind, ItemStatus, StatusChange } from '../work/state.js'
 import { eventForStatus, shouldReopen } from '../work/state.js'
 import type { EffortLevel, PermissionMode } from '../../shared/protocol.js'
-import type { NewWatch, Watch, WatchCadence, WatchConnector, WatchNotify, WatchRunResult, WatchRunStart, WatchRunStatus, WatchRunTrigger } from '../watch/types.js'
+import type { NewWatch, Watch, WatchCadence, WatchConnector, WatchNotify, WatchRunResult, WatchRunStart, WatchRunStatus, WatchRunTrigger, WatchSlotFinish, WatchSlotRun, WatchSlotStatus, NewWatchSlotRun } from '../watch/types.js'
 import { WATCH_NOTIFY, WATCH_RUN_STATUSES } from '../watch/types.js'
 import { cronFromCadence } from '../watch/cron.js'
 import { grantsFrom, grantsFromLegacy, type WatchToolGrant } from '../watch/tools.js'
@@ -42,6 +42,7 @@ import type {
   TurnStore,
   UpsertResult,
   WatchRunRecord,
+  WatchRunLedger,
   WatchStore,
   WorkItemStore,
 } from './types.js'
@@ -287,6 +288,22 @@ const MIGRATIONS: string[] = [
    UPDATE watches SET last_run_started_at = last_run_at WHERE last_run_started_at IS NULL;
    ALTER TABLE sessions ADD COLUMN run_trigger TEXT;
    ALTER TABLE sessions ADD COLUMN run_new INTEGER;`,
+  // 22: the slot ledger — one row per (watch, slot), however it ended. Additive; existing runs are not backfilled.
+  `CREATE TABLE IF NOT EXISTS watch_runs (
+     id         TEXT PRIMARY KEY,
+     watch_id   TEXT NOT NULL,
+     slot       INTEGER NOT NULL,
+     trigger    TEXT NOT NULL,
+     status     TEXT NOT NULL,
+     reason     TEXT,
+     session_id TEXT,
+     started_at INTEGER NOT NULL,
+     ended_at   INTEGER,
+     cost_usd   REAL,
+     UNIQUE (watch_id, slot)
+   );`,
+  // 23: a per-watch daily spend cap, summed from the ledger.
+  `ALTER TABLE watches ADD COLUMN daily_budget_usd REAL;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -305,6 +322,7 @@ export function openSqliteStore(file: string): Store {
     config: new SqliteConfig(db),
     projects: new SqliteProjects(db),
     watches: new SqliteWatches(db),
+    watchRuns: new SqliteWatchRuns(db),
     items: new SqliteWorkItems(db),
     artifacts: new SqliteArtifacts(db),
     links: new SqliteLinks(db),
@@ -423,7 +441,7 @@ function ensureDurableSchema(db: DatabaseSync) {
   ensure('watches', 'output', 'output TEXT', w)
   for (const [col, decl] of [
     ['tools', 'tools TEXT'], ['config_error', 'config_error TEXT'], ['catch_up_window', 'catch_up_window TEXT'],
-    ['timeout_ms', 'timeout_ms INTEGER'], ['max_budget_usd', 'max_budget_usd REAL'], ['notify', 'notify TEXT'],
+    ['timeout_ms', 'timeout_ms INTEGER'], ['max_budget_usd', 'max_budget_usd REAL'], ['daily_budget_usd', 'daily_budget_usd REAL'], ['notify', 'notify TEXT'],
     ['consecutive_failures', 'consecutive_failures INTEGER NOT NULL DEFAULT 0'],
     ['last_run_started_at', 'last_run_started_at INTEGER'], ['last_run_new', 'last_run_new INTEGER'], ['last_run_trigger', 'last_run_trigger TEXT'],
   ]) ensure('watches', col, decl, w)
@@ -776,6 +794,7 @@ type WatchRow = {
   catch_up_window: string | null
   timeout_ms: number | null
   max_budget_usd: number | null
+  daily_budget_usd: number | null
   notify: string | null
   consecutive_failures: number | null
   last_run_started_at: number | null
@@ -832,6 +851,7 @@ const toWatch = (r: WatchRow): Watch => ({
   ...(r.catch_up_window ? { catchUpWindow: r.catch_up_window } : {}),
   ...(r.timeout_ms != null ? { timeoutMs: r.timeout_ms } : {}),
   ...(r.max_budget_usd != null ? { maxBudgetUsd: r.max_budget_usd } : {}),
+  ...(r.daily_budget_usd != null ? { dailyBudgetUsd: r.daily_budget_usd } : {}),
   notify: WATCH_NOTIFY.includes(r.notify as WatchNotify) ? (r.notify as WatchNotify) : 'on_failure',
   consecutiveFailures: r.consecutive_failures ?? 0,
   model: r.model ?? undefined,
@@ -875,9 +895,9 @@ class SqliteWatches implements WatchStore {
       .prepare(
         `INSERT INTO watches (id, source, title, scope, instruction, cadence, window_start, window_day,
            schedule, enabled, creates_items, cursor, last_run_at, last_run_tokens, last_run_matches, template_id,
-           tools, project_id, model, output, catch_up_window, timeout_ms, max_budget_usd, notify,
+           tools, project_id, model, output, catch_up_window, timeout_ms, max_budget_usd, daily_budget_usd, notify,
            config_error, last_run_started_at, consecutive_failures, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       )
       .run(
         w.id, w.source, w.title, w.scope, w.instruction, w.cadence,
@@ -886,7 +906,7 @@ class SqliteWatches implements WatchStore {
         w.enabled ? 1 : 0, w.createsItems ? 1 : 0,
         w.templateId ?? null,
         JSON.stringify(w.tools), w.projectId || null, w.model ?? null, w.output,
-        w.catchUpWindow ?? null, w.timeoutMs ?? null, w.maxBudgetUsd ?? null, w.notify,
+        w.catchUpWindow ?? null, w.timeoutMs ?? null, w.maxBudgetUsd ?? null, w.dailyBudgetUsd ?? null, w.notify,
         w.configError ?? null, w.lastRunStartedAt ?? null,
         w.createdAt, w.updatedAt,
       )
@@ -902,7 +922,7 @@ class SqliteWatches implements WatchStore {
       .prepare(
         `UPDATE watches SET title = ?, scope = ?, instruction = ?, cadence = ?, window_start = ?,
            window_day = ?, schedule = ?, enabled = ?, creates_items = ?, tools = ?, project_id = ?, model = ?, output = ?,
-           catch_up_window = ?, timeout_ms = ?, max_budget_usd = ?, notify = ?, updated_at = ? WHERE id = ?`,
+           catch_up_window = ?, timeout_ms = ?, max_budget_usd = ?, daily_budget_usd = ?, notify = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         next.title, next.scope ?? '', next.instruction, next.cadence,
@@ -910,7 +930,7 @@ class SqliteWatches implements WatchStore {
         next.schedule,
         next.enabled ? 1 : 0, next.createsItems ? 1 : 0,
         JSON.stringify(next.tools), next.projectId || null, next.model ?? null, next.output ?? 'items',
-        opt(next.catchUpWindow), opt(next.timeoutMs), opt(next.maxBudgetUsd), next.notify ?? 'on_failure',
+        opt(next.catchUpWindow), opt(next.timeoutMs), opt(next.maxBudgetUsd), opt(next.dailyBudgetUsd), next.notify ?? 'on_failure',
         Date.now(), id,
       )
   }
@@ -956,6 +976,108 @@ class SqliteWatches implements WatchStore {
 
   async remove(id: string): Promise<void> {
     this.db.prepare('DELETE FROM watches WHERE id = ?').run(id)
+  }
+}
+
+type WatchRunRow = {
+  id: string
+  watch_id: string
+  slot: number
+  trigger: string
+  status: string
+  reason: string | null
+  session_id: string | null
+  started_at: number
+  ended_at: number | null
+  cost_usd: number | null
+}
+
+class SqliteWatchRuns implements WatchRunLedger {
+  constructor(private db: DatabaseSync) {}
+
+  async insert(run: NewWatchSlotRun): Promise<boolean> {
+    const res = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO watch_runs (id, watch_id, slot, trigger, status, reason, session_id, started_at, ended_at, cost_usd)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(run.id ?? randomUUID(), run.watchId, run.slot, run.trigger, run.status, run.reason ?? null, run.sessionId ?? null,
+        run.startedAt, run.endedAt ?? null, run.costUsd ?? null)
+    return Number(res.changes) > 0
+  }
+
+  async attachSession(watchId: string, slot: number, sessionId: string): Promise<void> {
+    this.db.prepare('UPDATE watch_runs SET session_id = ? WHERE watch_id = ? AND slot = ?').run(sessionId, watchId, slot)
+  }
+
+  async finish(watchId: string, slot: number, end: WatchSlotFinish): Promise<boolean> {
+    const res = this.db
+      .prepare(
+        `UPDATE watch_runs SET status = ?, reason = ?, session_id = COALESCE(?, session_id), ended_at = ?, cost_usd = ?
+         WHERE watch_id = ? AND slot = ? AND status = 'running'`,
+      )
+      .run(end.status, end.reason ?? null, end.sessionId ?? null, end.endedAt, end.costUsd ?? null, watchId, slot)
+    return Number(res.changes) > 0
+  }
+
+  async insertMissed(watchId: string, slots: number[], runId: string, at: number): Promise<number> {
+    const stmt = this.db.prepare(
+      `INSERT OR IGNORE INTO watch_runs (id, watch_id, slot, trigger, status, reason, started_at, ended_at)
+       VALUES (?, ?, ?, 'catch_up', 'missed', ?, ?, ?)`,
+    )
+    let written = 0
+    this.db.exec('BEGIN')
+    try {
+      for (const slot of slots) written += Number(stmt.run(randomUUID(), watchId, slot, `covered by ${runId}`, at, at).changes)
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+    return written
+  }
+
+  async spentSince(watchId: string, since: number): Promise<number> {
+    const row = this.db
+      .prepare('SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM watch_runs WHERE watch_id = ? AND started_at >= ?')
+      .get(watchId, since) as { spent: number }
+    return row.spent
+  }
+
+  async lastOkAt(): Promise<Map<string, number>> {
+    const rows = this.db
+      .prepare(`SELECT watch_id, MAX(COALESCE(ended_at, started_at)) AS at FROM watch_runs WHERE status = 'ok' GROUP BY watch_id`)
+      .all() as { watch_id: string; at: number }[]
+    return new Map(rows.map((r) => [r.watch_id, r.at]))
+  }
+
+  async list(watchId: string, limit = 100): Promise<WatchSlotRun[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM watch_runs WHERE watch_id = ? ORDER BY slot DESC LIMIT ?')
+      .all(watchId, limit) as WatchRunRow[]
+    return rows.map(toSlotRun)
+  }
+
+  async sweepInterrupted(endedAt: number, reason: string): Promise<number> {
+    const res = this.db
+      .prepare(`UPDATE watch_runs SET status = 'interrupted', reason = ?, ended_at = ? WHERE status = 'running'`)
+      .run(reason, endedAt)
+    return Number(res.changes)
+  }
+}
+
+function toSlotRun(r: WatchRunRow): WatchSlotRun {
+  return {
+    id: r.id,
+    watchId: r.watch_id,
+    slot: r.slot,
+    trigger: r.trigger as WatchRunTrigger,
+    status: r.status as WatchSlotStatus,
+    reason: r.reason ?? undefined,
+    sessionId: r.session_id ?? undefined,
+    startedAt: r.started_at,
+    endedAt: r.ended_at ?? undefined,
+    costUsd: r.cost_usd ?? undefined,
   }
 }
 

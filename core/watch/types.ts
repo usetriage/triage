@@ -27,6 +27,41 @@ export const WATCH_RUN_STATUSES: WatchRunStatus[] = ['ok', 'failed', 'timeout', 
 /** Why a run happened. */
 export type WatchRunTrigger = 'scheduled' | 'catch_up' | 'manual'
 
+/**
+ * The slot ledger's status: a run's outcome plus the states only a ledger row
+ * can have — still `running`, over its daily budget, or `missed` (covered by a
+ * later catch-up run). The watch row and session receipts keep WatchRunStatus.
+ */
+export type WatchSlotStatus = WatchRunStatus | 'running' | 'skipped_budget' | 'missed'
+export const WATCH_SLOT_STATUSES: WatchSlotStatus[] = [...WATCH_RUN_STATUSES, 'running', 'skipped_budget', 'missed']
+
+/** One row of the slot ledger (`watch_runs`): every slot, run or not, gets one. */
+export interface WatchSlotRun {
+  id: string
+  watchId: string
+  /** the schedule slot this row is for — UNIQUE with watchId; a manual run uses its start time */
+  slot: number
+  trigger: WatchRunTrigger
+  status: WatchSlotStatus
+  reason?: string
+  sessionId?: string
+  startedAt: number
+  endedAt?: number
+  costUsd?: number
+}
+
+/** What opens a ledger row; the store mints the id unless the caller needs it up front. */
+export type NewWatchSlotRun = Omit<WatchSlotRun, 'id'> & { id?: string }
+
+/** What closes one. */
+export interface WatchSlotFinish {
+  status: WatchSlotStatus
+  reason?: string
+  sessionId?: string
+  endedAt: number
+  costUsd?: number
+}
+
 export type WatchNotify = 'never' | 'on_failure' | 'always'
 export const WATCH_NOTIFY: WatchNotify[] = ['never', 'on_failure', 'always']
 
@@ -58,6 +93,8 @@ export interface Watch {
   /** per-run limits; omitted = the workspace default */
   timeoutMs?: number
   maxBudgetUsd?: number
+  /** dollars this watch may spend per local day, across all its runs; omitted = no daily cap */
+  dailyBudgetUsd?: number
   /** when to post a macOS notification about a run */
   notify: WatchNotify
   /** model alias or wire id for the run; omitted = Claude Code's own default */
@@ -111,6 +148,7 @@ export type NewWatch = Pick<Watch, 'title' | 'instruction' | 'schedule' | 'creat
   catchUpWindow?: string | null
   timeoutMs?: number | null
   maxBudgetUsd?: number | null
+  dailyBudgetUsd?: number | null
   notify?: WatchNotify
   /** legacy; defaults to a coarse bucket when omitted */
   cadence?: WatchCadence
