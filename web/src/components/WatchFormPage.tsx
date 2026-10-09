@@ -24,11 +24,11 @@ import type {
   WatchPreviewStatusResponse,
   WatchesResponse,
 } from '../../../shared/protocol.js'
-import { describeCron, isValidCron } from '../../../core/watch/cron.js'
+import { isValidCron } from '../../../core/watch/cron.js'
 import { defaultCatchUp, humanSpan, lookbackMs } from '../../../core/watch/schedule.js'
 import { builtinGrant, hasBuiltin } from '../../../core/watch/tools.js'
 import { useEvents } from '../hooks.js'
-import { relTime } from '../itemUi.js'
+import { labelName, relTime } from '../itemUi.js'
 import { useModels } from '../models.js'
 import { store } from '../store.js'
 import { projectColor } from '../tabs.js'
@@ -36,7 +36,7 @@ import { Select, SelectItem } from '../ui/Select.js'
 import { ProjectIdPicker } from './ProjectPicker.js'
 import { Markdown } from './Markdown.js'
 import { Transcript } from './Transcript.js'
-import { OUTPUTS, PRESETS, cronToPreset, presetToCron, type SchedulePreset } from '../watchUi.js'
+import { OUTPUTS, PRESETS, cronText, cronToPreset, fmtSlot, fmtUntil, nextRuns, presetToCron, type SchedulePreset } from '../watchUi.js'
 import { WatchToolPicker } from './WatchToolPicker.js'
 
 // Inbox thumbs-down → refine: the correction is appended to the instructions
@@ -188,14 +188,20 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
   // The schedule the form will save: presets render to cron; custom is typed.
   const cron = useMemo(() => (form.preset === 'custom' ? form.cron.trim() : presetToCron(form.preset, form.time)), [form.preset, form.time, form.cron])
   const cronOk = isValidCron(cron)
+  // When it would run, as you type: the next three slots from now.
+  const upcoming = useMemo(() => (cronOk ? nextRuns(cron, Date.now(), 3) : []), [cron, cronOk])
 
-  const timeoutMs = form.timeoutMin.trim() ? Math.round(Number(form.timeoutMin) * 60_000) : null
+  // whole minutes, 1–60: exactly what a watch file can say
+  const timeoutMin = form.timeoutMin.trim() ? Number(form.timeoutMin) : null
+  const timeoutMs = timeoutMin != null && Number.isInteger(timeoutMin) ? timeoutMin * 60_000 : timeoutMin == null ? null : NaN
   const budget = form.budget.trim() ? Number(form.budget) : null
   const dailyBudget = form.dailyBudget.trim() ? Number(form.dailyBudget) : null
   const limitsOk =
-    (timeoutMs === null || (Number.isFinite(timeoutMs) && timeoutMs >= 30_000 && timeoutMs <= 3_600_000)) &&
+    (timeoutMs === null || (Number.isFinite(timeoutMs) && timeoutMs >= 60_000 && timeoutMs <= 3_600_000)) &&
     (budget === null || (Number.isFinite(budget) && budget > 0 && budget <= 100)) &&
     (dailyBudget === null || (Number.isFinite(dailyBudget) && dailyBudget > 0 && dailyBudget <= 1000))
+  // A window the presets don't have (written in the file, e.g. "3h") still shows, selected.
+  const catchUps = CATCH_UPS.some((c) => c.id === form.catchUp) ? CATCH_UPS : [...CATCH_UPS, { id: form.catchUp, label: `Within ${form.catchUp}` }]
   const complete = Boolean(form.title.trim() && form.instruction.trim() && form.tools.length > 0 && form.projectId && cronOk && limitsOk)
   // The instructions talk about the web but the run would have no web tools.
   const wantsWeb = /\b(news|web|google|internet|online|website|blog|article|search the)\b/i.test(form.instruction) && !hasBuiltin(form.tools, 'web')
@@ -426,7 +432,7 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
               <div className="card schedCard">
                 <div className="line">
                   <Clock size={13} aria-hidden="true" />
-                  <span>{cronOk ? describeCron(cron) : 'Not a valid schedule'}</span>
+                  <span>{cronOk ? cronText(cron) : 'Not a valid schedule'}</span>
                   <span className="cron">{cron}</span>
                 </div>
                 <div className="ctl">
@@ -453,6 +459,14 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
                     </>
                   )}
                 </div>
+                {upcoming.length > 0 && (
+                  <div className="nextRuns mono" aria-live="polite">
+                    {!id && form.runOnceNow ? 'Runs once when saved, then ' : 'Next '}
+                    <span className="at">{fmtSlot(upcoming[0])}</span>
+                    <span className="dim"> ({fmtUntil(upcoming[0])})</span>
+                    {upcoming.length > 1 && <span className="dim"> · then {upcoming.slice(1).map((t) => fmtSlot(t)).join(', ')}</span>}
+                  </div>
+                )}
                 <span className="hint">
                   Each run looks back {lookback ? `about ${lookback}` : 'two schedule periods'} unless your instructions say otherwise. Missed slots run once on wake.
                 </span>
@@ -475,7 +489,7 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
                 <label>Missed slots</label>
                 <div className="ctl">
                   <div className="seg" role="radiogroup" aria-label="Catch-up window">
-                    {CATCH_UPS.map((c) => (
+                    {catchUps.map((c) => (
                       <button key={c.id} type="button" role="radio" aria-checked={form.catchUp === c.id} className={`segBtn${form.catchUp === c.id ? ' active' : ''}`} onClick={() => set('catchUp', c.id)}>
                         {c.label}
                       </button>
@@ -519,7 +533,7 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
                   </div>
                   <span className="hint">a macOS notification</span>
                 </div>
-                {!limitsOk && <span className="formError" style={{ gridColumn: '1 / -1' }}>Timeout must be 1–60 minutes; budget $0.01–$100 per run, up to $1000 per day.</span>}
+                {!limitsOk && <span className="formError" style={{ gridColumn: '1 / -1' }}>Timeout must be 1–60 whole minutes; budget $0.01–$100 per run, up to $1000 per day.</span>}
               </Collapsible.Content>
             </Collapsible.Root>
 
@@ -695,6 +709,7 @@ function PreviewCard({ result }: { result: WatchPreviewResult }) {
                 {r.title}
               </a>
               {r.place && <span className="place">{r.place}</span>}
+              {r.ask && <span className={`place label-${r.ask}`}>{labelName(r.ask)}</span>}
             </span>
             <span className="when">{relTime(r.lastActivity)}</span>
             <span className="why">{r.why}</span>

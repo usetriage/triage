@@ -9,14 +9,14 @@ import { Ellipsis, ExternalLink, Pencil, Play, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ActivityResponse, ActivityRun, ItemListResponse, Project, ProjectsResponse, Watch, WatchesResponse, WatchRunsResponse, WatchSlotRun } from '../../../shared/protocol.js'
 import type { ScoredItem } from '../../../core/work/types.js'
-import { describeCron, nextScheduled } from '../../../core/watch/cron.js'
+import { nextScheduled } from '../../../core/watch/cron.js'
 import { itemHash, useEvents } from '../hooks.js'
 import { kindIcon, relTime } from '../itemUi.js'
 import { store } from '../store.js'
 import { Transcript } from './Transcript.js'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
 import { humanSpan, lookbackMs, parseCatchUp } from '../../../core/watch/schedule.js'
-import { TRIGGER_LABEL, grantIcon, grantLabel, runStatusText } from '../watchUi.js'
+import { TRIGGER_LABEL, cronText, grantIcon, grantLabel, runStatusText } from '../watchUi.js'
 import { ago, nextRunText, runDotClass } from './WatchesPage.js'
 import { runRows, type RunRow } from '../../../core/watch/run-rows.js'
 
@@ -237,7 +237,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
                 </>
               )}
               <span className="sep">·</span>
-              <span>{describeCron(watch.schedule)}</span>
+              <span>{cronText(watch.schedule)}</span>
               {watch.output === 'digest' && (
                 <>
                   <span className="sep">·</span>
@@ -410,7 +410,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
               <span className="v mono">{watch.model ?? 'default'}</span>
               <span className="k">Schedule</span>
               <span className="v">
-                {describeCron(watch.schedule)} <span className="mono" style={{ color: 'var(--stone)' }}>{watch.schedule}</span>
+                {cronText(watch.schedule)} <span className="mono" style={{ color: 'var(--stone)' }}>{watch.schedule}</span>
               </span>
               <span className="k">Looks back</span>
               <span className="v">about {humanSpan(lookbackMs(watch.schedule, Date.now()))} unless the instructions say otherwise</span>

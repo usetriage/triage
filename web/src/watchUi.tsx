@@ -6,6 +6,8 @@ import { FilePen, GitBranch, Globe, Hash, Layers, Plug, type LucideProps } from 
 import type { ComponentType } from 'react'
 import type { WatchOutput, WatchRunStatus, WatchRunTrigger, WatchToolGrant } from '../../shared/protocol.js'
 import { grantLabel, type BuiltinToolId } from '../../core/watch/tools.js'
+import cronstrue from 'cronstrue'
+import { describeCron, nextScheduled } from '../../core/watch/cron.js'
 
 export const BUILTINS: Array<{ id: BuiltinToolId; label: string; icon: ComponentType<LucideProps>; hint: string }> = [
   { id: 'web', label: 'Web', icon: Globe, hint: 'Search and read web pages' },
@@ -85,3 +87,37 @@ export const OUTPUTS: Array<{ id: WatchOutput; label: string; hint: string }> = 
   { id: 'items', label: 'Work items', hint: 'One item per match, deduped by its link.' },
   { id: 'digest', label: 'Digest', hint: 'One rolling item with a markdown report. Each run rewrites it and it returns to the inbox.' },
 ]
+
+/**
+ * A cron line in words. Our own phrasing for the shapes the presets make
+ * ("Weekdays at 9:00 AM"), cronstrue for everything else, the raw line only
+ * when neither can read it.
+ */
+export function cronText(expr: string): string {
+  const ours = describeCron(expr)
+  if (ours !== expr) return ours
+  try {
+    return cronstrue.toString(expr, { throwExceptionOnParseError: true, use24HourTimeFormat: false })
+  } catch {
+    return expr
+  }
+}
+
+/** The next `n` slots after `from`. */
+export function nextRuns(expr: string, from: number, n = 3): number[] {
+  const out: number[] = []
+  let at: number | null = from
+  while (out.length < n && (at = nextScheduled(expr, at)) != null) out.push(at)
+  return out
+}
+
+/** "Today 3:02 AM", "Tomorrow 9:00 AM", "Sat 3:02 AM", "Mon, Nov 3 9:00 AM" past a week. */
+export function fmtSlot(at: number, now = Date.now()): string {
+  const d = new Date(at)
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  const day = (t: number) => new Date(t).toDateString()
+  if (day(at) === day(now)) return `Today ${time}`
+  if (day(at) === day(now + 86_400_000)) return `Tomorrow ${time}`
+  if (at - now < 6 * 86_400_000) return `${d.toLocaleDateString(undefined, { weekday: 'short' })} ${time}`
+  return `${d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} ${time}`
+}

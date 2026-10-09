@@ -10,10 +10,10 @@ import { Ellipsis, Pencil, Play, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ActivityResponse, ActivityRun, Project, ProjectsResponse, SettingsResponse, Watch, WatchesResponse } from '../../../shared/protocol.js'
 import { rowOpen } from '../tabs.js'
-import { describeCron, nextScheduled } from '../../../core/watch/cron.js'
+import { nextScheduled } from '../../../core/watch/cron.js'
 import { relTime } from '../itemUi.js'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
-import { fmtUntil, grantIcon, grantLabel, runStatusText } from '../watchUi.js'
+import { cronText, fmtUntil, grantIcon, grantLabel, runStatusText } from '../watchUi.js'
 
 /** "5m ago", "3d ago" — or a plain date past two weeks, where "ago" would read wrong. */
 export const ago = (at: number): string => {
@@ -265,7 +265,7 @@ export function WatchesPage({
                             )}
                           </span>
                         </td>
-                        <td className="mono">{describeCron(w.schedule)}</td>
+                        <td className="mono">{cronText(w.schedule)}</td>
                         <td>
                           <span className={`mono${failed ? ' bad' : ''}`} title={w.configError ?? w.lastRunError ?? undefined}>
                             {w.configError
