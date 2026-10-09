@@ -157,6 +157,7 @@ import type {
   WatchPreviewStartResponse,
   WatchPreviewStatusResponse,
   WatchesResponse,
+  WatchRunsResponse,
   WorkItem,
   WorkspaceResponse,
   WorkspacesResponse,
@@ -218,7 +219,7 @@ import {
 } from '../core/sources/slack.js'
 import { scanUsage } from '../core/usage/ledger.js'
 import { summarize as summarizeUsage, summarizeBySession, summarizeModels } from '../core/usage/summary.js'
-import { decide, humanSpan, intervalOf, isCatchUpSpec, lookbackMs, parseCatchUp, scheduleOf, type SkipReason } from '../core/watch/schedule.js'
+import { budgetFor, decide, describeLateness, humanSpan, isCatchUpSpec, isOverdue, localMidnight, lookbackMs, missedSlots, parseCatchUp, scheduleOf, type SkipReason } from '../core/watch/schedule.js'
 import { cronFromCadence, isValidCron } from '../core/watch/cron.js'
 import {
   DEFAULT_WATCH_TIMEOUT_MS,
@@ -1613,6 +1614,8 @@ const GITHUB_TTL_MS = 5 * 60_000
 const GITHUB_LOOKBACK_MS = 14 * 86_400_000
 /** how many watch runs may execute at once (avoid the top-of-hour stampede) */
 const WATCH_CONCURRENCY = 2
+/** how long past its timeout a run may hang (the SDK ignored the abort) before the watchdog frees its slot */
+const WATCHDOG_GRACE_MS = 60_000
 const WATCH_TIMEOUT_KEY = 'watches.defaultTimeoutMs'
 const WATCH_BUDGET_KEY = 'watches.defaultBudgetUsd'
 const FOLDER_PROBE_TTL_MS = 10 * 60_000
@@ -1724,11 +1727,12 @@ function syncInbox(rt: WorkspaceRuntime): Promise<InboxSnapshot> {
       } else if (slackConnected(rt) === true && (await watchesEnabled(rt))) {
         // Honest empty state: surface any watch that failed or has gone overdue,
         // so "nothing here" is never confused with "the scan never looked".
-        for (const w of await rt.store.watches.list()) {
-          if (!w.enabled) continue
+        const enabled = (await rt.store.watches.list()).filter((w) => w.enabled)
+        const overdue = await overdueWatches(rt, enabled, now)
+        for (const w of enabled) {
           if (w.lastRunStatus === 'failed') {
             notices.push(`watch “${w.title}” last run failed${w.lastRunError ? `: ${w.lastRunError}` : ''}`)
-          } else if (overdueWatch(w, now)) {
+          } else if (overdue.has(w.id)) {
             notices.push(`watch “${w.title}” hasn’t completed a run recently — items from it may be missing`)
           }
         }
@@ -1782,10 +1786,10 @@ function sumTokens(usage: Record<string, unknown> | undefined): number {
   return tokens
 }
 
-/** A watch is overdue if no run has completed within a grace window past its cadence. */
-function overdueWatch(w: Watch, now: number): boolean {
-  const grace = 2 * (intervalOf(scheduleOf(w), now) ?? 86_400_000) + 3_600_000
-  return now - (w.lastRunAt ?? w.createdAt) > grace
+/** Which watches are overdue — no `ok` ledger row within grace (isOverdue). */
+async function overdueWatches(rt: WorkspaceRuntime, watches: Watch[], now: number): Promise<Set<string>> {
+  const lastOk = await rt.store.watchRuns.lastOkAt().catch(() => new Map<string, number>())
+  return new Set(watches.filter((w) => isOverdue(scheduleOf(w), w, lastOk.get(w.id), now)).map((w) => w.id))
 }
 
 /** The daemon's live status for one workspace, for the System modal. */
@@ -1828,7 +1832,7 @@ async function systemStatus(rt: WorkspaceRuntime): Promise<SystemStatus> {
     watches: {
       total: watches.length,
       enabled: enabled.length,
-      overdue: enabled.filter((w) => overdueWatch(w, now)).length,
+      overdue: (await overdueWatches(rt, enabled, now)).size,
       failing: enabled.filter((w) => w.lastRunStatus === 'failed' || w.lastRunStatus === 'timeout').length,
       configErrors: watches.filter((w) => w.configError).length,
     },
@@ -1867,11 +1871,23 @@ const SKIP_TEXT: Record<SkipReason, string> = {
   connector: 'a connector is not available',
 }
 
+/**
+ * The slot ledger is additive — a failed write must never break a run or a
+ * tick, so it is logged and swallowed.
+ */
+function ledger(rt: WorkspaceRuntime, write: Promise<unknown>): Promise<void> {
+  return write.then(
+    () => {},
+    (err) => log('warn', 'watch', `slot ledger write failed: ${err}`, { workspace: rt.meta.id }),
+  )
+}
+
 /** Record a skipped slot as a run receipt and move the due rule's clock. */
-async function recordSkip(rt: WorkspaceRuntime, w: Watch, reason: SkipReason, detail?: string): Promise<void> {
+async function recordSkip(rt: WorkspaceRuntime, w: Watch, reason: SkipReason, slot: number, detail?: string): Promise<void> {
   const now = Date.now()
   await rt.store.watches.markRunStarted(w.id, { startedAt: now })
   const error = `skipped (${reason}): ${detail ?? SKIP_TEXT[reason]}`
+  await ledger(rt, rt.store.watchRuns.insert({ watchId: w.id, slot, trigger: 'scheduled', status: 'skipped', reason: `${reason}: ${detail ?? SKIP_TEXT[reason]}`, startedAt: now, endedAt: now }))
   await rt.store.watches.recordRun(w.id, { lastRunAt: now, lastRunTokens: 0, lastRunMatches: 0, status: 'skipped', error })
   log('warn', 'scheduler', `${w.title}: ${error}`, { watchId: w.id, reason, workspace: rt.meta.id })
 }
@@ -1899,7 +1915,7 @@ async function runDueWatches(rt: WorkspaceRuntime, now = Date.now()): Promise<vo
     })
     if (d.action === 'idle') continue
     if (d.action === 'skip') {
-      await recordSkip(rt, w, d.reason, d.detail)
+      await recordSkip(rt, w, d.reason, d.slot, d.detail)
       continue
     }
     rt.runQueue.push({ id: w.id, trigger: d.trigger, slot: d.slot })
@@ -1930,16 +1946,43 @@ function pumpRunQueue(rt: WorkspaceRuntime): void {
     // The due rule's clock moves when the run starts — now, not after the
     // jitter — so a tick in between can't see a stale slot and skip it.
     const startedAt = Date.now()
+    const runId = randomUUID()
     void rt.store.watches.markRunStarted(run.id, { startedAt, trigger: run.trigger })
+    void ledger(rt, rt.store.watchRuns.insert({ id: runId, watchId: run.id, slot: run.slot, trigger: run.trigger, status: 'running', startedAt }))
     const jitter = run.trigger === 'manual' ? 0 : Math.floor(Math.random() * 3_000)
+    // The run's slot is freed exactly once: when it settles, or by the
+    // watchdog if it hangs past its timeout — else every later slot of this
+    // watch would skip as overlap until a restart.
+    let released = false
+    let dog: NodeJS.Timeout | undefined
+    const release = () => {
+      if (released) return
+      released = true
+      clearTimeout(dog)
+      rt.activeRuns -= 1
+      rt.runningWatches.delete(run.id)
+      pumpRunQueue(rt)
+    }
+    const arm = (timeoutMs: number) => {
+      clearTimeout(dog)
+      dog = setTimeout(() => {
+        if (released) return
+        const reason = `watchdog: still running ${humanSpan(Date.now() - startedAt)} after start, past its ${humanSpan(timeoutMs)} timeout`
+        log('error', 'watch', `${reason} — freeing its slot`, { watchId: run.id, workspace: rt.meta.id })
+        void ledger(rt, rt.store.watchRuns.finish(run.id, run.slot, { status: 'interrupted', reason, endedAt: Date.now() }))
+        release()
+      }, Math.max(0, startedAt + timeoutMs + WATCHDOG_GRACE_MS - Date.now()))
+    }
+    // until runWatch knows the watch's own timeout, the longest one allowed
+    arm(MAX_WATCH_TIMEOUT_MS)
     setTimeout(() => {
-      runWatch(rt, run, startedAt)
-        .catch((err) => log('error', 'watch', `run crashed: ${err}`, { workspace: rt.meta.id }))
-        .finally(() => {
-          rt.activeRuns -= 1
-          rt.runningWatches.delete(run.id)
-          pumpRunQueue(rt)
+      runWatch(rt, run, startedAt, runId, arm)
+        .catch(async (err) => {
+          log('error', 'watch', `run crashed: ${err}`, { workspace: rt.meta.id })
+          // a no-op when runWatch already closed the row
+          await ledger(rt, rt.store.watchRuns.finish(run.id, run.slot, { status: 'failed', reason: `run crashed: ${err}`, endedAt: Date.now() }))
         })
+        .finally(release)
     }, jitter)
   }
 }
@@ -2148,6 +2191,7 @@ type RunSpec = {
   output: WatchOutput
   schedule: string
   scope?: string
+  lateness?: string
 }
 
 type PreviewSpec = Omit<RunSpec, 'project'> & { projectId: string }
@@ -2269,6 +2313,7 @@ async function watchQuery(
     lookbackMs: lookbackMs(spec.schedule, now),
     nowIso: new Date(now).toISOString(),
     ...(spec.scope ? { scope: spec.scope } : {}),
+    ...(spec.lateness ? { lateness: spec.lateness } : {}),
   })
   const options: Options = {
     cwd: spec.project.path,
@@ -2411,14 +2456,41 @@ function notifyRun(rt: WorkspaceRuntime, w: Watch, status: WatchRunStatus, detai
  * receipt on the watch row and its own session row. Stateless (watch-spec.md,
  * item 4): nothing from this run feeds the next one's prompt.
  */
-async function runWatch(rt: WorkspaceRuntime, run: QueuedRun, startedMs: number): Promise<void> {
+async function runWatch(rt: WorkspaceRuntime, run: QueuedRun, startedMs: number, runId: string, armWatchdog: (timeoutMs: number) => void = () => {}): Promise<void> {
   const watch = await rt.store.watches.get(run.id)
-  if (!watch) return
+  if (!watch) {
+    await ledger(rt, rt.store.watchRuns.finish(run.id, run.slot, { status: 'skipped', reason: 'the watch was removed', endedAt: Date.now() }))
+    return
+  }
+  // A catch-up run stands in for every slot it slept through: each gets a
+  // `missed` row pointing at this run, so the gap shows in the ledger.
+  // It is also told how late it is, so it covers the gap and skips what's stale.
+  let lateness: string | undefined
+  if (run.trigger === 'catch_up') {
+    const missed = missedSlots(scheduleOf(watch), run.slot, startedMs)
+    if (missed.length) await ledger(rt, rt.store.watchRuns.insertMissed(watch.id, missed, runId, startedMs))
+    lateness = describeLateness(run.slot, missed, startedMs) ?? undefined
+  }
+  // The daily budget: over it, the slot is a `skipped_budget` row and no run;
+  // under it, this run may spend at most what is left of the day.
+  const limits = await watchLimits(rt, watch)
+  const spent = watch.dailyBudgetUsd != null ? await rt.store.watchRuns.spentSince(watch.id, localMidnight(startedMs)) : 0
+  const budget = budgetFor(limits.maxBudgetUsd, watch.dailyBudgetUsd, spent)
+  if (budget.skip) {
+    const now = Date.now()
+    await ledger(rt, rt.store.watchRuns.finish(watch.id, run.slot, { status: 'skipped_budget', reason: budget.reason, endedAt: now }))
+    await rt.store.watches.recordRun(watch.id, { lastRunAt: now, lastRunTokens: 0, lastRunMatches: 0, status: 'skipped', trigger: run.trigger, error: `skipped (budget): ${budget.reason}` })
+    log('warn', 'watch', `${watch.title}: skipped, ${budget.reason}`, { watchId: watch.id, workspace: rt.meta.id })
+    return
+  }
+  const runLimits = { timeoutMs: limits.timeoutMs, ...(budget.maxBudgetUsd != null ? { maxBudgetUsd: budget.maxBudgetUsd } : {}) }
+  armWatchdog(runLimits.timeoutMs)
   const projectRow = (await rt.store.projects.list()).find((p) => p.id === watch.projectId) ?? null
   if (!projectRow) {
     // The project went away: pause with a config error, never fall back to another folder.
     await rt.store.watches.patchState(watch.id, { enabled: false, configError: 'project removed — pick another project for this watch' })
     await rt.store.watches.recordRun(watch.id, { lastRunAt: Date.now(), lastRunTokens: 0, lastRunMatches: 0, status: 'skipped', trigger: run.trigger, error: 'skipped: the watch has no project' })
+    await ledger(rt, rt.store.watchRuns.finish(watch.id, run.slot, { status: 'skipped', reason: 'the watch has no project', endedAt: Date.now() }))
     log('warn', 'watch', `paused ${watch.title}: its project was removed`, { watchId: watch.id, workspace: rt.meta.id })
     return
   }
@@ -2432,6 +2504,7 @@ async function runWatch(rt: WorkspaceRuntime, run: QueuedRun, startedMs: number)
   })
   rt.rows.set(session.id, session)
   await rt.store.watches.markRunStarted(watch.id, { startedAt: startedMs, trigger: run.trigger, sessionId: session.id })
+  await ledger(rt, rt.store.watchRuns.attachSession(watch.id, run.slot, session.id))
   broadcastSessionList(rt)
   log('info', 'watch', `run started: ${watch.title} (${run.trigger})`, { watchId: watch.id, runId: session.id, tools: watch.tools.map(grantLabel), project: projectRow.name, model: watch.model, workspace: rt.meta.id })
 
@@ -2460,17 +2533,16 @@ async function runWatch(rt: WorkspaceRuntime, run: QueuedRun, startedMs: number)
 
   try {
     const project = await watchProject(rt, watch.projectId)
-    const limits = await watchLimits(rt, watch)
     timer = setTimeout(() => {
       timedOut = true
       abort.abort()
-    }, limits.timeoutMs)
+    }, runLimits.timeoutMs)
     const { prompt, options } = await watchQuery(
       rt,
-      { instruction: watch.instruction, tools: watch.tools, project, model: watch.model, output: watch.output, schedule: scheduleOf(watch), scope: watch.scope },
+      { instruction: watch.instruction, tools: watch.tools, project, model: watch.model, output: watch.output, schedule: scheduleOf(watch), scope: watch.scope, lateness },
       scanMcp,
       abort,
-      limits,
+      runLimits,
     )
     const q = query({ prompt, options })
     let sawResult = false
@@ -2491,7 +2563,7 @@ async function runWatch(rt: WorkspaceRuntime, run: QueuedRun, startedMs: number)
         if (typeof m.total_cost_usd === 'number') costUsd = m.total_cost_usd
       }
     }
-    if (resultSubtype === 'error_max_budget_usd') throw new Error(`budget cap reached ($${limits.maxBudgetUsd?.toFixed(2)})`)
+    if (resultSubtype === 'error_max_budget_usd') throw new Error(`budget cap reached ($${runLimits.maxBudgetUsd?.toFixed(2)})`)
     if (resultText.includes('no-connector-tools') || resultText.includes('no-slack-tools')) throw new Error(noConnectorError(watch.tools))
     if (!sawResult) throw new Error('scan ended without a result')
     status = 'ok'
@@ -2515,6 +2587,7 @@ async function runWatch(rt: WorkspaceRuntime, run: QueuedRun, startedMs: number)
       sessionId: session.id,
       error,
     })
+    await ledger(rt, rt.store.watchRuns.finish(watch.id, run.slot, { status, reason: error, sessionId: session.id, endedAt: Date.now(), costUsd }))
     // the run's own receipt, on its session row — powers the Activity view
     session.runStatus = status
     session.runMatches = matches
@@ -2547,6 +2620,7 @@ async function runWatch(rt: WorkspaceRuntime, run: QueuedRun, startedMs: number)
  */
 async function markInterruptedRuns(rt: WorkspaceRuntime): Promise<void> {
   const error = 'interrupted: triage stopped during the run'
+  await ledger(rt, rt.store.watchRuns.sweepInterrupted(Date.now(), error))
   for (const row of rt.rows.values()) {
     if (row.kind !== 'watch-run' || row.runStatus) continue
     const events = await rt.store.events.read(row.id)
@@ -3219,6 +3293,11 @@ function watchPatchFrom(raw: unknown): { patch: WatchPatch } | { error: string }
     const b = r.maxBudgetUsd
     if (b !== null && (typeof b !== 'number' || !Number.isFinite(b) || b <= 0 || b > 100)) return { error: 'maxBudgetUsd must be null or dollars from 0.01 to 100' }
     patch.maxBudgetUsd = b as number | null
+  }
+  if (r.dailyBudgetUsd !== undefined) {
+    const b = r.dailyBudgetUsd
+    if (b !== null && (typeof b !== 'number' || !Number.isFinite(b) || b <= 0 || b > 1000)) return { error: 'dailyBudgetUsd must be null or dollars from 0.01 to 1000' }
+    patch.dailyBudgetUsd = b as number | null
   }
   if (r.notify !== undefined) {
     if (!WATCH_NOTIFY.includes(r.notify as WatchNotify)) return { error: `notify must be one of: ${WATCH_NOTIFY.join(', ')}` }
@@ -5799,6 +5878,7 @@ const server = http.createServer(async (req, res) => {
           ...(p.catchUpWindow ? { catchUpWindow: p.catchUpWindow } : {}),
           ...(p.timeoutMs != null ? { timeoutMs: p.timeoutMs } : {}),
           ...(p.maxBudgetUsd != null ? { maxBudgetUsd: p.maxBudgetUsd } : {}),
+          ...(p.dailyBudgetUsd != null ? { dailyBudgetUsd: p.dailyBudgetUsd } : {}),
           notify: p.notify ?? 'on_failure',
           consecutiveFailures: 0,
           // "Run once now" off: the first run waits for the next slot.
@@ -6021,6 +6101,25 @@ const server = http.createServer(async (req, res) => {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
     json(body.ok ? 200 : 502, body)
+    return
+  }
+  // The slot ledger for one watch — the watch page's Runs table.
+  if (url.pathname === '/api/watches/runs' && req.method === 'GET') {
+    let body: WatchRunsResponse
+    let status = 200
+    try {
+      const id = url.searchParams.get('id') ?? ''
+      if (!(await rt.store.watches.get(id))) {
+        status = 404
+        throw new Error('unknown watch id')
+      }
+      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 100))
+      body = { ok: true, runs: await rt.store.watchRuns.list(id, limit) }
+    } catch (err) {
+      if (status === 200) status = 502
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    json(status, body)
     return
   }
   // The items one run produced (provenance runId === sessionId).

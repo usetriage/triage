@@ -924,10 +924,15 @@ export type PickFolderResponse =
 // server-side leaks into the browser bundle.
 // ---------------------------------------------------------------------------
 
-export type { NewWatch, Watch, WatchCadence, WatchConnector, WatchDraft, WatchNotify, WatchOutput, WatchPreviewResult, WatchPreviewRow, WatchRunStatus, WatchRunTrigger, WatchToolGrant } from '../core/watch/types.js'
+export type { NewWatch, Watch, WatchCadence, WatchConnector, WatchDraft, WatchNotify, WatchOutput, WatchPreviewResult, WatchPreviewRow, WatchRunStatus, WatchRunTrigger, WatchSlotRun, WatchSlotStatus, WatchToolGrant } from '../core/watch/types.js'
 
 export type WatchesResponse =
   | { ok: true; watches: import('../core/watch/types.js').Watch[] }
+  | { ok: false; error: string }
+
+/** GET /api/watches/runs?id= — the slot ledger for one watch, newest slot first. */
+export type WatchRunsResponse =
+  | { ok: true; runs: import('../core/watch/types.js').WatchSlotRun[] }
   | { ok: false; error: string }
 
 export type WatchDraftResponse =
