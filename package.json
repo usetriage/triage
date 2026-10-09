@@ -24,6 +24,7 @@
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "dev:copy-prod": "node scripts/copy-prod.mjs",
     "clear-port": "./clear-port.sh",
     "smoke": "node scripts/smoke.mjs",
     "smoke:mcp": "node scripts/smoke-mcp.mjs",

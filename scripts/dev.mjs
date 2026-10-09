@@ -4,9 +4,16 @@
 // Deliberately not `tsx watch` for the server — a restart drops every live
 // Claude subprocess. Restart it by hand when you change server code.
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import path from 'node:path'
 import './dev-home.mjs' // TRIAGE_HOME → ~/.triage-dev unless already set
 
 process.env.PORT ||= '5188'
+
+console.log(`data: ${process.env.TRIAGE_HOME}`)
+if (!existsSync(path.join(process.env.TRIAGE_HOME, 'workspaces.json'))) {
+  console.log('  empty — stop dev and run `npm run dev:copy-prod` to start from a copy of prod')
+}
 
 const procs = [
   { name: 'server', color: '\x1b[33m', cmd: 'tsx', args: ['server/index.ts'] },
