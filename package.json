@@ -29,7 +29,7 @@
     "smoke:mcp": "node scripts/smoke-mcp.mjs",
     "typecheck": "tsc -p tsconfig.server.json && tsc -p tsconfig.web.json",
     "test": "node --import tsx --test test/*.test.ts",
-    "dev:server": "tsx server/index.ts",
+    "dev:server": "tsx --import ./scripts/dev-home.mjs server/index.ts",
     "mcp": "tsx server/mcp.ts",
     "dev:web": "vite",
     "build": "rm -rf dist && vite build && tsc -p tsconfig.publish.json",

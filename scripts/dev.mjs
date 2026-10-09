@@ -4,6 +4,7 @@
 // Deliberately not `tsx watch` for the server — a restart drops every live
 // Claude subprocess. Restart it by hand when you change server code.
 import { spawn } from 'node:child_process'
+import './dev-home.mjs' // TRIAGE_HOME → ~/.triage-dev unless already set
 
 process.env.PORT ||= '5188'
 
