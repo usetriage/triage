@@ -95,6 +95,8 @@ export interface Watch {
   maxBudgetUsd?: number
   /** dollars this watch may spend per local day, across all its runs; omitted = no daily cap */
   dailyBudgetUsd?: number
+  /** the file this watch's config lives in (`watches/<file>.md`); omitted = a row from before watch files */
+  file?: string
   /** when to post a macOS notification about a run */
   notify: WatchNotify
   /** model alias or wire id for the run; omitted = Claude Code's own default */
@@ -149,6 +151,7 @@ export type NewWatch = Pick<Watch, 'title' | 'instruction' | 'schedule' | 'creat
   timeoutMs?: number | null
   maxBudgetUsd?: number | null
   dailyBudgetUsd?: number | null
+  file?: string
   notify?: WatchNotify
   /** legacy; defaults to a coarse bucket when omitted */
   cadence?: WatchCadence

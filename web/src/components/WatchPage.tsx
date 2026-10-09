@@ -425,6 +425,8 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
               <span className="v">{watch.notify === 'on_failure' ? 'on failure' : watch.notify}</span>
               <span className="k">Next due</span>
               <span className="v">{watch.configError ? 'blocked' : nextDue != null ? fmtWhen(nextDue) : watch.enabled ? '—' : 'paused'}</span>
+              <span className="k">File</span>
+              <span className="v mono">{watch.file ? `watches/${watch.file}.md` : 'none yet — Save it to move it into a file'}</span>
               <span className="k">Created</span>
               <span className="v">{new Date(watch.createdAt).toLocaleDateString()}</span>
               {watch.scope && (

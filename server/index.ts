@@ -238,6 +238,7 @@ import {
   type WatchRunTrigger,
 } from '../core/watch/types.js'
 import { composeRunPrompt, MAX_ROWS_PER_RUN } from '../core/watch/connectors.js'
+import { WatchFiles, checkGrants, parseWatchFile, type WatchFileSpec } from './watch-files.js'
 import {
   grantLabel,
   grantsFrom,
@@ -541,6 +542,12 @@ class WorkspaceRuntime {
 
   // Teams (server/teams.ts): agents and teams are files; runs persist under `team_runs`.
   readonly teamLibrary: TeamLibrary
+  // Watches are files (server/watch-files.ts); rows hold their state.
+  readonly watchFiles: WatchFiles
+  /** what the last file sync saw — files, projects, probes; unchanged = nothing to do */
+  watchSyncSig = ''
+  /** syncs run one at a time: the tick and an API call can't interleave */
+  watchSync: Promise<void> = Promise.resolve()
   readonly teamRuns = new Map<string, StoredTeamRun>()
   /** session id → its run and which member it is, mirrored from `teamRuns` */
   readonly sessionTeam = new Map<string, { runId: string; member: string }>()
@@ -570,6 +577,7 @@ class WorkspaceRuntime {
     this.dispatchDir = path.join(workspaceDir(meta.id), 'dispatch')
     this.attachmentsDir = path.join(workspaceDir(meta.id), 'attachments')
     this.teamLibrary = new TeamLibrary(workspaceDir(meta.id))
+    this.watchFiles = new WatchFiles(workspaceDir(meta.id))
     this.triageMcp = () => makeTriageMcp(this)
     this.terminals = new TerminalManager(
       (msg) => broadcast(this, msg),
@@ -1621,7 +1629,6 @@ const WATCH_BUDGET_KEY = 'watches.defaultBudgetUsd'
 const FOLDER_PROBE_TTL_MS = 10 * 60_000
 
 const REPOS_KEY = 'github.repos'
-const WATCHES_SEEDED_KEY = 'watches.seeded'
 
 /** when the scheduler last ticked — daemon-wide, surfaced in the System status. */
 let lastSchedulerTickAt: number | null = null
@@ -1899,6 +1906,7 @@ async function recordSkip(rt: WorkspaceRuntime, w: Watch, reason: SkipReason, sl
 async function runDueWatches(rt: WorkspaceRuntime, now = Date.now()): Promise<void> {
   // The global switch (Settings → Sources) — off means the scheduler never runs a watch.
   if (!(await watchesEnabled(rt))) return
+  await syncWatchFiles(rt).catch(() => {}) // logged by the sync; a bad file never stops the tick
   const projects = await rt.store.projects.list()
   for (const w of await rt.store.watches.list()) {
     if (!w.enabled || w.configError) continue
@@ -2681,6 +2689,7 @@ async function migrateWatchProjects(rt: WorkspaceRuntime): Promise<void> {
   }
   const projects = await rt.store.projects.list()
   for (const w of await rt.store.watches.list()) {
+    if (w.file) continue // a file watch's project is checked on every sync
     if (w.projectId && projects.some((p) => p.id === w.projectId)) continue
     if (w.configError && !w.enabled) continue
     await rt.store.watches.patchState(w.id, { projectId: null, enabled: false, configError: NEEDS_PROJECT })
@@ -2688,50 +2697,187 @@ async function migrateWatchProjects(rt: WorkspaceRuntime): Promise<void> {
   }
 }
 
+/** The built-in templates as watch files: paused, asking for a project. */
+const WATCH_TEMPLATE_FILES: Record<string, WatchFileSpec> = Object.fromEntries(
+  WATCH_TEMPLATES.map((t) => [
+    t.templateId,
+    { id: `template-${t.templateId}`, title: t.title, schedule: t.schedule, project: '', tools: t.tools, output: 'items', notify: 'on_failure', enabled: false, instruction: t.instruction },
+  ]),
+)
+
 /**
- * Install any built-in template the user has never been offered — tracked per
- * template id, not by a single "seeded" flag. So the built-ins appear even when
- * the user already has custom watches (the old "seed only if empty" rule left
- * DBs that predated seeding with no built-ins at all), a template already
- * present is never duplicated, and one the user deleted is never re-added.
- * Per-workspace: each workspace's config table tracks its own seeding.
+ * Install the built-in templates as files in `watches/`, tracked in its
+ * `.seeded.json` (teams' pattern): an untouched one follows upgrades, an edited
+ * one is the user's, a deleted one stays deleted.
  */
 async function seedWatchTemplates(rt: WorkspaceRuntime): Promise<void> {
-  // The key used to hold a boolean; it now holds the list of seeded template ids.
-  // A legacy boolean coerces to "none seeded yet" so the built-ins get installed.
-  const raw = await rt.store.config.get<unknown>(WATCHES_SEEDED_KEY)
-  const seeded = new Set<string>(Array.isArray(raw) ? (raw as string[]) : [])
-  const watches = await rt.store.watches.list()
+  await rt.watchFiles.seed(WATCH_TEMPLATE_FILES)
+  await syncWatchFiles(rt, { force: true })
+}
+
+/** A row saved before watch files: shown, never run, until it is saved as a file. */
+const LEGACY_WATCH = 'saved before watch files — open it and Save to move it into watches/, or recreate it'
+
+/** A watch file's spec → the row's config columns. */
+function watchConfigFrom(spec: WatchFileSpec, file: string) {
+  return {
+    title: spec.title,
+    instruction: spec.instruction,
+    schedule: spec.schedule,
+    tools: spec.tools,
+    projectId: spec.project,
+    model: spec.model,
+    output: spec.output,
+    catchUpWindow: spec.catchUp ?? null,
+    timeoutMs: spec.timeoutMs ?? null,
+    maxBudgetUsd: spec.budgetUsd ?? null,
+    dailyBudgetUsd: spec.dailyBudgetUsd ?? null,
+    notify: spec.notify,
+    enabled: spec.enabled,
+    file,
+  }
+}
+
+/** A watch (row or patched row) → the file that says the same. */
+function watchSpecFrom(w: Watch): WatchFileSpec {
+  return {
+    id: w.id,
+    title: w.title,
+    schedule: scheduleOf(w),
+    project: w.projectId ?? '',
+    tools: w.tools,
+    ...(w.model ? { model: w.model } : {}),
+    output: w.output,
+    ...(w.catchUpWindow ? { catchUp: w.catchUpWindow } : {}),
+    ...(w.timeoutMs != null ? { timeoutMs: w.timeoutMs } : {}),
+    ...(w.maxBudgetUsd != null ? { budgetUsd: w.maxBudgetUsd } : {}),
+    ...(w.dailyBudgetUsd != null ? { dailyBudgetUsd: w.dailyBudgetUsd } : {}),
+    notify: w.notify,
+    enabled: w.enabled,
+    instruction: w.instruction,
+  }
+}
+
+type WatchConfig = ReturnType<typeof watchConfigFrom>
+const configKey = (w: Pick<Watch, Exclude<keyof WatchConfig, 'catchUpWindow' | 'timeoutMs' | 'maxBudgetUsd' | 'dailyBudgetUsd'>> & {
+  catchUpWindow?: string | null
+  timeoutMs?: number | null
+  maxBudgetUsd?: number | null
+  dailyBudgetUsd?: number | null
+}) =>
+  JSON.stringify([
+    w.title, w.instruction, w.schedule, w.tools, w.projectId || '', w.model ?? null, w.output, w.catchUpWindow ?? null,
+    w.timeoutMs ?? null, w.maxBudgetUsd ?? null, w.dailyBudgetUsd ?? null, w.notify, w.enabled, w.file ?? null,
+  ])
+
+/**
+ * Bring the rows in line with `watches/*.md`. Cheap when nothing moved: it
+ * re-reads only when a file, the project list or a connector probe changed
+ * (or `force`). A file is never trusted blindly — anything that fails the
+ * schema, names a missing project or a tool the probe doesn't know becomes a
+ * config error on its row, which holds the watch; it never throws. A file
+ * without an id (hand-written) or with a copied one gets its own, written
+ * back. A row whose file is gone is deleted like any watch; a row from before
+ * files is held as legacy.
+ */
+function syncWatchFiles(rt: WorkspaceRuntime, opts: { force?: boolean; deferFirstRun?: string } = {}): Promise<void> {
+  const run = rt.watchSync.then(() => syncWatchFilesNow(rt, opts))
+  rt.watchSync = run.catch((err) => log('error', 'watch', `watch file sync failed: ${err}`, { workspace: rt.meta.id }))
+  return run
+}
+
+async function syncWatchFilesNow(rt: WorkspaceRuntime, { force = false, deferFirstRun }: { force?: boolean; deferFirstRun?: string }): Promise<void> {
+  const files = await rt.watchFiles.scan()
+  const projects = await rt.store.projects.list()
+  const sig = JSON.stringify([
+    files.map((f) => [f.name, f.mtimeMs]),
+    projects.map((p) => [p.id, p.path]),
+    rt.connectorCache?.probedAt ?? 0,
+    [...rt.folderProbes].map(([k, v]) => [k, v.probedAt]),
+  ])
+  if (!force && sig === rt.watchSyncSig) return
+  const rows = await rt.store.watches.list()
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const seen = new Set<string>()
   const now = Date.now()
-  for (const t of WATCH_TEMPLATES) {
-    if (seeded.has(t.templateId)) continue
-    // Already present (e.g. seeded by the older flag-based path)? Record, don't duplicate.
-    if (!watches.some((w) => w.templateId === t.templateId)) {
+  for (const f of files) {
+    const parsed = parseWatchFile(f.name, f.text)
+    let spec = parsed.spec
+    const errors = [...parsed.errors]
+    if (!parsed.hadId || seen.has(spec.id)) {
+      // a copied file arrives with its original's id: the copy gets its own
+      if (parsed.hadId) spec = { ...spec, id: randomUUID() }
+      await rt.watchFiles.stampId(f.name, spec.id).catch((err) => errors.push(`could not write an id into the file: ${err}`))
+    }
+    seen.add(spec.id)
+    const project = projects.find((p) => p.id === spec.project) ?? null
+    if (!spec.project) errors.push(NEEDS_PROJECT)
+    else if (!project) errors.push(`unknown project "${spec.project}" — pick another project for this watch`)
+    const probes = [rt.connectorCache, project ? rt.folderProbes.get(project.path) : undefined].filter((p): p is ConnectorProbe => p != null)
+    const checked = checkGrants(spec.tools, probes.length ? probes.flatMap((p) => p.connectors) : null)
+    errors.push(...checked.errors)
+    const cfg = watchConfigFrom({ ...spec, tools: checked.tools }, f.name)
+    const configError = errors.length ? errors.join('; ') : null
+    const row = byId.get(spec.id)
+    if (!row) {
       await rt.store.watches.create({
-        id: randomUUID(),
+        ...cfg,
+        id: spec.id,
         source: 'slack',
-        title: t.title,
         scope: '',
-        tools: t.tools,
-        // Templates can't guess a folder: they arrive paused, asking for a project.
-        projectId: '',
-        configError: NEEDS_PROJECT,
-        output: 'items',
-        notify: 'on_failure',
+        model: cfg.model,
+        catchUpWindow: cfg.catchUpWindow ?? undefined,
+        timeoutMs: cfg.timeoutMs ?? undefined,
+        maxBudgetUsd: cfg.maxBudgetUsd ?? undefined,
+        dailyBudgetUsd: cfg.dailyBudgetUsd ?? undefined,
+        cadence: 'daily',
+        createsItems: true,
         consecutiveFailures: 0,
-        instruction: t.instruction,
-        schedule: t.schedule,
-        cadence: t.cadence,
-        createsItems: t.createsItems,
-        enabled: false,
-        templateId: t.templateId,
+        ...(configError ? { configError } : {}),
+        // never run → due at once ("run once now"), unless the creator said wait
+        ...(deferFirstRun === spec.id ? { lastRunStartedAt: now } : {}),
         createdAt: now,
         updatedAt: now,
       })
+      log('info', 'watch', `loaded ${f.name}.md${configError ? ` — held: ${configError}` : ''}`, { watchId: spec.id, workspace: rt.meta.id })
+      continue
     }
-    seeded.add(t.templateId)
+    if (configKey(row) !== configKey(cfg)) {
+      await rt.store.watches.update(row.id, cfg)
+      // Turned on: wait for the next slot, no burst of catch-up runs.
+      if (cfg.enabled && !row.enabled) await rt.store.watches.patchState(row.id, { lastRunStartedAt: now })
+      log('info', 'watch', `reloaded ${f.name}.md`, { watchId: row.id, workspace: rt.meta.id })
+    }
+    if ((row.configError ?? null) !== configError) {
+      await rt.store.watches.patchState(row.id, { configError })
+      if (configError) log('warn', 'watch', `${f.name}.md is held: ${configError}`, { watchId: row.id, workspace: rt.meta.id })
+    }
   }
-  await rt.store.config.set(WATCHES_SEEDED_KEY, [...seeded])
+  for (const r of rows) {
+    if (seen.has(r.id)) continue
+    if (r.file) await deleteWatch(rt, r.id, 'its file was deleted')
+    else if (r.configError !== LEGACY_WATCH) await rt.store.watches.patchState(r.id, { configError: LEGACY_WATCH })
+  }
+  // only a sync that got this far counts; one that threw is retried next tick
+  rt.watchSyncSig = sig
+}
+
+/**
+ * Drop a watch's row. Never hard-delete its items: this watch's open and
+ * snoozed ones are archived with a recorded reason (.docs/watches-v2.md).
+ */
+async function deleteWatch(rt: WorkspaceRuntime, id: string, why: string): Promise<void> {
+  let archived = 0
+  for (const it of await rt.store.items.listAll()) {
+    const fromWatch = it.watchId === id || (it.foundBy ?? []).some((p) => p.watchId === id)
+    if (fromWatch && (it.status === 'open' || it.status === 'snoozed')) {
+      await rt.store.items.transition(it.id, { status: 'archived', actor: 'system', detail: { reason: 'watch deleted' } })
+      archived += 1
+    }
+  }
+  await rt.store.watches.remove(id)
+  rt.inboxCache = null
+  log('info', 'watch', `deleted watch ${id} (${why}); archived ${archived} item(s)`, { watchId: id, archived, workspace: rt.meta.id })
 }
 
 // The minute tick (.docs/watches.md): due watches run, elapsed snoozes wake — in
@@ -3105,6 +3251,7 @@ async function initRuntime(rt: WorkspaceRuntime): Promise<void> {
   await migrateWatchProjects(rt)
   // Watches are off by default in 0.7 (.docs/next-version.md); seeding follows the switch.
   if (await watchesEnabled(rt)) await seedWatchTemplates(rt)
+  else await syncWatchFiles(rt, { force: true }).catch(() => {})
   await bootBriefs(rt)
   await rt.teamLibrary.seed().catch((err) => log('error', 'teams', `could not seed agents and teams: ${err}`, { workspace: rt.meta.id }))
   await loadTeamRuns(rt)
@@ -5854,6 +6001,8 @@ const server = http.createServer(async (req, res) => {
     let body: WatchesResponse
     let status = 200
     try {
+      // Watches are files: create and edit write `watches/<name>.md`, then sync
+      // the row from it — the same path a hand edit takes.
       if (req.method === 'POST') {
         const parsed = watchPatchFrom(await readJsonBody(req))
         if ('error' in parsed) throw new Error(parsed.error)
@@ -5865,35 +6014,27 @@ const server = http.createServer(async (req, res) => {
         if (!(await rt.store.projects.list()).some((pr) => pr.id === p.projectId)) throw new Error('unknown project')
         // Schedule is the source of truth; accept a legacy cadence as a fallback.
         const schedule = p.schedule ?? (p.cadence ? cronFromCadence(p.cadence, p.windowStart, p.windowDay) : '0 9 * * *')
-        const now = Date.now()
-        await rt.store.watches.create({
+        const spec: WatchFileSpec = {
           id: randomUUID(),
-          source: 'slack',
           title: p.title,
-          scope: p.scope ?? '',
+          schedule,
+          project: p.projectId,
           tools: p.tools,
-          projectId: p.projectId,
-          model: p.model,
+          ...(p.model ? { model: p.model } : {}),
           output: p.output ?? 'items',
-          ...(p.catchUpWindow ? { catchUpWindow: p.catchUpWindow } : {}),
+          ...(p.catchUpWindow ? { catchUp: p.catchUpWindow } : {}),
           ...(p.timeoutMs != null ? { timeoutMs: p.timeoutMs } : {}),
-          ...(p.maxBudgetUsd != null ? { maxBudgetUsd: p.maxBudgetUsd } : {}),
+          ...(p.maxBudgetUsd != null ? { budgetUsd: p.maxBudgetUsd } : {}),
           ...(p.dailyBudgetUsd != null ? { dailyBudgetUsd: p.dailyBudgetUsd } : {}),
           notify: p.notify ?? 'on_failure',
-          consecutiveFailures: 0,
-          // "Run once now" off: the first run waits for the next slot.
-          ...(p.runOnceNow === false ? { lastRunStartedAt: now } : {}),
-          instruction: p.instruction,
-          schedule,
-          cadence: p.cadence ?? 'daily',
-          windowStart: p.windowStart,
-          windowDay: p.windowDay,
           enabled: p.enabled ?? true,
-          createsItems: p.createsItems ?? true,
-          createdAt: now,
-          updatedAt: now,
-        })
-        log('info', 'watch', `created: ${p.title}`, { tools: p.tools.map(grantLabel), schedule, workspace: rt.meta.id })
+          instruction: p.instruction,
+        }
+        const name = rt.watchFiles.freeName(p.title)
+        await rt.watchFiles.write(name, spec)
+        // "Run once now" off: the first run waits for the next slot.
+        await syncWatchFiles(rt, { force: true, ...(p.runOnceNow === false ? { deferFirstRun: spec.id } : {}) })
+        log('info', 'watch', `created: ${p.title} (watches/${name}.md)`, { tools: p.tools.map(grantLabel), schedule, workspace: rt.meta.id })
         // active on the next scheduler tick (never run → due immediately, unless runOnceNow was off)
       } else if (req.method === 'PUT') {
         const id = url.searchParams.get('id')
@@ -5905,30 +6046,24 @@ const server = http.createServer(async (req, res) => {
           throw new Error('unknown project')
         }
         const { runOnceNow: _ignored, ...patch } = parsed.patch
-        await rt.store.watches.update(id, patch)
-        // A valid project fixes a "project removed" config error.
-        if (patch.projectId && existing.configError) await rt.store.watches.patchState(id, { configError: null })
-        // Re-enabling waits for the next slot: no burst of catch-up runs.
-        if (patch.enabled === true && !existing.enabled) await rt.store.watches.patchState(id, { lastRunStartedAt: Date.now() })
-        if (patch.enabled === true && existing.configError && !patch.projectId) throw new Error(existing.configError)
-        log('info', 'watch', `updated: ${parsed.patch.title ?? existing.title}`, { watchId: id, workspace: rt.meta.id })
+        // A legacy row gets its first file here — saving it is the way across.
+        const name = existing.file ?? rt.watchFiles.freeName(patch.title ?? existing.title)
+        const merged = { ...existing, ...patch } as Watch
+        if (patch.schedule) merged.schedule = patch.schedule
+        await rt.watchFiles.write(name, watchSpecFrom(merged))
+        await syncWatchFiles(rt, { force: true })
+        const after = await rt.store.watches.get(id)
+        if (patch.enabled === true && after?.configError) throw new Error(after.configError)
+        log('info', 'watch', `updated: ${merged.title} (watches/${name}.md)`, { watchId: id, workspace: rt.meta.id })
       } else if (req.method === 'DELETE') {
         const id = url.searchParams.get('id')
-        if (id) {
-          // Never hard-delete the items: archive this watch's open/snoozed items
-          // with a recorded reason, then drop the watch row (.docs/watches-v2.md).
-          let archived = 0
-          for (const it of await rt.store.items.listAll()) {
-            const fromWatch = it.watchId === id || (it.foundBy ?? []).some((p) => p.watchId === id)
-            if (fromWatch && (it.status === 'open' || it.status === 'snoozed')) {
-              await rt.store.items.transition(it.id, { status: 'archived', actor: 'system', detail: { reason: 'watch deleted' } })
-              archived += 1
-            }
-          }
-          await rt.store.watches.remove(id)
-          rt.inboxCache = null
-          log('info', 'watch', `deleted watch ${id}; archived ${archived} item(s)`, { watchId: id, archived, workspace: rt.meta.id })
+        const existing = id ? await rt.store.watches.get(id) : null
+        if (id && existing) {
+          if (existing.file) await rt.watchFiles.remove(existing.file)
+          await deleteWatch(rt, id, 'deleted by the user')
         }
+      } else {
+        await syncWatchFiles(rt)
       }
       body = { ok: true, watches: await rt.store.watches.list() }
     } catch (err) {

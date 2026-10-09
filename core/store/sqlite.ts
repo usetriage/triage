@@ -304,6 +304,8 @@ const MIGRATIONS: string[] = [
    );`,
   // 23: a per-watch daily spend cap, summed from the ledger.
   `ALTER TABLE watches ADD COLUMN daily_budget_usd REAL;`,
+  // 24: watches as files — the row is state, keyed by the file's id; this names the file.
+  `ALTER TABLE watches ADD COLUMN file TEXT;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -441,7 +443,7 @@ function ensureDurableSchema(db: DatabaseSync) {
   ensure('watches', 'output', 'output TEXT', w)
   for (const [col, decl] of [
     ['tools', 'tools TEXT'], ['config_error', 'config_error TEXT'], ['catch_up_window', 'catch_up_window TEXT'],
-    ['timeout_ms', 'timeout_ms INTEGER'], ['max_budget_usd', 'max_budget_usd REAL'], ['daily_budget_usd', 'daily_budget_usd REAL'], ['notify', 'notify TEXT'],
+    ['timeout_ms', 'timeout_ms INTEGER'], ['max_budget_usd', 'max_budget_usd REAL'], ['daily_budget_usd', 'daily_budget_usd REAL'], ['file', 'file TEXT'], ['notify', 'notify TEXT'],
     ['consecutive_failures', 'consecutive_failures INTEGER NOT NULL DEFAULT 0'],
     ['last_run_started_at', 'last_run_started_at INTEGER'], ['last_run_new', 'last_run_new INTEGER'], ['last_run_trigger', 'last_run_trigger TEXT'],
   ]) ensure('watches', col, decl, w)
@@ -795,6 +797,7 @@ type WatchRow = {
   timeout_ms: number | null
   max_budget_usd: number | null
   daily_budget_usd: number | null
+  file: string | null
   notify: string | null
   consecutive_failures: number | null
   last_run_started_at: number | null
@@ -852,6 +855,7 @@ const toWatch = (r: WatchRow): Watch => ({
   ...(r.timeout_ms != null ? { timeoutMs: r.timeout_ms } : {}),
   ...(r.max_budget_usd != null ? { maxBudgetUsd: r.max_budget_usd } : {}),
   ...(r.daily_budget_usd != null ? { dailyBudgetUsd: r.daily_budget_usd } : {}),
+  ...(r.file ? { file: r.file } : {}),
   notify: WATCH_NOTIFY.includes(r.notify as WatchNotify) ? (r.notify as WatchNotify) : 'on_failure',
   consecutiveFailures: r.consecutive_failures ?? 0,
   model: r.model ?? undefined,
@@ -895,9 +899,9 @@ class SqliteWatches implements WatchStore {
       .prepare(
         `INSERT INTO watches (id, source, title, scope, instruction, cadence, window_start, window_day,
            schedule, enabled, creates_items, cursor, last_run_at, last_run_tokens, last_run_matches, template_id,
-           tools, project_id, model, output, catch_up_window, timeout_ms, max_budget_usd, daily_budget_usd, notify,
+           tools, project_id, model, output, catch_up_window, timeout_ms, max_budget_usd, daily_budget_usd, file, notify,
            config_error, last_run_started_at, consecutive_failures, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       )
       .run(
         w.id, w.source, w.title, w.scope, w.instruction, w.cadence,
@@ -906,7 +910,7 @@ class SqliteWatches implements WatchStore {
         w.enabled ? 1 : 0, w.createsItems ? 1 : 0,
         w.templateId ?? null,
         JSON.stringify(w.tools), w.projectId || null, w.model ?? null, w.output,
-        w.catchUpWindow ?? null, w.timeoutMs ?? null, w.maxBudgetUsd ?? null, w.dailyBudgetUsd ?? null, w.notify,
+        w.catchUpWindow ?? null, w.timeoutMs ?? null, w.maxBudgetUsd ?? null, w.dailyBudgetUsd ?? null, w.file ?? null, w.notify,
         w.configError ?? null, w.lastRunStartedAt ?? null,
         w.createdAt, w.updatedAt,
       )
@@ -922,7 +926,7 @@ class SqliteWatches implements WatchStore {
       .prepare(
         `UPDATE watches SET title = ?, scope = ?, instruction = ?, cadence = ?, window_start = ?,
            window_day = ?, schedule = ?, enabled = ?, creates_items = ?, tools = ?, project_id = ?, model = ?, output = ?,
-           catch_up_window = ?, timeout_ms = ?, max_budget_usd = ?, daily_budget_usd = ?, notify = ?, updated_at = ? WHERE id = ?`,
+           catch_up_window = ?, timeout_ms = ?, max_budget_usd = ?, daily_budget_usd = ?, file = ?, notify = ?, updated_at = ? WHERE id = ?`,
       )
       .run(
         next.title, next.scope ?? '', next.instruction, next.cadence,
@@ -930,7 +934,7 @@ class SqliteWatches implements WatchStore {
         next.schedule,
         next.enabled ? 1 : 0, next.createsItems ? 1 : 0,
         JSON.stringify(next.tools), next.projectId || null, next.model ?? null, next.output ?? 'items',
-        opt(next.catchUpWindow), opt(next.timeoutMs), opt(next.maxBudgetUsd), opt(next.dailyBudgetUsd), next.notify ?? 'on_failure',
+        opt(next.catchUpWindow), opt(next.timeoutMs), opt(next.maxBudgetUsd), opt(next.dailyBudgetUsd), next.file ?? null, next.notify ?? 'on_failure',
         Date.now(), id,
       )
   }
