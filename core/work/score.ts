@@ -4,6 +4,7 @@
  * Blocking impact ranks above recency: base weight by kind, then how many
  * humans are waiting, then how long they've waited.
  */
+import { LABELS, labelOf } from './labels.js'
 import type { Group, ItemKind, ScoredItem, WorkItem } from './types.js'
 
 export const BASE: Record<ItemKind, number> = {
@@ -54,8 +55,18 @@ export const WAIT_CAP_DAYS = 14
  * Humans waiting age fast; your own rotting work ages slower, so an old stale PR
  * can never outrank a fresh review request that blocks a person.
  */
-export function ageWeightFor(kind: ItemKind): number {
-  return GROUP[kind] === 'blocking' ? 4 : 2
+export function ageWeightFor(group: Group): number {
+  return group === 'blocking' ? 4 : 2
+}
+
+/**
+ * Weight and group: a scanner kind keeps its own; a watch hit takes its
+ * label's, so what the run judged it to be decides where it ranks.
+ */
+function placeOf(item: WorkItem): { base: number; group: Group } {
+  if (item.kind !== 'watch-hit') return { base: BASE[item.kind], group: GROUP[item.kind] }
+  const def = LABELS[labelOf(item)]
+  return { base: def.weight, group: def.group }
 }
 
 export function daysSince(iso: string, now = Date.now()): number {
@@ -64,17 +75,19 @@ export function daysSince(iso: string, now = Date.now()): number {
 
 export function scoreItem(item: WorkItem, now = Date.now()): ScoredItem {
   const waitDays = daysSince(item.updatedAt, now)
-  const ageWeight = ageWeightFor(item.kind)
+  const { base, group } = placeOf(item)
+  const ageWeight = ageWeightFor(group)
   let score =
-    BASE[item.kind] + item.peopleWaiting * 15 + Math.min(waitDays, WAIT_CAP_DAYS) * ageWeight
+    base + item.peopleWaiting * 15 + Math.min(waitDays, WAIT_CAP_DAYS) * ageWeight
   if (item.ciFailing) score += 10
   score += PRIORITY_BOOST[item.priority ?? 0] ?? 0
   if (item.isDraft) score -= 25
   return {
     ...item,
     score: Math.round(score * 10) / 10,
-    group: GROUP[item.kind],
+    group,
     reason: reasonFor(item, waitDays),
+    label: labelOf(item),
   }
 }
 

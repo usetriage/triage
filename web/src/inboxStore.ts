@@ -7,6 +7,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import type { InboxResponse, ScoredItem } from '../../shared/protocol.js'
+import { store } from './store.js'
 
 export type InboxSnapshot = {
   items: readonly ScoredItem[]
@@ -72,6 +73,19 @@ export const inboxStore = {
     return inflight
   },
 }
+
+// Once loaded, stay current: a chat's create_work_item, a watch run and another
+// tab all move items, and the server says so. A burst (a watch filing twenty
+// items) coalesces into one refetch, queued behind any load already in flight
+// so it can't be answered by a snapshot taken before the change.
+let pending: ReturnType<typeof setTimeout> | null = null
+store.onInboxChanged(() => {
+  if (!snap.loaded || pending) return
+  pending = setTimeout(() => {
+    pending = null
+    void (inflight ?? Promise.resolve()).then(() => inboxStore.refresh())
+  }, 150)
+})
 
 export function useInbox(): InboxSnapshot {
   return useSyncExternalStore(inboxStore.subscribe, inboxStore.get)

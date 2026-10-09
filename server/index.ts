@@ -208,6 +208,9 @@ import { openSqliteStore } from '../core/store/sqlite.js'
 import type { Store, StoredSession, UpsertOutcome } from '../core/store/types.js'
 import { buildInbox } from '../core/work/inbox.js'
 import { BASE, rank } from '../core/work/score.js'
+import { LABEL_ORDER, isLabel, type Label } from '../core/work/labels.js'
+import { dueFor, parseDue, SECTION_ORDER, type Section } from '../core/work/due.js'
+import { ARCHIVE_AFTER_DAYS, shouldArchive } from '../core/work/fade.js'
 import { canonicalizeRef, canonicalizeRefs, linkByRefs } from '../core/work/link.js'
 import type { ItemStatus } from '../core/work/state.js'
 import type { Provenance, WorkItem as CoreWorkItem, WorkSource } from '../core/work/types.js'
@@ -1719,6 +1722,7 @@ function syncInbox(rt: WorkspaceRuntime): Promise<InboxSnapshot> {
     try {
       const now = Date.now()
       await rt.store.items.wakeSnoozed(now)
+      await fadeOldFyi(rt, now)
       await reconcileGitHub(rt)
       const scoped = new Set(await connectedRepos(rt))
       const items = scopeGitHub(await rt.store.items.list('open'), scoped)
@@ -1753,6 +1757,24 @@ function syncInbox(rt: WorkspaceRuntime): Promise<InboxSnapshot> {
     }
   })()
   return rt.inboxInFlight
+}
+
+/**
+ * Archive old FYI nobody touched (core/work/fade.ts). A recorded system
+ * transition, so it shows in the item's history and can be reopened.
+ */
+async function fadeOldFyi(rt: WorkspaceRuntime, now: number): Promise<void> {
+  const links = await rt.store.links.list()
+  const touched = new Set(links.flatMap((l) => [l.fromKind === 'item' ? l.fromId : '', l.toKind === 'item' ? l.toId : '']))
+  const faded = (await rt.store.items.list('open')).filter((i) => shouldArchive(i, now, touched))
+  for (const i of faded) {
+    await rt.store.items.transition(i.id, {
+      status: 'archived',
+      actor: 'system',
+      detail: { reason: `FYI untouched for ${ARCHIVE_AFTER_DAYS} days` },
+    })
+  }
+  if (faded.length) log('info', 'inbox', `archived ${faded.length} old FYI item(s)`, { ids: faded.map((i) => i.id), workspace: rt.meta.id })
 }
 
 /**
@@ -2090,7 +2112,7 @@ function makeScanMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onUpsert
             const prov: Provenance = { watchId: watch.id, runId, at: now, why: args.why }
             const { outcome, reopened } = await rt.store.items.upsert(item, prov)
             onUpsert(outcome)
-            rt.inboxCache = null
+            invalidateInbox(rt)
             log('info', 'watch', `filed (${outcome}): ${item.title}`, {
               id: item.id,
               watchId: watch.id,
@@ -2167,7 +2189,7 @@ function makeDigestMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onWrit
             await rt.store.links.add({ fromKind: 'artifact', fromId: artifact.id, toKind: 'item', toId: item.id, role: 'report' })
             written = true
             onWrite(outcome)
-            rt.inboxCache = null
+            invalidateInbox(rt)
             log('info', 'watch', `digest written (${outcome}${reopened ? ', returned' : ''}): ${title}`, { id: item.id, watchId: watch.id, runId, artifact: artifact.path, workspace: rt.meta.id })
             return okResult(`ok: digest saved as ${artifact.path}`)
           } catch (err) {
@@ -2613,7 +2635,7 @@ async function runWatch(rt: WorkspaceRuntime, run: QueuedRun, startedMs: number,
     )
     notifyRun(rt, watch, status, status === 'ok' ? `${newCount} new` : error)
     if (status === 'ok') {
-      rt.inboxCache = null
+      invalidateInbox(rt)
       void syncInbox(rt)
     }
     broadcastSessionList(rt)
@@ -2876,7 +2898,7 @@ async function deleteWatch(rt: WorkspaceRuntime, id: string, why: string): Promi
     }
   }
   await rt.store.watches.remove(id)
-  rt.inboxCache = null
+  invalidateInbox(rt)
   log('info', 'watch', `deleted watch ${id} (${why}); archived ${archived} item(s)`, { watchId: id, archived, workspace: rt.meta.id })
 }
 
@@ -2891,7 +2913,7 @@ setInterval(() => {
       .wakeSnoozed(Date.now())
       .then((woken) => {
         if (woken.length > 0) {
-          rt.inboxCache = null
+          invalidateInbox(rt)
           log('info', 'scheduler', `woke ${woken.length} snoozed item(s)`, { ids: woken, workspace: rt.meta.id })
         }
       })
@@ -3523,6 +3545,8 @@ function workItemFrom(raw: unknown): { item: WorkItem } | { error: string } {
       updatedAt: r.updatedAt,
       ...(typeof r.watchId === 'string' ? { watchId: r.watchId } : {}),
       ...(typeof r.why === 'string' && r.why ? { why: r.why } : {}),
+      ...(isLabel(r.ask) ? { ask: r.ask } : {}),
+      ...(parseDue(r.due) != null ? { dueAt: parseDue(r.due)! } : {}),
       ...(canonicalizeRefs(r.refs) ? { refs: canonicalizeRefs(r.refs) } : {}),
     },
   }
@@ -3633,7 +3657,7 @@ async function setItemImagesOp(rt: WorkspaceRuntime, id: string, edits: ItemImag
   if (!item) throw new Error('no such work item')
   const images = await applyImageEdits(rt.attachmentsDir, id, item.images ?? [], edits)
   await rt.store.items.setImages(id, images)
-  rt.inboxCache = null
+  invalidateInbox(rt)
   return images
 }
 
@@ -3773,7 +3797,7 @@ async function upsertItemOp(rt: WorkspaceRuntime, raw: unknown): Promise<UpsertO
   const parsed = workItemFrom(raw)
   if ('error' in parsed) throw new Error(parsed.error)
   const { outcome } = await rt.store.items.upsert(parsed.item)
-  if (outcome !== 'unchanged') rt.inboxCache = null
+  if (outcome !== 'unchanged') invalidateInbox(rt)
   return outcome
 }
 
@@ -3781,7 +3805,7 @@ async function resolveItemOp(rt: WorkspaceRuntime, rawId: unknown): Promise<void
   const id = typeof rawId === 'string' ? rawId : ''
   if (!ANY_ITEM_ID_RE.test(id)) throw new Error('need a work-item id')
   await rt.store.items.transition(id, { status: 'done', actor: 'agent' })
-  rt.inboxCache = null
+  invalidateInbox(rt)
   log('info', 'inbox', `done: ${id} (by agent)`, { id, actor: 'agent', workspace: rt.meta.id })
 }
 
@@ -3792,7 +3816,7 @@ async function createManualOp(rt: WorkspaceRuntime, raw: unknown): Promise<strin
   // The item has to exist before its images can hang off it — the folder is
   // named after the id the line above minted.
   if (images?.length) await setItemImagesOp(rt, id, images)
-  rt.inboxCache = null
+  invalidateInbox(rt)
   log('info', 'inbox', `manual item created: ${input.title ?? id}`, { id, workspace: rt.meta.id })
   return id
 }
@@ -3806,7 +3830,7 @@ async function editManualOp(rt: WorkspaceRuntime, id: string, raw: unknown): Pro
   const { images, ...patch } = await manualItemFrom(rt, raw, { partial: true })
   await rt.store.items.updateManual(id, patch)
   if (images) await setItemImagesOp(rt, id, images)
-  rt.inboxCache = null
+  invalidateInbox(rt)
 }
 
 // The same tool surface every session gets in-process, matching the stdio
@@ -4006,7 +4030,7 @@ async function writeSettings(rt: WorkspaceRuntime, raw: unknown): Promise<Worksp
     if (r.briefsDefaultModel !== null && typeof r.briefsDefaultModel !== 'string') throw new Error('briefsDefaultModel must be a string or null')
     await rt.store.config.set(BRIEFS_MODEL_KEY, r.briefsDefaultModel || null)
   }
-  rt.inboxCache = null
+  invalidateInbox(rt)
   return readSettings(rt)
 }
 
@@ -5219,6 +5243,8 @@ function makeTriageMcp(rt: WorkspaceRuntime) {
           createdAt: z.string().optional(),
           watchId: z.string().optional(),
           why: z.string().optional(),
+          ask: z.enum(LABEL_ORDER as [Label, ...Label[]]).optional().describe('what it asks of the user (watch hits)'),
+          due: z.string().optional().describe('a deadline the source states, ISO 8601 day'),
           refs: z.array(z.string()).optional(),
         },
         async (args) => {
@@ -5937,7 +5963,7 @@ const server = http.createServer(async (req, res) => {
           ? parsed.repos.filter((r): r is string => typeof r === 'string' && /^[\w.-]+\/[\w.-]+$/.test(r))
           : []
         await rt.store.config.set(REPOS_KEY, repos)
-        rt.inboxCache = null // scope changed — force a resync on the next view
+        invalidateInbox(rt) // scope changed — force a resync on the next view
       }
       body = { ok: true, connected: await connectedRepos(rt), available: await affiliatedRepos(rt) }
     } catch (err) {
@@ -6135,7 +6161,7 @@ const server = http.createServer(async (req, res) => {
       if (statusV === 'snoozed' && !snoozeUntil) throw new Error('snoozed needs snoozeUntil (epoch ms)')
       // A recorded transition on the durable item — never a delete (.docs/watches-v2.md).
       await rt.store.items.transition(id, { status: statusV, actor: 'user', snoozeUntil })
-      rt.inboxCache = null
+      invalidateInbox(rt)
       log('info', 'inbox', `${statusV}: ${id} (by user)`, { id, status: statusV, actor: 'user', workspace: rt.meta.id })
       body = { ok: true }
     } catch (err) {
@@ -6413,7 +6439,7 @@ const server = http.createServer(async (req, res) => {
     let body: ItemStateResponse
     try {
       void reconcileGitHub(rt, true).then(() => {
-        rt.inboxCache = null
+        invalidateInbox(rt)
         void syncInbox(rt)
       })
       void (async () => {
@@ -6473,7 +6499,7 @@ const server = http.createServer(async (req, res) => {
         const id = url.searchParams.get('id')
         if (id) {
           await rt.store.items.transition(id, { status: 'archived', actor: 'user', detail: { reason: 'deleted by user' } })
-          rt.inboxCache = null
+          invalidateInbox(rt)
         }
       } else {
         throw new Error('unsupported method')
@@ -6499,7 +6525,28 @@ const server = http.createServer(async (req, res) => {
       else if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= 4) priority = raw
       else throw new Error('priority must be 1–4, or null/0 to clear')
       await rt.store.items.setPriority(id, priority)
-      rt.inboxCache = null
+      invalidateInbox(rt)
+      body = { ok: true }
+    } catch (err) {
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    json(body.ok ? 200 : 400, body)
+    return
+  }
+  // A due set from the inbox (t / m / w / l): a bucket, resolved to a day here.
+  // `due: null` goes back to the label's default.
+  if (url.pathname === '/api/items/due' && req.method === 'POST') {
+    let body: ItemStateResponse
+    try {
+      const parsed = (await readJsonBody(req)) as { id?: unknown; due?: unknown } | null
+      const id = typeof parsed?.id === 'string' ? parsed.id : ''
+      if (!id) throw new Error('need an item id')
+      const raw = parsed?.due
+      if (raw === null) await rt.store.items.setDue(id, null)
+      else if (typeof raw === 'string' && (SECTION_ORDER as string[]).includes(raw))
+        await rt.store.items.setDue(id, { at: dueFor(raw as Section, Date.now()) })
+      else throw new Error(`due must be one of ${SECTION_ORDER.join(', ')}, or null`)
+      invalidateInbox(rt)
       body = { ok: true }
     } catch (err) {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -6734,7 +6781,7 @@ const server = http.createServer(async (req, res) => {
       if (d !== null && d !== undefined && typeof d !== 'string') throw new Error('description must be a string')
       if (typeof d === 'string' && d.length > 5000) throw new Error('description is too long (5000 chars max)')
       await rt.store.items.setDescription(id, typeof d === 'string' && d.trim() ? d.trim() : null)
-      rt.inboxCache = null
+      invalidateInbox(rt)
       body = { ok: true }
     } catch (err) {
       body = { ok: false, error: errText(err) }
@@ -6751,7 +6798,7 @@ const server = http.createServer(async (req, res) => {
       if (!ANY_ITEM_ID_RE.test(id)) throw new Error('need an item id')
       const urls = itemUrls(parsed?.urls) ?? []
       await rt.store.items.setUrls(id, urls)
-      rt.inboxCache = null
+      invalidateInbox(rt)
       body = { ok: true, urls }
     } catch (err) {
       body = { ok: false, error: errText(err) }
@@ -6943,6 +6990,12 @@ function send(ws: WebSocket, msg: ServerMessage) {
 function broadcast(rt: WorkspaceRuntime, msg: ServerMessage) {
   const data = JSON.stringify(msg)
   for (const ws of rt.clients) if (ws.readyState === WebSocket.OPEN) ws.send(data)
+}
+
+/** The inbox moved: drop the snapshot and tell every open page to refetch. */
+function invalidateInbox(rt: WorkspaceRuntime) {
+  rt.inboxCache = null
+  broadcast(rt, { type: 'inbox_changed' })
 }
 
 function broadcastSessionList(rt: WorkspaceRuntime) {

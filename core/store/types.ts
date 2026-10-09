@@ -297,6 +297,11 @@ export interface WorkItemStore {
   /** Set (or clear, with null) the user priority override. */
   setPriority(id: string, priority: number | null): Promise<void>
   setPinned(id: string, pinned: boolean): Promise<void>
+  /**
+   * The user's due day (local midnight ms; `at: null` = Later), or null to go
+   * back to the label's default. A user-set due outlives rescans.
+   */
+  setDue(id: string, due: { at: number | null } | null): Promise<void>
   /** Snoozes whose wake time has elapsed → open (+ a 'woken' event). Returns woken ids. */
   wakeSnoozed(now: number): Promise<string[]>
   /** The append-only transition log for one item, in order. */

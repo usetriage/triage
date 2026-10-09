@@ -227,6 +227,8 @@ export class Store {
 
   /** Who wants to know when the artifacts index changed (the artifacts store, an open artifact page). */
   readonly #artifactsListeners = new Set<() => void>()
+  /** Who wants to know when a work item moved (the inbox store, the non-open inbox tabs). */
+  readonly #inboxListeners = new Set<() => void>()
   readonly #changesListeners = new Set<(sessionId: string) => void>()
   /** Who follows brief jobs (the brief store) — one frame per transition. */
   readonly #briefListeners = new Set<(job: BriefJob) => void>()
@@ -308,6 +310,9 @@ export class Store {
       case 'artifacts_changed':
         for (const fn of this.#artifactsListeners) fn()
         break
+      case 'inbox_changed':
+        for (const fn of this.#inboxListeners) fn()
+        break
       case 'session_changed':
         for (const fn of this.#changesListeners) fn(msg.sessionId)
         break
@@ -341,6 +346,14 @@ export class Store {
     this.#artifactsListeners.add(fn)
     return () => {
       this.#artifactsListeners.delete(fn)
+    }
+  }
+
+  /** Fires on every `inbox_changed` frame; returns the unsubscribe. */
+  onInboxChanged(fn: () => void): () => void {
+    this.#inboxListeners.add(fn)
+    return () => {
+      this.#inboxListeners.delete(fn)
     }
   }
 

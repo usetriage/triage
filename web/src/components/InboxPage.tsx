@@ -1,6 +1,7 @@
 import {
   AlarmClock,
   Archive,
+  CalendarDays,
   Check,
   CheckSquare,
   ChevronRight,
@@ -24,7 +25,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RepoScopeEditor } from './RepoScope.js'
 import type {
   BriefJob,
-  Group,
   ItemImage,
   ItemImageEdit,
   ItemListResponse,
@@ -45,9 +45,9 @@ import { projectColor, rowOpen } from '../tabs.js'
 import { briefPill, briefStore, useBriefs } from '../briefStore.js'
 import { CreateBriefDialog } from './CreateBriefDialog.js'
 import {
-  GROUP_ORDER,
-  GROUP_TITLE,
-  KIND_LABEL,
+  LABELS,
+  LABEL_ORDER,
+  countOf,
   PRIORITY_LABEL,
   PRIORITY_VALUES,
   itemTone,
@@ -60,7 +60,17 @@ import {
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu.js'
 import { Select, SelectItem } from '../ui/Select.js'
 import { ProjectIdPicker } from './ProjectPicker.js'
-import { anyDialogOpen, isTypingTarget } from '../keys.js'
+import { anyDialogOpen, isGoSequence, isTypingTarget } from '../keys.js'
+import {
+  SECTION_ORDER,
+  TODAY_LIMIT,
+  dueChip,
+  dueFor,
+  dueOf,
+  sectionTitle,
+  type Section,
+} from '../../../core/work/due.js'
+import { FOLD_AFTER_DAYS, isOldFyi } from '../../../core/work/fade.js'
 
 /** The status tabs (.docs/watches-v2.md): items are durable and never deleted,
  *  so done/snoozed/archived are viewable, not just write-only. */
@@ -166,14 +176,19 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
 
   // A status change is a recorded transition on a durable item — the row leaves
   // the current tab optimistically; the item is never deleted (.docs/watches-v2.md).
+  // A row is every signal folded into it, so they all move together.
   const setItemState = useCallback(
     async (item: ScoredItem, status: ItemStatus, snoozeUntil?: number) => {
       removeLocally(item.id)
-      await fetch('/api/items/state', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: item.id, status, snoozeUntil }),
-      }).catch(() => {})
+      await Promise.all(
+        signalIds(item).map((id) =>
+          fetch('/api/items/state', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id, status, snoozeUntil }),
+          }).catch(() => {}),
+        ),
+      )
     },
     [removeLocally],
   )
@@ -200,6 +215,23 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
 
   const snooze1d = useCallback((item: ScoredItem) => void setItemState(item, 'snoozed', tomorrow9()), [setItemState])
 
+  // A due set here is yours and outlives rescans. The row moves section now;
+  // the server resolves the bucket to the same day.
+  const setDue = useCallback((targets: ScoredItem[], due: Section) => {
+    const at = dueFor(due, Date.now())
+    const ids = new Set(targets.map((t) => t.id))
+    inboxStore.patch((items) =>
+      items.map((i) => (ids.has(i.id) ? { ...i, dueSource: 'you' as const, dueAt: at ?? undefined } : i)),
+    )
+    for (const id of targets.flatMap(signalIds)) {
+      void fetch('/api/items/due', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id, due }),
+      }).catch(() => {})
+    }
+  }, [])
+
   const selectTab = useCallback(
     (next: Tab) => {
       setTab(next)
@@ -209,16 +241,32 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
     [loadOther],
   )
 
-  // Items in on-screen order. The Open tab renders in GROUP_ORDER; the other
+  // The Open tab's day sections (core/work/due.ts); score still orders each.
+  // Old FYI (core/work/fade.ts) folds into one line at the end of its section.
+  const [fyiOpen, setFyiOpen] = useState(false)
+  const sections = useMemo(() => {
+    const now = Date.now()
+    const by = new Map<Section, { rows: ScoredItem[]; old: ScoredItem[] }>(SECTION_ORDER.map((s) => [s, { rows: [], old: [] }]))
+    for (const i of snap.items) {
+      const sec = by.get(dueOf(i, now).section)!
+      ;(isOldFyi(i, now) ? sec.old : sec.rows).push(i)
+    }
+    return by
+  }, [snap.items])
+
+  // Items in on-screen order. The Open tab renders by section; the other
   // tabs are a flat, source-time-ordered list.
   const ordered = useMemo<readonly ScoredItem[]>(
     () =>
       isOpen
-        ? GROUP_ORDER.flatMap((g) => snap.items.filter((i) => i.group === g))
+        ? SECTION_ORDER.flatMap((s) => {
+            const sec = sections.get(s)
+            return sec ? [...sec.rows, ...(fyiOpen ? sec.old : [])] : []
+          })
         : other.phase === 'ready'
           ? other.items
           : [],
-    [isOpen, snap.items, other],
+    [isOpen, sections, fyiOpen, other],
   )
 
   // The live selection: checked ids that are still on screen. Ids of rows that
@@ -239,11 +287,11 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
       clearChecked()
       for (const t of targets) removeLocally(t.id)
       const results = await Promise.allSettled(
-        targets.map((t) =>
+        targets.flatMap(signalIds).map((id) =>
           fetch('/api/items/state', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ id: t.id, status, snoozeUntil }),
+            body: JSON.stringify({ id, status, snoozeUntil }),
           }),
         ),
       )
@@ -254,8 +302,17 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (isTypingTarget(e) || anyDialogOpen() || e.metaKey || e.ctrlKey || e.altKey) return
+      if (isTypingTarget(e) || anyDialogOpen() || isGoSequence(e) || e.metaKey || e.ctrlKey || e.altKey) return
       const cur = ordered[sel]
+      const due = isOpen ? DUE_KEYS[e.key] : undefined
+      if (due) {
+        const picked = checkedItems.length ? checkedItems : cur ? [cur] : []
+        if (picked.length) {
+          e.preventDefault()
+          setDue(picked, due)
+        }
+        return
+      }
       if (e.key === 'j' || e.key === 'ArrowDown') {
         e.preventDefault()
         setSel((v) => Math.min(v + 1, Math.max(0, ordered.length - 1)))
@@ -306,7 +363,7 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [ordered, sel, isOpen, onDispatch, onOpenItem, reload, setItemState, snooze1d, checkedItems, toggleChecked, bulkState, clearChecked])
+  }, [ordered, sel, isOpen, onDispatch, onOpenItem, reload, setItemState, snooze1d, setDue, checkedItems, toggleChecked, bulkState, clearChecked])
 
   const loadProjects = useCallback(() => {
     void fetch('/api/projects')
@@ -347,7 +404,12 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
   const loading = isOpen ? !snap.loaded && snap.loading : other.phase === 'loading'
   const error = isOpen ? (!snap.loaded ? snap.error : undefined) : other.phase === 'error' ? other.message : undefined
   const items = ordered
-  const blocking = isOpen ? snap.items.filter((i) => i.group === 'blocking').length : 0
+  // The headline counts what is asked of you, by label; Read is not an ask.
+  const asks = isOpen
+    ? LABEL_ORDER.filter((l) => l !== 'read')
+        .map((l) => ({ label: l, n: snap.items.filter((i) => i.label === l).length }))
+        .filter((c) => c.n > 0)
+    : []
   const tabLabel = TABS.find((t) => t.id === tab)?.label ?? ''
   const emptyText = isOpen
     ? snap.notices.length > 0
@@ -357,7 +419,6 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
 
   const rowProps: RowActions = {
     tab,
-    watchTitles,
     projectName,
     onSelect: (id) => setSel(ordered.findIndex((i) => i.id === id)),
     onOpen: onOpenItem,
@@ -369,6 +430,7 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
     onReopen: (i) => void setItemState(i, 'open'),
     onRefineWatch,
     onSetPriority: setPriority,
+    onSetDue: (i, due) => setDue([i], due),
     onEdit: (i) => setComposer({ open: true, editing: i }),
     onDelete: deleteManual,
     checked,
@@ -388,12 +450,14 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
               <span className="muted">syncing…</span>
             ) : (
               <span className="muted">
-                {items.length} item{items.length === 1 ? '' : 's'}
-                {blocking > 0 && (
-                  <>
-                    , <span className="blk">{blocking} blocking</span>
-                  </>
-                )}
+                {asks.length > 0
+                  ? asks.map((c, i) => (
+                      <span key={c.label}>
+                        {i > 0 && ' · '}
+                        <span className={LABELS[c.label].group === 'blocking' ? 'blk' : undefined}>{countOf(c.label, c.n)}</span>
+                      </span>
+                    ))
+                  : `${items.length} item${items.length === 1 ? '' : 's'}`}
                 .
               </span>
             )}
@@ -464,11 +528,14 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
               </div>
             ) : isOpen ? (
               <div className="homeList">
-                {GROUP_ORDER.map((g) => (
-                  <ItemGroup
-                    key={g}
-                    group={g}
-                    items={snap.items.filter((i) => i.group === g)}
+                {SECTION_ORDER.map((s) => (
+                  <DaySection
+                    key={s}
+                    section={s}
+                    items={sections.get(s)?.rows ?? []}
+                    old={sections.get(s)?.old ?? []}
+                    oldOpen={fyiOpen}
+                    onToggleOld={() => setFyiOpen((v) => !v)}
                     selectedId={ordered[sel]?.id ?? null}
                     {...rowProps}
                   />
@@ -527,6 +594,23 @@ export function InboxPage({ onDispatch, onRefineWatch, onOpenItem, onPinItem, co
     </div>
   )
 }
+
+/** A row's own id and every signal folded into it (core/work/link.ts). */
+function signalIds(item: ScoredItem): string[] {
+  return [item.id, ...(item.linked ?? []).map((l) => l.id)]
+}
+
+/** "4 signals · Niraj, Drew" — for a row that folds several items about one thing. */
+function signalsText(item: ScoredItem): string | null {
+  if (!item.linked?.length) return null
+  const people = [...new Set([item.author, ...item.linked.map((l) => l.author)].filter(Boolean))]
+  const who = people.length > 2 ? `${people.slice(0, 2).join(', ')} +${people.length - 2}` : people.join(', ')
+  return [`${item.linked.length + 1} signals`, who].filter(Boolean).join(' · ')
+}
+
+/** The due keys: t today, m next workday (Monday on a Friday), w this week, l later. */
+const DUE_KEYS: Record<string, Section> = { t: 'today', m: 'next-workday', w: 'this-week', l: 'later' }
+const DUE_KEY_OF = Object.fromEntries(Object.entries(DUE_KEYS).map(([k, s]) => [s, k])) as Record<Section, string>
 
 /** Tomorrow 09:00 local — the one snooze duration the inbox knows (`z`). */
 function tomorrow9(): number {
@@ -591,7 +675,6 @@ function SelectionBar({
 
 type RowActions = {
   tab: Tab
-  watchTitles: Map<string, string>
   projectName: (id?: string) => string | undefined
   onSelect: (id: string) => void
   onOpen: (id: string) => void
@@ -603,6 +686,7 @@ type RowActions = {
   onReopen: (item: ScoredItem) => void
   onRefineWatch: (item: ScoredItem) => void
   onSetPriority: (item: ScoredItem, priority: number) => void
+  onSetDue: (item: ScoredItem, due: Section) => void
   onEdit: (item: ScoredItem) => void
   onDelete: (item: ScoredItem) => void
   checked: Set<string>
@@ -611,23 +695,50 @@ type RowActions = {
   briefOf: (id: string) => BriefJob | undefined
 }
 
-function ItemGroup({
-  group,
+/** One day section of the Open tab. Today says so when it holds more than a day can. */
+function DaySection({
+  section,
   items,
+  old,
+  oldOpen,
+  onToggleOld,
   selectedId,
   ...actions
-}: { group: Group; items: ScoredItem[]; selectedId: string | null } & RowActions) {
-  if (items.length === 0) return null
-  const [tier, qual] = GROUP_TITLE[group].split(' · ')
+}: {
+  section: Section
+  items: ScoredItem[]
+  old: ScoredItem[]
+  oldOpen: boolean
+  onToggleOld: () => void
+  selectedId: string | null
+} & RowActions) {
+  if (items.length === 0 && old.length === 0) return null
+  const over = section === 'today' && items.length > TODAY_LIMIT
   return (
     <>
-      <div className={`secLabel ${group}`}>
-        <span className="tier">{tier}</span>
-        {qual && <span className="qual">{qual}</span>}
+      <div className={`secLabel day-${section}`}>
+        <span className="tier">{sectionTitle(section, Date.now())}</span>
+        <span className="qual">
+          <span className="n">{items.length + old.length}</span>
+        </span>
+        {over && <span className="qual over">more than a day holds — push some to later</span>}
       </div>
       {items.map((item) => (
         <WorkRow key={item.id} item={item} selected={item.id === selectedId} {...actions} />
       ))}
+      {old.length > 0 && (
+        <button
+          type="button"
+          className="fyiFold"
+          aria-expanded={oldOpen}
+          title={`FYI older than ${FOLD_AFTER_DAYS} days. Untouched ones archive themselves after a week.`}
+          onClick={onToggleOld}
+        >
+          <ChevronRight size={13} aria-hidden="true" className="chev" />
+          {old.length} older FYI
+        </button>
+      )}
+      {oldOpen && old.map((item) => <WorkRow key={item.id} item={item} selected={item.id === selectedId} {...actions} />)}
     </>
   )
 }
@@ -647,7 +758,6 @@ function WorkRow({
   item,
   selected,
   tab,
-  watchTitles,
   projectName,
   onSelect,
   onOpen,
@@ -659,6 +769,7 @@ function WorkRow({
   onReopen,
   onRefineWatch,
   onSetPriority,
+  onSetDue,
   onEdit,
   onDelete,
   checked,
@@ -674,13 +785,16 @@ function WorkRow({
   const pri = item.priority ?? 0
   // watchId now rides in the provenance list; fall back to the item field.
   const watchId = item.watchId ?? item.foundBy?.[item.foundBy.length - 1]?.watchId
-  const watchTitle = watchId ? watchTitles.get(watchId) : undefined
   const Icon = kindIcon(item)
   const alert = itemTone(item) === 'red'
 
-  // The state cell speaks only when it has something the glyph does not say:
-  // a brief's progress outranks the kind, and "to-do" is what the glyph means.
-  const state = brief?.label ?? (isManual ? (watchTitle ?? '') : (KIND_LABEL[item.kind] ?? item.kind))
+  // The state cell is the item's label — what it asks of you; a brief's
+  // progress outranks it.
+  const state = brief?.label ?? (LABELS[item.label] ?? LABELS.read).name
+  const signals = signalsText(item)
+  // Only a stated deadline gets a date chip; a late one you set says how late.
+  const due = isOpen ? dueOf(item, Date.now()) : null
+  const dueText = !due ? null : due.late > 0 ? `${due.late}d late` : due.source === 'explicit' && due.at != null ? dueChip(due.at, Date.now()) : null
   const source = projectName(item.projectId) ?? item.repo
   // The scored reason ("2 people waiting · opened 3d ago") is the fallback when
   // the item carries no human note.
@@ -726,11 +840,20 @@ function WorkRow({
           </span>
         )}
         <span className="name">{item.title}</span>
+        {signals && <span className="signals">{signals}</span>}
+        {dueText && (
+          <span
+            className={`due${due?.late ? ' late' : ''}${due?.source === 'explicit' ? ' explicit' : ''}`}
+            title={due?.at != null ? `${due.source === 'explicit' ? 'Deadline' : 'Due'} ${new Date(due.at).toLocaleDateString()}` : undefined}
+          >
+            {dueText}
+          </span>
+        )}
         {trailing && <span className="why">{trailing}</span>}
       </button>
 
       <span className="meta" aria-hidden={selected || undefined}>
-        <span className={`c state${brief ? ` ${brief.tone}` : ''}`}>{state}</span>
+        <span className={`c state ${brief ? brief.tone : `label-${item.label}`}`}>{state}</span>
         <span className="c src">{source}</span>
         <span className="c when" title={item.updatedAt ? new Date(item.updatedAt).toLocaleString() : undefined}>
           {shortAge(item.updatedAt)}
@@ -817,6 +940,15 @@ function WorkRow({
                 <MenuItem onSelect={() => onSnooze(item)}>
                   <AlarmClock size={13} aria-hidden="true" /> Snooze to tomorrow<span className="k">z</span>
                 </MenuItem>
+                <MenuSeparator />
+                <div className="uiMenuCap">Due</div>
+                {SECTION_ORDER.map((s) => (
+                  <MenuItem key={s} onSelect={() => onSetDue(item, s)}>
+                    <CalendarDays size={13} aria-hidden="true" /> {sectionTitle(s, Date.now())}
+                    {due?.source !== 'default' && due?.section === s && <Check className="check" size={13} aria-hidden="true" />}
+                    <span className="k">{DUE_KEY_OF[s]}</span>
+                  </MenuItem>
+                ))}
                 <MenuSeparator />
                 <div className="uiMenuCap">Priority</div>
                 {PRIORITY_VALUES.map((v) => (

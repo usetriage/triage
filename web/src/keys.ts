@@ -19,6 +19,31 @@ export function anyDialogOpen(): boolean {
   )
 }
 
+/**
+ * True for the second key of a `g` sequence (`g t`, `g w`): App handles it as
+ * navigation, so a page's own single-key hotkeys must stand aside. Recorded in
+ * the capture phase, before any page listener sees the event; the window
+ * matches App's prefix timer.
+ */
+export function isGoSequence(e: KeyboardEvent): boolean {
+  return goSeq.has(e)
+}
+const goSeq = new WeakSet<KeyboardEvent>()
+let gAt = -Infinity
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (isTypingTarget(e) || e.metaKey || e.ctrlKey || e.altKey) return
+    if (e.key === 'g') {
+      gAt = e.timeStamp
+      return
+    }
+    if (e.timeStamp - gAt < 1000) goSeq.add(e)
+    gAt = -Infinity
+  },
+  true,
+)
+
 export const isMac = navigator.platform.startsWith('Mac')
 export const MOD_LABEL = isMac ? '⌘' : 'Ctrl+'
 
@@ -43,6 +68,7 @@ export const SHORTCUTS: ReadonlyArray<[keys: string, what: string]> = [
   ['Space', 'Inbox: check / uncheck the selected item'],
   ['e', 'Inbox: mark selected item done'],
   ['z', 'Inbox: snooze selected item until tomorrow'],
+  ['t / m / w / l', 'Inbox: due today / next workday / this week / later'],
   ['x', 'Inbox: archive selected item'],
   ['r', 'Inbox: refresh'],
   ['?', 'Keyboard shortcuts'],

@@ -51,11 +51,37 @@ export function canonicalizeRefs(raw: unknown): string[] | undefined {
   return refs.length > 0 ? refs : undefined
 }
 
+// Refs written in prose: "#2745", "PX-239". A ticket key needs two digits so
+// "UTF-8" stays text, and a bare number three, so "step #2" does; the stop
+// list catches the standards that look like keys.
+const TEXT_KEY = /\b([A-Z][A-Z0-9]{1,9}-\d{2,6})\b/g
+const TEXT_NUM = /(?:^|[\s(\[,;:])#(\d{3,6})\b/g
+const NOT_KEYS = /^(ISO|UTF|SHA|GPT|RFC|CVE|ECMA|IEEE|MD|AES|RSA|HTTP|TLS|SSL|IPV)-/
+
+/**
+ * Refs the scanner's prose names but its refs list may not: ticket keys
+ * (`linear:PX-239`) and bare PR numbers. A bare number is pinned to the
+ * item's repo when its home is one (`github:owner/repo#2745`); otherwise it
+ * stays `num:2745`, which linkByRefs resolves.
+ */
+export function textRefs(item: Pick<WorkItem, 'title' | 'why' | 'repo'>): string[] {
+  const text = [item.title, item.why].filter(Boolean).join('\n')
+  const out = new Set<string>()
+  for (const m of text.matchAll(TEXT_KEY)) if (!NOT_KEYS.test(m[1])) out.add(`linear:${m[1]}`)
+  const repo = /^[\w.-]+\/[\w.-]+$/.test(item.repo) ? item.repo : null
+  for (const m of text.matchAll(TEXT_NUM)) out.add(repo ? `github:${repo}#${m[1]}` : `num:${m[1]}`)
+  return [...out]
+}
+
 /**
  * Fold items sharing a canonical ref into one card: the highest-scored item
  * stays, gains a +10 multi-source bonus (two signals about the same work =
  * more urgent) and carries the others as `linked`. An item's own id counts as
  * a ref, so "Slack asks for review of PR #123" folds into the PR's item.
+ *
+ * Refs come from the scanner and from the item's own words (textRefs). A bare
+ * `num:N` joins the one GitHub item numbered N; when two repos both have an N
+ * it is ambiguous and joins only other bare mentions of N.
  */
 export function linkByRefs(items: ScoredItem[]): ScoredItem[] {
   // union-find over shared refs
@@ -73,10 +99,18 @@ export function linkByRefs(items: ScoredItem[]): ScoredItem[] {
     if (ra !== rb) parent.set(ra, rb)
   }
 
+  // num:N → the GitHub item numbered N, when exactly one is
+  const byNum = new Map<string, string | null>()
+  for (const item of items) {
+    const n = /^github:[^#]+#(\d+)$/.exec(item.id)?.[1]
+    if (n) byNum.set(`num:${n}`, byNum.has(`num:${n}`) ? null : item.id)
+  }
+
   const byRef = new Map<string, string>() // canonical ref → first item id seen
   for (const item of items) {
     parent.set(item.id, item.id)
-    for (const ref of [item.id, ...(item.refs ?? [])]) {
+    const refs = [...(item.refs ?? []), ...textRefs(item)].map((r) => (r.startsWith('num:') ? (byNum.get(r) ?? r) : r))
+    for (const ref of [item.id, ...refs]) {
       const owner = byRef.get(ref)
       if (owner === undefined) byRef.set(ref, item.id)
       else union(owner, item.id)
@@ -101,7 +135,7 @@ export function linkByRefs(items: ScoredItem[]): ScoredItem[] {
     out.push({
       ...primary,
       score: Math.round((primary.score + 10) * 10) / 10,
-      linked: rest.map((i) => ({ id: i.id, title: i.title, source: i.source, url: i.url, repo: i.repo })),
+      linked: rest.map((i) => ({ id: i.id, title: i.title, source: i.source, url: i.url, repo: i.repo, author: i.author })),
     })
   }
   return out.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))

@@ -73,6 +73,15 @@ export interface WorkItem {
   projectId?: string
   /** scanner's one-line match reason (rendered on the item) — the latest find's */
   why?: string
+  /**
+   * what a watch hit asks of you, picked by the run (labels.ts) — the latest
+   * find's. A string, not a Label: a stored ask can outlive its label.
+   */
+  ask?: string
+  /** due day, local midnight ms (core/work/due.ts); a column, not payload */
+  dueAt?: number
+  /** who set the due: the source, or you; absent = the label's default */
+  dueSource?: 'explicit' | 'you'
   /** re-armed: was done, the source updated afterwards (reopen rule) */
   returned?: boolean
   /** every scan that found (or refound) this item; the card explains itself */
@@ -107,10 +116,12 @@ export interface ScoredItem extends WorkItem {
   group: Group
   /** one human-readable line: why this ranked where it did */
   reason: string
+  /** what the item asks of you (labels.ts) */
+  label: import('./labels.js').Label
   /**
    * items sharing a canonical ref, folded into this card (linked, not merged).
    * Carries id and title, not just the URL, so a reader — a person or a model
    * with get_work_item — can actually follow one.
    */
-  linked?: { id: string; title: string; source: WorkSource; url: string; repo: string }[]
+  linked?: { id: string; title: string; source: WorkSource; url: string; repo: string; author: string }[]
 }

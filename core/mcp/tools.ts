@@ -87,6 +87,12 @@ export const TOOLS = [
         updatedAt: { type: 'string', description: 'ISO 8601 — the upsert applies only if newer than what is stored' },
         watchId: { type: 'string', description: 'the watch that produced it, if any' },
         why: { type: 'string', description: 'one-line match reason, rendered on the item' },
+        ask: {
+          type: 'string',
+          enum: ['review', 'reply', 'decide', 'do', 'follow-up', 'read'],
+          description: 'what it asks of the user (watch hits); decides its label',
+        },
+        due: { type: 'string', description: 'a deadline the source states, ISO 8601 day (e.g. 2026-10-12)' },
         refs: { type: 'array', items: { type: 'string' }, description: 'PR/issue URLs or Linear keys seen in the content' },
       },
       required: ['id', 'kind', 'title', 'url', 'updatedAt'],

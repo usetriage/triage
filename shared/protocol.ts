@@ -1492,6 +1492,8 @@ export type ServerMessage =
   | { type: 'terminal_closed'; terminalId: string }
   /** The artifacts index changed (a write, a delete, or a re-index found edits) — refetch. */
   | { type: 'artifacts_changed' }
+  /** A work item was created, edited or moved (by a chat, a watch, another tab) — refetch the inbox. */
+  | { type: 'inbox_changed' }
   /**
    * A folder's `/` command list changed — a session's subprocess discovered
    * skills mid-run, or a probe just finished. Carries the whole list because

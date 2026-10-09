@@ -306,6 +306,11 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE watches ADD COLUMN daily_budget_usd REAL;`,
   // 24: watches as files — the row is state, keyed by the file's id; this names the file.
   `ALTER TABLE watches ADD COLUMN file TEXT;`,
+  // 25: due dates (core/work/due.ts). due_source is 'explicit' (the source
+  // stated it) or 'you' (set in the inbox; survives rescans); NULL = the
+  // label's default, resolved at read time. 'you' with no due_at = Later.
+  `ALTER TABLE work_items ADD COLUMN due_at INTEGER;
+   ALTER TABLE work_items ADD COLUMN due_source TEXT;`,
 ]
 
 export function openSqliteStore(file: string): Store {
@@ -449,6 +454,10 @@ function ensureDurableSchema(db: DatabaseSync) {
   ]) ensure('watches', col, decl, w)
   ensure('sessions', 'run_trigger', 'run_trigger TEXT', s)
   ensure('sessions', 'run_new', 'run_new INTEGER', s)
+
+  const wi = cols('work_items')
+  ensure('work_items', 'due_at', 'due_at INTEGER', wi)
+  ensure('work_items', 'due_source', 'due_source TEXT', wi)
 }
 
 function migrate(db: DatabaseSync) {
@@ -1100,6 +1109,8 @@ type WorkItemRow = {
   payload: string
   created_at: number
   updated_at: number
+  due_at: number | null
+  due_source: string | null
 }
 
 const VALID_STATUSES: ItemStatus[] = ['open', 'snoozed', 'done', 'archived']
@@ -1121,14 +1132,16 @@ function toWorkItem(r: WorkItemRow): WorkItem {
     status: toStatus(r.status),
     returned: r.returned === 1,
     ...(r.priority != null ? { priority: r.priority } : {}),
+    ...(r.due_at != null ? { dueAt: r.due_at } : {}),
+    ...(r.due_source === 'explicit' || r.due_source === 'you' ? { dueSource: r.due_source } : {}),
     ingestedAt: r.ingested_at,
   }
 }
 
 /** Lifecycle fields live in columns, not the payload — strip before storing. */
 function payloadOf(item: WorkItem): string {
-  const { status, returned, priority, ingestedAt, ...rest } = item
-  void status; void returned; void priority; void ingestedAt
+  const { status, returned, priority, ingestedAt, dueAt, dueSource, ...rest } = item
+  void status; void returned; void priority; void ingestedAt; void dueAt; void dueSource
   return JSON.stringify(rest)
 }
 
@@ -1197,6 +1210,7 @@ class SqliteWorkItems implements WorkItemStore {
            VALUES (?, ?, ?, 'open', ?, NULL, ?, 0, 0, ?, ?, ?, ?, ?)`,
         )
         .run(item.id, item.source, item.kind, now, item.priority ?? null, incoming, now, payloadOf(stored), now, now)
+      this.setExplicitDue(item)
       this.appendEvent(item.id, now, actor, 'created', evDetail(provenance))
       return { outcome: 'inserted', reopened: false }
     }
@@ -1222,9 +1236,11 @@ class SqliteWorkItems implements WorkItemStore {
           ciFailing: item.ciFailing,
           refs: item.refs ?? base.refs,
           why: provenance?.why ?? item.why ?? base.why,
+          ask: item.ask ?? base.ask,
           foundBy,
         }
-      : { ...base, why: provenance?.why ?? base.why, foundBy }
+      : // a re-find re-judges: its why and ask replace the last find's
+        { ...base, why: provenance?.why ?? base.why, ask: item.ask ?? base.ask, foundBy }
 
     if (reopened) {
       this.db
@@ -1245,7 +1261,25 @@ class SqliteWorkItems implements WorkItemStore {
         .prepare('UPDATE work_items SET payload = ?, updated_at = ? WHERE id = ?')
         .run(payloadOf(stored), now, item.id)
     }
+    this.setExplicitDue(item)
     return { outcome: 'updated', reopened }
+  }
+
+  /** A deadline the source stated; never over one the user set. */
+  private setExplicitDue(item: WorkItem): void {
+    if (item.dueAt == null) return
+    this.db
+      .prepare(
+        `UPDATE work_items SET due_at = ?, due_source = 'explicit'
+         WHERE id = ? AND (due_source IS NULL OR due_source != 'you')`,
+      )
+      .run(item.dueAt, item.id)
+  }
+
+  async setDue(id: string, due: { at: number | null } | null): Promise<void> {
+    this.db
+      .prepare('UPDATE work_items SET due_at = ?, due_source = ?, updated_at = ? WHERE id = ?')
+      .run(due?.at ?? null, due ? 'you' : null, Date.now(), id)
   }
 
   async createManual(item: NewManualItem): Promise<string> {
