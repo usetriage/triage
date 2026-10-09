@@ -202,6 +202,8 @@ export interface WatchPreviewRow {
   from: string
   lastActivity: string
   why: string
+  /** the label the run picked (core/work/labels.ts) */
+  ask: string
 }
 
 /** What a dry run returns: the would-be items or the would-be digest, and what it cost. Nothing is saved. */

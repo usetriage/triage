@@ -2059,6 +2059,8 @@ const UPSERT_SHAPE = {
   from: z.string().optional().describe('the author or asker'),
   lastActivity: z.string().describe('ISO 8601 timestamp of the newest activity'),
   why: z.string().describe('one line: exactly what matched the instructions'),
+  ask: z.enum(LABEL_ORDER as [Label, ...Label[]]).describe('what it asks of the user: review, reply, decide, do, follow-up or read'),
+  due: z.string().optional().describe('only when the content states a deadline for the user: the day, ISO 8601 (e.g. 2026-10-12)'),
   refs: z.array(z.string()).optional().describe('other GitHub PR/issue URLs or Linear keys in the content'),
 }
 const DIGEST_SHAPE = {
@@ -2107,6 +2109,8 @@ function makeScanMcp(rt: WorkspaceRuntime, watch: Watch, runId: string, onUpsert
               peopleWaiting: 0,
               createdAt: when,
               updatedAt: when,
+              ask: args.ask,
+              ...(parseDue(args.due) != null ? { dueAt: parseDue(args.due)! } : {}),
               ...(refs ? { refs } : {}),
             }
             const prov: Provenance = { watchId: watch.id, runId, at: now, why: args.why }
@@ -2424,6 +2428,7 @@ async function runWatchPreview(rt: WorkspaceRuntime, pv: WatchPreview, spec: Pre
                 from: args.from ?? '',
                 lastActivity: safeWhen(args.lastActivity, Date.now()),
                 why: args.why,
+                ask: args.ask,
               })
               return okResult(existing ? `already filed, ${existing.status}: ${ident.id}` : `new: filed ${ident.id}`)
             }),
