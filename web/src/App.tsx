@@ -33,6 +33,7 @@ import { dispatchPrompt, dispatchTitle } from './dispatch.js'
 import { draftStore, draftTitle, useDrafts } from './drafts.js'
 import { TerminalPage } from './components/TerminalPage.js'
 import { TopBar } from './components/TopBar.js'
+import { SessionCost } from './components/SessionCost.js'
 import { Transcript } from './components/Transcript.js'
 import { TeamStrip } from './components/TeamStrip.js'
 import { teamMembers } from './teams.js'
@@ -1046,6 +1047,7 @@ export function App() {
                       {current.branch ? ` · ${current.branch}` : ''}
                     </span>
                   </span>
+                  <SessionCost sessionId={current.id} status={current.status} />
                   <span className={`state ${current.status}`}>
                     <span
                       className={`dot ${

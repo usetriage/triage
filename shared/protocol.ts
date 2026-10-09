@@ -727,6 +727,11 @@ export type SessionSpend = {
   cost: number
   tokens: number
   messages: number
+  /** `tokens`, split the way the API bills it. Cache writes are both TTLs. */
+  input: number
+  output: number
+  cacheWrite: number
+  cacheRead: number
   /** False when some of the spend came from a model with no price row. */
   priced: boolean
 }

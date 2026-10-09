@@ -150,11 +150,24 @@ export function summarizeBySession(entries: UsageEntry[]): Map<string, SessionSp
   const out = new Map<string, SessionSpend>()
   for (const e of entries) {
     if (!e.sessionId) continue
-    const row = out.get(e.sessionId) ?? { cost: 0, tokens: 0, messages: 0, priced: true }
+    const row = out.get(e.sessionId) ?? {
+      cost: 0,
+      tokens: 0,
+      messages: 0,
+      priced: true,
+      input: 0,
+      output: 0,
+      cacheWrite: 0,
+      cacheRead: 0,
+    }
     const cost = entryCost(e)
     if (cost === undefined) row.priced = false
     row.cost += cost ?? 0
     row.tokens += e.input + e.output + e.cacheWrite5m + e.cacheWrite1h + e.cacheRead
+    row.input += e.input
+    row.output += e.output
+    row.cacheWrite += e.cacheWrite5m + e.cacheWrite1h
+    row.cacheRead += e.cacheRead
     row.messages++
     out.set(e.sessionId, row)
   }

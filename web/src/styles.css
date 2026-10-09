@@ -807,6 +807,40 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 #chatHeader .state.running, #chatHeader .state.starting { color: var(--body); }
 #chatHeader .state.error { color: var(--red); }
 
+/* session cost: a pill pushed right beside the status; hover opens the split.
+   Same vocabulary as .costBlock on the item page, sized for a popover. */
+#chatHeader .costPill { margin-left: auto; flex: none; cursor: default; font-variant-numeric: tabular-nums; }
+#chatHeader .costPill:hover, #chatHeader .costPill.on { color: var(--ink); border-color: var(--hair-bright); }
+#chatHeader .costPill + .state, #chatHeader .costSkel + .state { margin-left: 0; }
+#chatHeader .costSkel {
+  margin-left: auto; flex: none; width: 40px; height: 6px; border-radius: var(--r-full);
+  background: var(--hair-strong); animation: pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) { #chatHeader .costSkel { animation: none; } }
+.costPop {
+  z-index: 60; width: 280px; max-width: calc(100vw - 24px); display: flex; flex-direction: column; gap: 5px;
+  padding: 13px 15px; background: var(--elev); border: 1px solid var(--hair-strong); border-radius: var(--r-lg);
+  box-shadow: 0 0 0 1px var(--ring); color: var(--body); outline: none;
+  transform-origin: var(--radix-popover-content-transform-origin);
+}
+.costPop[data-state="open"] { animation: menuIn 0.12s ease; }
+.costPop .head { display: flex; align-items: baseline; gap: 8px; }
+.costPop .head .lab { font-size: 0.8462rem; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ash); }
+.costPop .head .win { margin-left: auto; font-family: var(--mono); font-size: 0.8462rem; color: var(--stone); }
+.costPop .big { font-size: 1.6923rem; line-height: 1.1; letter-spacing: -0.4px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.costPop .big .approx { font-size: 1rem; color: var(--stone); margin-left: 1px; }
+.costPop .sub { font-size: 0.9231rem; color: var(--stone); }
+.costPop .split { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 2px; padding: 8px 0; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
+.costPop .split > div { display: flex; align-items: baseline; gap: 8px; font-size: 0.9231rem; }
+.costPop .split dt { color: var(--charcoal); }
+.costPop .split dd { margin: 0 0 0 auto; font-family: var(--mono); color: var(--body); font-variant-numeric: tabular-nums; }
+.costPop .split .note { color: var(--stone); margin-right: 8px; }
+.costPop .keys { display: flex; flex-wrap: wrap; gap: 3px 14px; font-size: 0.8846rem; color: var(--charcoal); }
+.costPop .keys .key { display: inline-flex; align-items: center; gap: 6px; }
+.costPop .keys .sw { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.costPop .keys .v { font-family: var(--mono); color: var(--mute); }
+.costPop .foot { font-size: 0.8462rem; color: var(--stone); }
+
 #transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 40px 0; }
 #transcript .inner { max-width: var(--measure); margin: 0 auto; display: flex; flex-direction: column; gap: 16px; padding-bottom: 8px; }
 

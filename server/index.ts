@@ -6359,7 +6359,17 @@ const server = http.createServer(async (req, res) => {
     try {
       const bySession: Record<string, SessionSpend> = {}
       let models: UsageModelSlice[] = []
-      const totals = { cost: 0, tokens: 0, messages: 0, priced: true, sessions: 0 }
+      const totals = {
+        cost: 0,
+        tokens: 0,
+        messages: 0,
+        priced: true,
+        input: 0,
+        output: 0,
+        cacheWrite: 0,
+        cacheRead: 0,
+        sessions: 0,
+      }
       if (ids.length > 0) {
         // Only the newest sdk_session_id survives a resume today, so a resumed
         // session's earlier spend is not reachable from here. Whatever is on
@@ -6382,6 +6392,10 @@ const server = http.createServer(async (req, res) => {
             totals.cost += row.cost
             totals.tokens += row.tokens
             totals.messages += row.messages
+            totals.input += row.input
+            totals.output += row.output
+            totals.cacheWrite += row.cacheWrite
+            totals.cacheRead += row.cacheRead
             if (!row.priced) totals.priced = false
             totals.sessions++
           }
