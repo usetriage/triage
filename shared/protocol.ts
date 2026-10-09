@@ -935,6 +935,24 @@ export type WatchesResponse =
   | { ok: true; watches: import('../core/watch/types.js').Watch[] }
   | { ok: false; error: string }
 
+/** The watch file editor's side list: what a file may name on this machine. */
+export type WatchFileReference = {
+  projects: { id: string; name: string }[]
+  builtins: string[]
+  /** each connected MCP server and its tool lines, as a file spells them (`<server>/<tool>`) */
+  servers: { server: string; tools: string[] }[]
+}
+
+/**
+ * GET /api/watches/file[?id=] — a watch's file text (or a starter) and the
+ * reference list. POST /api/watches/file[?id=] { text } — saved only when it
+ * validates; otherwise `errors` lists every problem and nothing is written.
+ */
+export type WatchFileResponse =
+  | { ok: true; text: string; file?: string; reference: WatchFileReference }
+  | { ok: true; id: string }
+  | { ok: false; error: string; errors?: string[] }
+
 /** GET /api/watches/runs?id= — the slot ledger for one watch, newest slot first. */
 export type WatchRunsResponse =
   | { ok: true; runs: import('../core/watch/types.js').WatchSlotRun[] }

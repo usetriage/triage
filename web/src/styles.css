@@ -2420,6 +2420,44 @@ dialog.briefDialog .knobs { display: flex; gap: 8px; align-items: center; flex-w
 .schedCard input.cronIn { width: 200px; font-family: var(--mono); padding: 4px 8px; }
 .wform .foot { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-top: 6px; }
 .wform .foot .hint { margin-right: auto; }
+.schedCard .nextRuns { font-size: 0.8846rem; color: var(--body); }
+.schedCard .nextRuns .at { color: var(--ink); }
+.schedCard .nextRuns .dim { color: var(--stone); }
+
+/* the watch file editor: the file left, what it can name (click to copy) right */
+.wfile .crumbs { align-items: center; }
+.wfileName { margin-left: auto; color: var(--stone); font-size: 0.8462rem; }
+.wfileGrid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 20px; align-items: start; }
+.wfileMain { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.wfileText {
+  width: 100%; min-height: 62vh; resize: vertical; box-sizing: border-box;
+  font-family: var(--mono); font-size: 1rem; line-height: 1.6; color: var(--body); font-variant-ligatures: none;
+  background: var(--deep); border: 1px solid var(--hair-strong); border-radius: var(--r-lg); padding: 16px 18px; tab-size: 2;
+}
+.wfileText:focus { outline: none; border-color: var(--charcoal); }
+.wfile .foot { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+.wfile .foot .hint { margin-right: auto; }
+.wfileRef { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--hair); border-radius: var(--r-lg); padding: 12px; max-height: 72vh; overflow: auto; }
+.wfileRef .secLabel { margin: 10px 0 4px; }
+.wfileRef .secLabel:first-child { margin-top: 0; }
+.wfileEmpty { color: var(--stone); font-size: 0.9231rem; }
+.wfileCopy, .wfileServerHead {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: 0;
+  border-radius: var(--r-sm); padding: 4px 6px; color: var(--body); font-size: 0.8846rem; cursor: pointer;
+}
+.wfileCopy:hover, .wfileServerHead:hover { background: var(--wash-1); }
+.wfileCopy .v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wfileCopy .k { color: var(--stone); font-size: 0.8077rem; }
+.wfileCopy svg { flex: none; color: var(--stone); }
+.wfileServerHead .mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wfileServerHead .n { color: var(--stone); }
+.wfileServerHead svg { flex: none; color: var(--stone); transition: transform 0.15s; }
+.wfileServer[data-state="open"] .wfileServerHead svg { transform: rotate(90deg); }
+.wfileServerBody { padding-left: 14px; }
+@media (max-width: 767px) {
+  .wfileGrid { grid-template-columns: minmax(0, 1fr); }
+  .wfileText { min-height: 50vh; }
+}
 .formError { color: var(--red); font-size: 0.9231rem; font-family: var(--mono); }
 
 /* ---------- watch form: integrations picker (watch-spec.md, item 1) ---------- */

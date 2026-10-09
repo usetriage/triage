@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { WatchFiles, checkGrants, parseWatchFile, serializeWatchFile, type WatchFileSpec } from '../server/watch-files.js'
+import { WatchFiles, checkGrants, parseWatchFile, serializeWatchFile, starterWatchFile, withKey, type WatchFileSpec } from '../server/watch-files.js'
 import { builtinGrant, mcpToolName } from '../core/watch/tools.js'
 
 const SLACK = 'claude.ai Slack'
@@ -132,3 +132,19 @@ test('seeding: written once, untouched ones follow upgrades, edits and deletions
     await files.seed(v2)
     assert.deepEqual(await files.scan(), [])
   }))
+
+test('the starter file parses clean, comments and all, and names the first project', () => {
+  const p = parseWatchFile('new', starterWatchFile([{ id: 'p-1', name: 'Novus' }, { id: 'p-2', name: 'Other' }]))
+  assert.deepEqual(p.errors, [])
+  assert.equal(p.hadId, false)
+  assert.deepEqual([p.spec.title, p.spec.project, p.spec.schedule, p.spec.enabled], ['New watch', 'p-1', '0 9 * * 1-5', true])
+  assert.equal(p.spec.timeoutMs, undefined)
+})
+
+test('withKey sets one line and leaves comments and layout alone', () => {
+  const text = '---\n# mine\ntitle: T\nenabled: true\n# end\n---\n\nbody\n'
+  assert.equal(withKey(text, 'enabled', 'false', 'last'), '---\n# mine\ntitle: T\nenabled: false\n# end\n---\n\nbody\n')
+  assert.equal(withKey(text, 'id', 'x', 'first'), '---\nid: x\n# mine\ntitle: T\nenabled: true\n# end\n---\n\nbody\n')
+  assert.equal(withKey('---\ntitle: T\n---\nb', 'enabled', 'false', 'last'), '---\ntitle: T\nenabled: false\n---\nb')
+  assert.equal(withKey('no frontmatter', 'id', 'x', 'first'), '---\nid: x\n---\nno frontmatter')
+})

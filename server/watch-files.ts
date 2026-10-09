@@ -236,6 +236,56 @@ export function checkGrants(
   return { tools: out, errors }
 }
 
+/**
+ * Set one frontmatter key in a file's text, touching no other line: replace
+ * the key's line if there is one, else add it first or last in the block. A
+ * text with no frontmatter gets one. Pure.
+ */
+export function withKey(text: string, key: string, value: string, where: 'first' | 'last'): string {
+  const nl = text.includes('\r\n') ? '\r\n' : '\n'
+  const lines = text.split(/\r?\n/)
+  if (lines[0]?.trim() !== '---') return ['---', `${key}: ${value}`, '---', text].join(nl)
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === '---')
+  const re = new RegExp(`^${key}\\s*:`)
+  const at = lines.findIndex((l, i) => i > 0 && (end === -1 || i < end) && re.test(l))
+  if (at !== -1) lines[at] = `${key}: ${value}`
+  else lines.splice(where === 'first' || end === -1 ? 1 : end, 0, `${key}: ${value}`)
+  return lines.join(nl)
+}
+
+/**
+ * The text a new watch starts from in the editor: every key, the optional
+ * ones commented out, with the user's own projects to pick from. Pure.
+ */
+export function starterWatchFile(projects: { id: string; name: string }[]): string {
+  const first = projects[0]
+  return [
+    '---',
+    'title: New watch',
+    '# cron, local time: minute hour day-of-month month weekday',
+    'schedule: 0 9 * * 1-5',
+    '# the project folder the run works in — its id, from the list on the right',
+    `project: ${first ? first.id : ''}`,
+    '# built-ins: web, github, files-write · an MCP tool: <server>/<tool>',
+    'tools: [web]',
+    '# items (one work item per match) or digest (one report per run)',
+    'output: items',
+    '# never, on_failure or always — a macOS notification',
+    'notify: on_failure',
+    'enabled: true',
+    '# optional:',
+    '# model: sonnet',
+    '# catch_up: 6h            (never, unlimited, or a duration like 30m, 6h, 2d)',
+    '# timeout: 4m',
+    '# budget_usd: 2           (per run)',
+    '# daily_budget_usd: 5     (across a day of runs)',
+    '---',
+    '',
+    'What to look for, where, and what counts as a match.',
+    '',
+  ].join('\n')
+}
+
 /** What triage wrote, per file — the difference between "untouched" and "yours". */
 type Manifest = { version: 1; files: Record<string, { hash: string | null; removed?: boolean }> }
 
@@ -287,20 +337,18 @@ export class WatchFiles {
    */
   async stampId(name: string, id: string): Promise<void> {
     const file = this.pathOf(name)
-    const text = await readFile(file, 'utf8')
-    const nl = text.includes('\r\n') ? '\r\n' : '\n'
-    const lines = text.split(/\r?\n/)
-    let next: string
-    if (lines[0]?.trim() !== '---') {
-      next = ['---', `id: ${id}`, '---', text].join(nl)
-    } else {
-      const end = lines.findIndex((l, i) => i > 0 && l.trim() === '---')
-      const at = lines.findIndex((l, i) => i > 0 && (end === -1 || i < end) && /^id\s*:/.test(l))
-      if (at !== -1) lines[at] = `id: ${id}`
-      else lines.splice(1, 0, `id: ${id}`)
-      next = lines.join(nl)
-    }
-    await atomicWrite(file, next)
+    await atomicWrite(file, withKey(await readFile(file, 'utf8'), 'id', id, 'first'))
+  }
+
+  /** Turn a watch on or off by its `enabled:` line alone — comments and layout stay. */
+  async setEnabled(name: string, on: boolean): Promise<void> {
+    const file = this.pathOf(name)
+    await atomicWrite(file, withKey(await readFile(file, 'utf8'), 'enabled', String(on), 'last'))
+  }
+
+  /** Write a file exactly as given (the editor's text, already validated). */
+  async writeText(name: string, text: string): Promise<void> {
+    await atomicWrite(this.pathOf(name), text.endsWith('\n') ? text : `${text}\n`)
   }
 
   async remove(name: string): Promise<void> {

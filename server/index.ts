@@ -158,6 +158,8 @@ import type {
   WatchPreviewStatusResponse,
   WatchesResponse,
   WatchRunsResponse,
+  WatchFileReference,
+  WatchFileResponse,
   WorkItem,
   WorkspaceResponse,
   WorkspacesResponse,
@@ -241,7 +243,7 @@ import {
   type WatchRunTrigger,
 } from '../core/watch/types.js'
 import { composeRunPrompt, MAX_ROWS_PER_RUN } from '../core/watch/connectors.js'
-import { WatchFiles, checkGrants, parseWatchFile, type WatchFileSpec } from './watch-files.js'
+import { WatchFiles, checkGrants, parseWatchFile, serializeWatchFile, starterWatchFile, withKey, type WatchFileSpec } from './watch-files.js'
 import {
   grantLabel,
   grantsFrom,
@@ -2837,11 +2839,7 @@ async function syncWatchFilesNow(rt: WorkspaceRuntime, { force = false, deferFir
       await rt.watchFiles.stampId(f.name, spec.id).catch((err) => errors.push(`could not write an id into the file: ${err}`))
     }
     seen.add(spec.id)
-    const project = projects.find((p) => p.id === spec.project) ?? null
-    if (!spec.project) errors.push(NEEDS_PROJECT)
-    else if (!project) errors.push(`unknown project "${spec.project}" — pick another project for this watch`)
-    const probes = [rt.connectorCache, project ? rt.folderProbes.get(project.path) : undefined].filter((p): p is ConnectorProbe => p != null)
-    const checked = checkGrants(spec.tools, probes.length ? probes.flatMap((p) => p.connectors) : null)
+    const checked = checkWatchSpec(rt, spec, projects)
     errors.push(...checked.errors)
     const cfg = watchConfigFrom({ ...spec, tools: checked.tools }, f.name)
     const configError = errors.length ? errors.join('; ') : null
@@ -2887,6 +2885,70 @@ async function syncWatchFilesNow(rt: WorkspaceRuntime, { force = false, deferFir
   }
   // only a sync that got this far counts; one that threw is retried next tick
   rt.watchSyncSig = sig
+}
+
+/**
+ * What a parsed watch file can't do on this machine: name no project or a
+ * missing one, or grant a tool the connector probes don't know. Fills each
+ * grant's scope from the probe. The sync and the editor's save share it.
+ */
+function checkWatchSpec(rt: WorkspaceRuntime, spec: WatchFileSpec, projects: Project[]): { tools: WatchToolGrant[]; errors: string[] } {
+  const errors: string[] = []
+  const project = projects.find((p) => p.id === spec.project) ?? null
+  if (!spec.project) errors.push(NEEDS_PROJECT)
+  else if (!project) errors.push(`unknown project "${spec.project}" — pick another project for this watch`)
+  const probes = [rt.connectorCache, project ? rt.folderProbes.get(project.path) : undefined].filter((p): p is ConnectorProbe => p != null)
+  const checked = checkGrants(spec.tools, probes.length ? probes.flatMap((p) => p.connectors) : null)
+  return { tools: checked.tools, errors: [...errors, ...checked.errors] }
+}
+
+/** The editor's side list: project ids and every tool line the probes know. */
+function watchFileReference(rt: WorkspaceRuntime, projects: Project[]): WatchFileReference {
+  const servers = new Map<string, string[]>()
+  const probes = [rt.connectorCache, ...rt.folderProbes.values()].filter((p): p is ConnectorProbe => p != null)
+  for (const c of probes.flatMap((p) => p.connectors)) {
+    if (c.server === RESERVED_SERVER || !c.tools.length) continue
+    const lines = servers.get(c.server) ?? []
+    for (const t of c.tools) if (!lines.includes(`${c.server}/${t.name}`)) lines.push(`${c.server}/${t.name}`)
+    servers.set(c.server, lines)
+  }
+  return {
+    projects: projects.map((p) => ({ id: p.id, name: p.name })),
+    builtins: ['web', 'github', 'files-write'],
+    servers: [...servers].map(([server, tools]) => ({ server, tools })).sort((a, b) => a.server.localeCompare(b.server)),
+  }
+}
+
+/**
+ * The editor's save: check the text exactly as the sync would (schema, project,
+ * tools) and write it only when nothing is wrong. A new watch gets a fresh id
+ * (a pasted one that is taken is refused); an edit keeps its id, so its runs
+ * and items stay attached.
+ */
+async function saveWatchText(rt: WorkspaceRuntime, id: string | null, raw: string): Promise<{ id: string } | { errors: string[] }> {
+  const existing = id ? await rt.store.watches.get(id) : null
+  if (id && !existing) return { errors: ['unknown watch id'] }
+  if (raw.length > 64_000) return { errors: ['the file is too large (64 KB at most)'] }
+  const parsed = parseWatchFile(existing?.file ?? 'watch', raw)
+  const errors = [...parsed.errors]
+  let text = raw
+  let watchId = parsed.spec.id
+  if (existing) {
+    if (parsed.hadId && parsed.spec.id !== existing.id) errors.push(`id must stay ${existing.id} — it ties the watch to its runs and items`)
+    watchId = existing.id
+    if (!parsed.hadId) text = withKey(text, 'id', watchId, 'first')
+  } else if (!parsed.hadId) {
+    text = withKey(text, 'id', watchId, 'first')
+  } else if (await rt.store.watches.get(watchId)) {
+    errors.push(`id ${watchId} belongs to another watch — delete the id line and one is made for you`)
+  }
+  errors.push(...checkWatchSpec(rt, parsed.spec, await rt.store.projects.list()).errors)
+  if (errors.length) return { errors }
+  const name = existing?.file ?? rt.watchFiles.freeName(parsed.spec.title)
+  await rt.watchFiles.writeText(name, text)
+  await syncWatchFiles(rt, { force: true })
+  log('info', 'watch', `${existing ? 'updated' : 'created'}: ${parsed.spec.title} (watches/${name}.md)`, { watchId, workspace: rt.meta.id })
+  return { id: watchId }
 }
 
 /**
@@ -6077,11 +6139,14 @@ const server = http.createServer(async (req, res) => {
           throw new Error('unknown project')
         }
         const { runOnceNow: _ignored, ...patch } = parsed.patch
+        // The on/off switch edits only the `enabled:` line, so a hand-kept file stays as written.
+        const onlyToggle = Object.keys(patch).every((k) => k === 'enabled') && patch.enabled !== undefined
         // A legacy row gets its first file here — saving it is the way across.
         const name = existing.file ?? rt.watchFiles.freeName(patch.title ?? existing.title)
         const merged = { ...existing, ...patch } as Watch
         if (patch.schedule) merged.schedule = patch.schedule
-        await rt.watchFiles.write(name, watchSpecFrom(merged))
+        if (onlyToggle && existing.file) await rt.watchFiles.setEnabled(existing.file, patch.enabled!)
+        else await rt.watchFiles.write(name, watchSpecFrom(merged))
         await syncWatchFiles(rt, { force: true })
         const after = await rt.store.watches.get(id)
         if (patch.enabled === true && after?.configError) throw new Error(after.configError)
@@ -6267,6 +6332,40 @@ const server = http.createServer(async (req, res) => {
       body = { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
     json(body.ok ? 200 : 502, body)
+    return
+  }
+  // The watch file editor: GET the text (an existing watch's file, a legacy
+  // row rendered as one, or a starter) plus a reference list; POST saves it.
+  if (url.pathname === '/api/watches/file') {
+    let body: WatchFileResponse
+    let status = 200
+    try {
+      const id = url.searchParams.get('id')
+      const projects = await rt.store.projects.list()
+      if (req.method === 'GET') {
+        const w = id ? await rt.store.watches.get(id) : null
+        if (id && !w) {
+          status = 404
+          throw new Error('unknown watch id')
+        }
+        let text = starterWatchFile(projects)
+        if (w?.file) text = await readFile(rt.watchFiles.pathOf(w.file), 'utf8').catch(() => serializeWatchFile(watchSpecFrom(w)))
+        else if (w) text = serializeWatchFile(watchSpecFrom(w))
+        body = { ok: true, text, ...(w?.file ? { file: `watches/${w.file}.md` } : {}), reference: watchFileReference(rt, projects) }
+      } else if (req.method === 'POST') {
+        const raw = (await readJsonBody(req)) as { text?: unknown }
+        if (typeof raw?.text !== 'string') throw new Error('text must be a string')
+        const saved = await saveWatchText(rt, id, raw.text)
+        body = 'errors' in saved ? { ok: false, error: 'the file has problems', errors: saved.errors } : { ok: true, id: saved.id }
+      } else {
+        status = 405
+        throw new Error('GET or POST')
+      }
+    } catch (err) {
+      if (status === 200) status = 400
+      body = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    json(status, body)
     return
   }
   // The slot ledger for one watch — the watch page's Runs table.
