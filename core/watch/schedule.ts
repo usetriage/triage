@@ -100,6 +100,94 @@ export function pickToRun<T extends { slot: number }>(due: T[], capacity: number
   return [...due].sort((a, b) => a.slot - b.slot).slice(0, Math.max(0, capacity))
 }
 
+/** The most missed slots a catch-up run records — an every-minute watch asleep for a week stops here. */
+export const MISSED_CAP = 50
+
+/**
+ * The slots a catch-up run collapses: every slot strictly after the one it
+ * runs for, up to `now`, oldest first, at most `cap`. Each becomes a `missed`
+ * ledger row, so the gap is visible instead of silently coalesced.
+ */
+export function missedSlots(schedule: string, slot: number, now: number, cap = MISSED_CAP): number[] {
+  const out: number[] = []
+  let next = nextScheduled(schedule, slot)
+  while (next != null && next <= now && out.length < cap) {
+    out.push(next)
+    next = nextScheduled(schedule, next)
+  }
+  return out
+}
+
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+/** "08:00" today, "Wed 21:00" any other day — local, as cron is. */
+function slotTime(ms: number, now: number): string {
+  const d = new Date(ms)
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  return d.toDateString() === new Date(now).toDateString() ? hm : `${DAYS[d.getDay()]} ${hm}`
+}
+
+/** A catch-up run this close to its slot is on time — the prompt says nothing. */
+const ON_TIME_MS = 2 * 60_000
+
+/**
+ * What a catch-up run is told about its own lateness: the slot it is for, how
+ * late it started, and the slots it collapsed (the ledger's `missed` rows), so
+ * it can cover the gap and skip what has gone stale. Null when on time with
+ * nothing missed. Lists the newest ten missed slots.
+ */
+export function describeLateness(slot: number, missed: number[], now: number): string | null {
+  const late = now - slot
+  if (late <= ON_TIME_MS && !missed.length) return null
+  const parts = [`This run was scheduled for ${slotTime(slot, now)} and is starting ${humanSpan(late)} late (the Mac was asleep or triage was off)`]
+  if (missed.length) {
+    const listed = missed.slice(-10).map((m) => slotTime(m, now)).join(', ')
+    const more = missed.length > 10 ? ` and ${missed.length - 10} earlier` : ''
+    parts.push(`It also stands in for the missed slots ${listed}${more}`)
+  }
+  parts.push('Cover the whole gap since the scheduled slot in one pass, and skip anything that is stale by now.')
+  return parts.join('. ')
+}
+
+/** Local midnight at the start of `now`'s day — when a daily budget resets. */
+export function localMidnight(now: number): number {
+  const d = new Date(now)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+export type BudgetDecision = { skip: true; reason: string } | { skip: false; maxBudgetUsd?: number }
+
+/**
+ * The daily budget gate. Spent at or over the day's cap: skip, no run.
+ * Otherwise the run's own cap is the smaller of the per-run cap and what is
+ * left of the day, so one run can't overshoot it. No daily cap: the per-run
+ * cap alone.
+ */
+export function budgetFor(perRunUsd: number | undefined, dailyUsd: number | undefined, spentTodayUsd: number): BudgetDecision {
+  if (dailyUsd == null) return perRunUsd != null ? { skip: false, maxBudgetUsd: perRunUsd } : { skip: false }
+  const left = dailyUsd - spentTodayUsd
+  if (left <= 0) return { skip: true, reason: `spent $${spentTodayUsd.toFixed(2)} of the $${dailyUsd.toFixed(2)} daily budget` }
+  return { skip: false, maxBudgetUsd: perRunUsd != null ? Math.min(perRunUsd, left) : left }
+}
+
+/**
+ * A watch is overdue when no run has ended `ok` within a grace window of two
+ * schedule intervals plus an hour. Skips and failures never count — they used
+ * to, by moving lastRunAt. `lastOkAt` is the ledger's latest ok row; without
+ * one, a watch whose last receipt was ok counts from it, else from creation.
+ */
+export function isOverdue(
+  schedule: string,
+  w: Pick<Watch, 'createdAt' | 'lastRunAt' | 'lastRunStatus'>,
+  lastOkAt: number | undefined,
+  now: number,
+): boolean {
+  const grace = 2 * (intervalOf(schedule, now) ?? 86_400_000) + 3_600_000
+  const since = lastOkAt ?? (w.lastRunStatus === 'ok' && w.lastRunAt != null ? w.lastRunAt : w.createdAt)
+  return now - since > grace
+}
+
 // ---------------------------------------------------------------------------
 // The default look-back window (item 4): runs are stateless, so a run whose
 // instructions name no window is told to look back about two schedule periods.

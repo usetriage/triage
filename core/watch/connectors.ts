@@ -49,11 +49,14 @@ export function composeRunPrompt(w: {
   nowIso: string
   /** legacy place hint from pre-connector watches */
   scope?: string
+  /** a catch-up run's lateness line (describeLateness) */
+  lateness?: string
 }): string {
   const deferred = runDeferredTools(w.tools)
   const span = humanSpan(w.lookbackMs)
   const lines = [
     `You are a triage scanner running ONE watch, read-only unless a tool below says otherwise. It is now ${w.nowIso}.`,
+    w.lateness ?? '',
     `Time window: if the instructions name one, use it. Otherwise look at roughly the last ${span}. If the instructions ask for what is true now (open tasks, pending reviews) rather than what is new, ignore this window.`,
     deferred.length
       ? `Your tools are deferred: before anything else, call ToolSearch with "select:${deferred.join(',')}" to load their schemas, then use them. Never call a tool you have not loaded.`
