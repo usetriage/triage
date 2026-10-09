@@ -30,6 +30,7 @@
     "core/watch/types.ts",
     "core/watch/cron.ts",
     "core/watch/tools.ts",
-    "core/watch/schedule.ts"
+    "core/watch/schedule.ts",
+    "core/watch/run-rows.ts"
   ]
 }

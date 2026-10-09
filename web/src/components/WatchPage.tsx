@@ -7,7 +7,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import * as Switch from '@radix-ui/react-switch'
 import { Ellipsis, ExternalLink, Pencil, Play, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { ActivityResponse, ActivityRun, ItemListResponse, Project, ProjectsResponse, Watch, WatchesResponse } from '../../../shared/protocol.js'
+import type { ActivityResponse, ActivityRun, ItemListResponse, Project, ProjectsResponse, Watch, WatchesResponse, WatchRunsResponse, WatchSlotRun } from '../../../shared/protocol.js'
 import type { ScoredItem } from '../../../core/work/types.js'
 import { describeCron, nextScheduled } from '../../../core/watch/cron.js'
 import { itemHash, useEvents } from '../hooks.js'
@@ -18,6 +18,7 @@ import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
 import { humanSpan, lookbackMs, parseCatchUp } from '../../../core/watch/schedule.js'
 import { TRIGGER_LABEL, grantIcon, grantLabel, runStatusText } from '../watchUi.js'
 import { ago, nextRunText, runDotClass } from './WatchesPage.js'
+import { runRows, type RunRow } from '../../../core/watch/run-rows.js'
 
 type Tab = 'overview' | 'runs' | 'items'
 const WEEK_MS = 7 * 86_400_000
@@ -38,9 +39,43 @@ const fmtWhen = (ms: number) => {
   return `${d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} ${time}`
 }
 
+/** A catch-up run started this long after its slot is worth saying. */
+const LATE_MS = 2 * 60_000
+
+/** One Runs-table row in words: what happened to the slot, and why. */
+function outcomeText(r: RunRow): string {
+  const run = r.run
+  const late = r.trigger === 'catch_up' && r.startedAt - r.slot > LATE_MS ? ` · caught up, ${humanSpan(r.startedAt - r.slot)} late` : ''
+  const why = late || (r.trigger && r.trigger !== 'scheduled' ? ` · ${TRIGGER_LABEL[r.trigger]}` : '')
+  switch (r.status) {
+    case undefined:
+      return 'running…'
+    case 'ok': {
+      const found =
+        run?.newCount != null
+          ? run.matches
+            ? ` · ${run.newCount} new${run.matches - run.newCount > 0 ? `, ${run.matches - run.newCount} already filed` : ''}`
+            : ' · looked, found nothing'
+          : run?.matches
+            ? ` · ${run.matches} filed`
+            : ' · looked, found nothing'
+      return `ok${found}${why}`
+    }
+    case 'missed':
+      return r.coveredAt != null ? `missed · covered by the ${fmtWhen(r.coveredAt)} run` : 'missed · covered by a later run'
+    case 'skipped':
+      return r.reason?.startsWith('skipped') ? r.reason : `skipped · ${r.reason ?? 'no reason recorded'}`
+    case 'skipped_budget':
+      return `over the daily budget${r.reason ? ` · ${r.reason}` : ''}`
+    default:
+      return `${r.status} · ${r.reason ?? 'unknown error'}${why}`
+  }
+}
+
 export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: string) => void }) {
   const [watch, setWatch] = useState<Watch | null | undefined>(undefined)
   const [runs, setRuns] = useState<ActivityRun[]>([])
+  const [ledger, setLedger] = useState<WatchSlotRun[]>([])
   const [items, setItems] = useState<ScoredItem[]>([])
   const [projects, setProjects] = useState<Project[]>([])
   const [tab, setTab] = useState<Tab>('runs')
@@ -51,10 +86,11 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
 
   const load = useCallback(async () => {
     try {
-      const [wr, ar, ir] = await Promise.all([
+      const [wr, ar, ir, lr] = await Promise.all([
         fetch('/api/watches'),
         fetch(`/api/activity?watchId=${encodeURIComponent(id)}`),
         fetch(`/api/watches/items?id=${encodeURIComponent(id)}`),
+        fetch(`/api/watches/runs?id=${encodeURIComponent(id)}&limit=500`),
       ])
       const wb = (await wr.json()) as WatchesResponse
       setWatch(wb.ok ? (wb.watches.find((w) => w.id === id) ?? null) : null)
@@ -62,6 +98,8 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
       if (ab.ok) setRuns(ab.runs)
       const ib = (await ir.json()) as ItemListResponse
       if (ib.ok) setItems(ib.items)
+      const lb = (await lr.json()) as WatchRunsResponse
+      if (lb.ok) setLedger(lb.runs)
     } catch (err) {
       setError(String(err))
     }
@@ -99,6 +137,8 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
       total: items.length,
     }
   }, [runs, items])
+
+  const rows = useMemo(() => runRows(ledger, runs), [ledger, runs])
 
   async function toggle(on: boolean) {
     if (!watch) return
@@ -160,7 +200,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
   const catchUp = parseCatchUp(watch.catchUpWindow, watch.output)
   const catchUpText = catchUp.kind === 'unlimited' ? 'always, once on wake' : catchUp.kind === 'never' ? 'never — on-time slots only' : `within ${humanSpan(catchUp.ms)}`
   const uses = watch.tools.map(grantLabel).join(', ')
-  const shownRuns = showAll ? runs : runs.slice(0, SHOW_RUNS)
+  const shownRows = showAll ? rows : rows.slice(0, SHOW_RUNS)
   const edit = () => onNavigate(`/watches/${encodeURIComponent(watch.id)}/edit`)
 
   return (
@@ -335,7 +375,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
           {(
             [
               ['overview', 'Overview', null],
-              ['runs', 'Runs', runs.length],
+              ['runs', 'Runs', rows.length],
               ['items', 'Items', items.length],
             ] as Array<[Tab, string, number | null]>
           ).map(([t, label, n]) => (
@@ -379,6 +419,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
               <span className="k">Limits</span>
               <span className="v mono">
                 {watch.timeoutMs ? humanSpan(watch.timeoutMs) : 'default timeout'} · {watch.maxBudgetUsd != null ? `$${watch.maxBudgetUsd} cap` : 'default budget'}
+                {watch.dailyBudgetUsd != null ? ` · $${watch.dailyBudgetUsd}/day` : ''}
               </span>
               <span className="k">Notify</span>
               <span className="v">{watch.notify === 'on_failure' ? 'on failure' : watch.notify}</span>
@@ -397,7 +438,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
         )}
 
         {tab === 'runs' &&
-          (runs.length === 0 ? (
+          (rows.length === 0 ? (
             <div className="watchEmpty">No runs yet. Run now, or wait for the schedule.</div>
           ) : (
             <>
@@ -405,7 +446,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
                 <thead>
                   <tr>
                     <th aria-label="Status" />
-                    <th>Started</th>
+                    <th>Slot</th>
                     <th className="r">Took</th>
                     <th>Outcome</th>
                     <th className="r">New</th>
@@ -415,40 +456,28 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
                   </tr>
                 </thead>
                 <tbody>
-                  {shownRuns.map((r) => {
+                  {shownRows.map((r) => {
                     const live = !r.status
-                    const dot = live ? 'blue live' : runDotClass(r.status)
-                    const why = r.trigger && r.trigger !== 'scheduled' ? ` · ${TRIGGER_LABEL[r.trigger]}` : ''
-                    const found =
-                      r.newCount != null
-                        ? r.matches
-                          ? ` · ${r.newCount} new${r.matches - r.newCount > 0 ? `, ${r.matches - r.newCount} already filed` : ''}`
-                          : ' · looked, found nothing'
-                        : r.matches
-                          ? ` · ${r.matches} filed`
-                          : ' · looked, found nothing'
-                    const outcome = live
-                      ? 'running…'
-                      : r.status === 'ok'
-                        ? `ok${found}${why}`
-                        : r.status === 'skipped'
-                          ? (r.error ?? 'skipped')
-                          : `${r.status} · ${r.error ?? 'unknown error'}${why}`
+                    const noRun = r.status === 'skipped' || r.status === 'missed' || r.status === 'skipped_budget'
+                    const tone = r.status === 'failed' || r.status === 'timeout' ? ' bad' : r.status && r.status !== 'ok' ? ' skip' : ''
+                    const run = r.run
                     return (
-                      <tr key={r.sessionId}>
+                      <tr key={r.key}>
                         <td className="d">
-                          <span className={`dot ${dot}`} />
+                          <span className={`dot ${live ? 'blue live' : runDotClass(r.status)}`} />
                         </td>
-                        <td className="mono">{fmtWhen(r.startedAt)}</td>
-                        <td className="r mono">{live ? '—' : fmtDur(r.finishedAt - r.startedAt)}</td>
-                        <td className={`outcome${r.status === 'failed' || r.status === 'timeout' ? ' bad' : r.status === 'skipped' || r.status === 'interrupted' ? ' skip' : ''}`}>{outcome}</td>
-                        <td className="r mono">{r.status === 'ok' ? (r.newCount ?? r.matches ?? 0) : '—'}</td>
-                        <td className="r mono">{r.tokens ? fmtTokens(r.tokens) : '—'}</td>
+                        <td className="mono">{fmtWhen(r.slot)}</td>
+                        <td className="r mono">{!live && !noRun && r.endedAt != null ? fmtDur(r.endedAt - r.startedAt) : '—'}</td>
+                        <td className={`outcome${tone}`}>{outcomeText(r)}</td>
+                        <td className="r mono">{r.status === 'ok' ? (run?.newCount ?? run?.matches ?? 0) : '—'}</td>
+                        <td className="r mono">{run?.tokens ? fmtTokens(run.tokens) : '—'}</td>
                         <td className="r mono">{r.costUsd != null ? fmtUsd(r.costUsd) : '—'}</td>
                         <td className="tr r">
-                          <button type="button" className="tlink" onClick={() => setOpenRun(r)}>
-                            Transcript <ExternalLink size={11} aria-hidden="true" />
-                          </button>
+                          {run && (
+                            <button type="button" className="tlink" onClick={() => setOpenRun(run)}>
+                              Transcript <ExternalLink size={11} aria-hidden="true" />
+                            </button>
+                          )}
                         </td>
                       </tr>
                     )
@@ -456,10 +485,10 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
                 </tbody>
               </table>
               <div className="rtblFoot">
-                <span>Every run is a session. Runs are stateless: each looks back over its window, and anything found twice lands on the same item.</span>
-                {runs.length > SHOW_RUNS && (
+                <span>Every slot gets a row, skipped and missed ones too. Runs are stateless: each looks back over its window, and anything found twice lands on the same item.</span>
+                {rows.length > SHOW_RUNS && (
                   <button type="button" onClick={() => setShowAll((v) => !v)}>
-                    {showAll ? `Show latest ${SHOW_RUNS}` : `Show all ${runs.length}`}
+                    {showAll ? `Show latest ${SHOW_RUNS}` : `Show all ${rows.length}`}
                   </button>
                 )}
               </div>

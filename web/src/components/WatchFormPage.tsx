@@ -60,6 +60,8 @@ type Form = {
   timeoutMin: string
   /** dollars; '' = the workspace default */
   budget: string
+  /** dollars per local day across runs; '' = no daily cap */
+  dailyBudget: string
   notify: WatchNotify
   /** create only: run once as soon as it's saved */
   runOnceNow: boolean
@@ -78,6 +80,7 @@ const EMPTY: Form = {
   catchUp: '',
   timeoutMin: '',
   budget: '',
+  dailyBudget: '',
   notify: 'on_failure',
   runOnceNow: true,
 }
@@ -110,6 +113,7 @@ function formFrom(w: Watch): Form {
     catchUp: w.catchUpWindow ?? '',
     timeoutMin: w.timeoutMs ? String(Math.round(w.timeoutMs / 60_000)) : '',
     budget: w.maxBudgetUsd != null ? String(w.maxBudgetUsd) : '',
+    dailyBudget: w.dailyBudgetUsd != null ? String(w.dailyBudgetUsd) : '',
     notify: w.notify,
     runOnceNow: false,
   }
@@ -187,9 +191,11 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
 
   const timeoutMs = form.timeoutMin.trim() ? Math.round(Number(form.timeoutMin) * 60_000) : null
   const budget = form.budget.trim() ? Number(form.budget) : null
+  const dailyBudget = form.dailyBudget.trim() ? Number(form.dailyBudget) : null
   const limitsOk =
     (timeoutMs === null || (Number.isFinite(timeoutMs) && timeoutMs >= 30_000 && timeoutMs <= 3_600_000)) &&
-    (budget === null || (Number.isFinite(budget) && budget > 0 && budget <= 100))
+    (budget === null || (Number.isFinite(budget) && budget > 0 && budget <= 100)) &&
+    (dailyBudget === null || (Number.isFinite(dailyBudget) && dailyBudget > 0 && dailyBudget <= 1000))
   const complete = Boolean(form.title.trim() && form.instruction.trim() && form.tools.length > 0 && form.projectId && cronOk && limitsOk)
   // The instructions talk about the web but the run would have no web tools.
   const wantsWeb = /\b(news|web|google|internet|online|website|blog|article|search the)\b/i.test(form.instruction) && !hasBuiltin(form.tools, 'web')
@@ -210,6 +216,7 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
         catchUpWindow: form.catchUp || null,
         timeoutMs,
         maxBudgetUsd: budget,
+        dailyBudgetUsd: dailyBudget,
         notify: form.notify,
         ...(id ? {} : { runOnceNow: form.runOnceNow }),
       }
@@ -460,6 +467,7 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
                   <span className="m">
                     {form.catchUp || `catch-up ${defaultCatchUp(form.output) === 'unlimited' ? 'always' : 'within 6h'}`} ·{' '}
                     {timeoutMs ? humanSpan(timeoutMs) : humanSpan(defaults.timeoutMs)} · {budget != null ? `$${budget}` : defaults.budget != null ? `$${defaults.budget}` : 'no cap'}
+                    {dailyBudget != null ? ` · $${dailyBudget}/day` : ''}
                   </span>
                 </button>
               </Collapsible.Trigger>
@@ -495,6 +503,11 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
                   <input id="wf-budget" className="num" inputMode="decimal" value={form.budget} onChange={(e) => set('budget', e.target.value)} placeholder={defaults.budget != null ? String(defaults.budget) : 'none'} />
                   <span className="hint">dollars · the run stops when it hits the cap</span>
                 </div>
+                <label htmlFor="wf-daily-budget">Budget per day</label>
+                <div className="ctl">
+                  <input id="wf-daily-budget" className="num" inputMode="decimal" value={form.dailyBudget} onChange={(e) => set('dailyBudget', e.target.value)} placeholder="none" />
+                  <span className="hint">dollars across all of today’s runs · once spent, slots skip until midnight</span>
+                </div>
                 <label>Notify</label>
                 <div className="ctl">
                   <div className="seg" role="radiogroup" aria-label="Notify">
@@ -506,7 +519,7 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
                   </div>
                   <span className="hint">a macOS notification</span>
                 </div>
-                {!limitsOk && <span className="formError" style={{ gridColumn: '1 / -1' }}>Timeout must be 1–60 minutes; budget $0.01–$100.</span>}
+                {!limitsOk && <span className="formError" style={{ gridColumn: '1 / -1' }}>Timeout must be 1–60 minutes; budget $0.01–$100 per run, up to $1000 per day.</span>}
               </Collapsible.Content>
             </Collapsible.Root>
 
