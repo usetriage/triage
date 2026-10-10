@@ -46,7 +46,7 @@ import {
   type Options,
 } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import { currentBranch, filePatch, repoRoot, snapshotTree, treeDiff, treePatch, worktreeChanges, worktreePatch, type TreeChange } from './git.js'
+import { currentBranch, filePatch, repoRoot, snapshotTree, treeDiff, treePatch, treeStat, worktreeChanges, worktreePatch, type TreeChange } from './git.js'
 import type {
   ClientMessage,
   RemoteStatus,
@@ -164,47 +164,42 @@ import type {
   WorkspaceResponse,
   WorkspacesResponse,
   WorkspaceVerifyResponse,
-  SaveTeamResponse,
-  StartTeamResponse,
+  SessionTeamRun,
   TeamLibraryResponse,
-  TeamMembership,
-  TeamRunDetail,
-  TeamRunInfo,
+  TeamPickerResponse,
   TeamRunResponse,
-  TeamStage,
-  TeamStep,
-  TaskCard,
+  TeamRunView,
   AgentCan,
 } from '../shared/protocol.js'
-import { DEFAULT_TEAM_BUDGET_USD } from '../shared/protocol.js'
+import { TeamLibrary, agentFrom, builtinToolsFor, detectChecks, disallowedFor, frameTeamMessage, isCheckCommand, isLibraryName } from './teams.js'
+import { LEAD, parseRecipe, recipeAgents, serializeRecipe, taskLoop, type RecipeStep, type TeamRecipe } from '../core/teams/recipe.js'
+import { planTitle, renderPlan } from '../core/teams/plan.js'
 import {
-  MANAGER_DISALLOWED,
-  TEAM_MESSAGE_BUDGET,
-  TeamLibrary,
-  agentAppend,
-  agentFrom,
-  checkRoster,
-  disallowedFor,
-  draftAgentFrom,
-  frameTeamMessage,
-  isLibraryName,
-  managerAppend,
-  managerFrom,
-  budgetFrom,
+  MAX_RUN_BUDGET_USD,
+  approve,
+  cardFrom,
+  checksDone,
+  continueGate,
+  editTasks,
+  normalizeRun,
+  planMessage,
+  proposeRevision,
+  recipeFromRun,
+  resume,
   runSpent,
-  builtinToolsFor,
-  buildMessage,
-  checkerMessage,
-  detectChecks,
-  fixMessage,
-  MAX_FIX_ROUNDS,
-  pipelineAgentAppend,
-  pipelineManagerAppend,
-  renderCard,
-  reportMessage,
-  isCheckCommand,
-  type StoredTeamRun,
-} from './teams.js'
+  settleRevision,
+  split,
+  submit,
+  turnEnded,
+  workerAppend,
+  workerById,
+  type Action as TeamAction,
+  type CheckResult,
+  type DiffScope,
+  type Submission,
+  type TeamRun,
+  type Worker,
+} from '../core/teams/engine.js'
 import type { StoredTurn } from '../core/store/types.js'
 import { openSqliteStore } from '../core/store/sqlite.js'
 import type { Store, StoredSession, UpsertOutcome } from '../core/store/types.js'
@@ -404,6 +399,15 @@ const sessionScoped = (u: PermissionUpdate): PermissionUpdate => ({ ...u, destin
 /** Built-in tools whose only effect is reading. */
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch'])
 /** Our own MCP tools that only read (the inbox, the artifacts index) — never prompt for these. */
+/** triage's own team tools: they record and route, and the team card is the approval — never a prompt. */
+const TEAM_TOOLS = new Set([
+  'mcp__triage__list_teams',
+  'mcp__triage__propose_team',
+  'mcp__triage__split_step',
+  'mcp__triage__revise_plan',
+  'mcp__triage__submit_step',
+  'mcp__team__submit_step',
+])
 const TRIAGE_READ_TOOLS = new Set([
   'mcp__triage__list_work_items',
   'mcp__triage__get_work_item',
@@ -545,7 +549,7 @@ class WorkspaceRuntime {
   /** session id → the work item it was dispatched for or briefs (mirrors `links`) */
   readonly sessionItem = new Map<string, string>()
 
-  // Teams (server/teams.ts): agents and teams are files; runs persist under `team_runs`.
+  // Teams (server/teams.ts): agents and recipes are files; runs persist under `team_runs`.
   readonly teamLibrary: TeamLibrary
   // Watches are files (server/watch-files.ts); rows hold their state.
   readonly watchFiles: WatchFiles
@@ -553,11 +557,11 @@ class WorkspaceRuntime {
   watchSyncSig = ''
   /** syncs run one at a time: the tick and an API call can't interleave */
   watchSync: Promise<void> = Promise.resolve()
-  readonly teamRuns = new Map<string, StoredTeamRun>()
-  /** session id → its run and which member it is, mirrored from `teamRuns` */
-  readonly sessionTeam = new Map<string, { runId: string; member: string }>()
-  /** run id → messages between members since the user last spoke to the team */
-  readonly teamMessages = new Map<string, number>()
+  readonly teamRuns = new Map<string, TeamRun>()
+  /** session id → the run it leads or works on, mirrored from `teamRuns` */
+  readonly sessionTeam = new Map<string, string>()
+  /** run id → the tail of its action chain (withTeamRun) */
+  readonly teamLocks = new Map<string, Promise<unknown>>()
   /** sessions whose next spawn starts a fresh Claude session (a checker's clean context) */
   readonly freshNext = new Set<string>()
 
@@ -611,13 +615,13 @@ initLogFile(path.join(TRIAGE_DIR, 'logs'))
 type SessionExtras = {
   systemAppend?: string
   mcp?: Record<string, ReturnType<typeof createSdkMcpServer>>
-  /** tools the subprocess never gets (a team role's policy) */
+  /** tools the subprocess never gets (a team worker's policy) */
   disallowedTools?: string[]
-  /** extra inline (flag-layer) settings, e.g. a team member's compaction window */
+  /** extra inline (flag-layer) settings, e.g. a team worker's compaction window */
   settings?: Record<string, unknown>
   /** hard stop for this subprocess: the SDK ends the query past it (a team's remaining budget) */
   maxBudgetUsd?: number
-  /** the only built-in tools the subprocess gets (a team member's lean toolset) */
+  /** the only built-in tools the subprocess gets (a team worker's lean toolset) */
   tools?: string[]
   /** load only the MCP servers passed here — none of the user's other connectors or plugins */
   strictMcpConfig?: boolean
@@ -830,13 +834,13 @@ class LiveSession {
           // A brief run is one turn: its result is the run's end.
           if (this.row.kind === 'brief') void onBriefTurnDone(this.rt, this.row.id)
           // Team spend: total_cost_usd is cumulative for this subprocess, so
-          // the turn's cost is the difference from the last result it sent.
-          if (this.rt.sessionTeam.has(this.row.id)) {
-            const cost = typeof m.total_cost_usd === 'number' ? m.total_cost_usd : null
-            const delta = cost === null ? 0 : Math.max(0, cost - this.costSeen)
-            if (cost !== null) this.costSeen = cost
-            void noteTeamSpend(this.rt, this.row.id, delta, m.subtype)
-          }
+          // the turn's cost is the difference from the last result it sent —
+          // tracked for every session, so a chat that becomes a lead mid-way
+          // books only what it spends from then on.
+          const cost = typeof m.total_cost_usd === 'number' ? m.total_cost_usd : null
+          const delta = cost === null ? 0 : Math.max(0, cost - this.costSeen)
+          if (cost !== null) this.costSeen = cost
+          if (this.rt.sessionTeam.has(this.row.id)) void noteTeamSpend(this.rt, this.row.id, delta, m.subtype)
         }
       }
       this.setStatus('idle')
@@ -908,10 +912,7 @@ class LiveSession {
     // Before the agent can touch anything: the tree this turn starts from.
     await this.beginTurn()
     this.emit({ kind: 'local_user', text, images, mentions: attached?.resolved, ...(opts.from ? { from: opts.from } : {}) }, true)
-    // The user speaking to any member resets the team's message budget.
-    const team = this.rt.sessionTeam.get(this.row.id)
-    if (team && !opts.from) this.rt.teamMessages.delete(team.runId)
-    // A teammate's message is framed for the model; the transcript keeps the raw text and a badge.
+    // A message from triage or a teammate is framed for the model; the transcript keeps the raw text and a badge.
     const modelText = opts.from && text ? frameTeamMessage(opts.from, text) : text
     this.setStatus('running')
     void this.rt.store.sessions.touch(this.row.id)
@@ -944,21 +945,16 @@ class LiveSession {
     if (TRIAGE_READ_TOOLS.has(toolName)) {
       return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
     }
-    // Team members: talking to a teammate never prompts, and an agent that runs
-    // commands but can't edit (a reviewer) runs read-only git/gh unattended.
-    // (The manager has no shell at all — its disallowed tools, since the user's
-    // own allow rules skip this gate.)
-    const team = this.rt.sessionTeam.get(this.row.id)
-    if (team) {
-      // triage's own team tools (messaging, the stage submissions) never prompt — they only record and route.
-      if (toolName.startsWith('mcp__team__')) return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
-      const run = this.rt.teamRuns.get(team.runId)
-      const agent = run?.agents.find((a) => a.name === team.member)
-      if (agent && !agent.can.includes('edit') && toolName === 'Bash' && briefBashAllowed(toolInput)) {
-        return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
-      }
-      // The project's own checks (the same commands the checks stage runs) never need a click.
-      if (agent?.can.includes('run') && toolName === 'Bash' && run?.checkCmds && isCheckCommand(String(toolInput.command ?? ''), run.checkCmds)) {
+    // Team runs: triage's own team tools only record and route — the card is
+    // the approval. A worker that can't edit runs read-only git/gh unattended,
+    // and any worker runs the project's own checks without a click.
+    if (TEAM_TOOLS.has(toolName)) return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
+    const run = teamRunOf(this.rt, this.row.id)
+    if (run && run.leadSessionId !== this.row.id && toolName === 'Bash') {
+      const ws = run.workers.filter((w) => w.sessionId === this.row.id)
+      const writes = ws.some((w) => run.recipe.steps.find((s) => s.id === w.stepId)?.output === 'change')
+      if (!writes && briefBashAllowed(toolInput)) return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
+      if (run.checkCmds?.length && isCheckCommand(String(toolInput.command ?? ''), run.checkCmds)) {
         return Promise.resolve({ behavior: 'allow', updatedInput: toolInput })
       }
     }
@@ -1131,7 +1127,7 @@ function summarize(rt: WorkspaceRuntime, row: StoredSession): SessionSummary {
     ...(row.kind !== 'chat' ? { kind: row.kind } : {}),
     ...(row.watchId ? { watchId: row.watchId } : {}),
     ...(rt.sessionItem.has(row.id) ? { itemId: rt.sessionItem.get(row.id) } : {}),
-    ...(teamMembership(rt, row.id) ? { team: teamMembership(rt, row.id) } : {}),
+    ...(teamRunLink(rt, row.id) ? { teamRun: teamRunLink(rt, row.id) } : {}),
     ...(l?.waiting ? { waiting: true } : {}),
   }
 }
@@ -1158,15 +1154,15 @@ async function deleteSession(rt: WorkspaceRuntime, sessionId: string): Promise<v
   rt.live.delete(sessionId)
   rt.rows.delete(sessionId)
   rt.branches.delete(sessionId)
-  const team = rt.sessionTeam.get(sessionId)
-  if (team) {
+  const run = teamRunOf(rt, sessionId)
+  if (run) {
     rt.sessionTeam.delete(sessionId)
-    const run = rt.teamRuns.get(team.runId)
-    if (run) {
-      run.members = run.members.filter((m) => m.sessionId !== sessionId)
-      if (!run.members.length) rt.teamRuns.delete(run.id)
-      await saveTeamRuns(rt)
-    }
+    // The lead gone, the run goes with it; a worker gone respawns on its next step.
+    if (run.leadSessionId === sessionId) {
+      for (const w of run.workers) if (w.sessionId && w.sessionId !== sessionId) rt.sessionTeam.delete(w.sessionId)
+      rt.teamRuns.delete(run.id)
+    } else for (const w of run.workers) if (w.sessionId === sessionId) w.sessionId = null
+    await saveTeamRuns(rt)
   }
   await rt.store.sessions.remove(sessionId)
   broadcast(rt, { type: 'session_deleted', sessionId })
@@ -3945,7 +3941,7 @@ function linkTargetFrom(raw: unknown): { kind: LinkKind; id: string; role: LinkR
   const l = (raw ?? {}) as Record<string, unknown>
   if (!isLinkKind(l.kind) || l.kind === 'artifact') throw new Error('link kind must be item or session')
   if (typeof l.id !== 'string' || !l.id) throw new Error('a link needs an id')
-  if (!isLinkRole(l.role)) throw new Error('link role must be brief, report, context or dispatch')
+  if (!isLinkRole(l.role)) throw new Error('link role must be brief, report, context, dispatch or plan')
   return { kind: l.kind, id: l.id, role: l.role }
 }
 
@@ -4023,7 +4019,7 @@ async function addLinkOp(rt: WorkspaceRuntime, raw: unknown): Promise<Link> {
   const l = (raw ?? {}) as Record<string, unknown>
   if (!isLinkKind(l.fromKind) || !isLinkKind(l.toKind)) throw new Error('fromKind and toKind must be artifact, item or session')
   if (typeof l.fromId !== 'string' || !l.fromId || typeof l.toId !== 'string' || !l.toId) throw new Error('need fromId and toId')
-  if (!isLinkRole(l.role)) throw new Error('role must be brief, report, context or dispatch')
+  if (!isLinkRole(l.role)) throw new Error('role must be brief, report, context, dispatch or plan')
   await assertLinkable(rt, l.fromKind, l.fromId)
   await assertLinkable(rt, l.toKind, l.toId)
   return rt.store.links.add({ fromKind: l.fromKind, fromId: l.fromId, toKind: l.toKind, toId: l.toId, role: l.role })
@@ -4160,32 +4156,24 @@ function extrasFor(rt: WorkspaceRuntime, row: StoredSession): SessionExtras {
     workspaceName: rt.meta.name,
     artifactsRoot: rt.artifacts.root,
   })
-  const team = rt.sessionTeam.get(row.id)
-  const run = team ? rt.teamRuns.get(team.runId) : undefined
-  const agent = team && run && team.member !== 'manager' ? run.agents.find((a) => a.name === team.member) : undefined
-  if (team && run && (team.member === 'manager' || agent)) {
+  const run = teamRunOf(rt, row.id)
+  const worker = run && run.leadSessionId !== row.id ? [...run.workers].reverse().find((w) => w.sessionId === row.id) : undefined
+  if (run && worker) {
     // Rebuilt per spawn like the brief server: one instance, one transport.
-    const pipeline = run.mode === 'pipeline'
-    const can = agent ? agent.can : (['read'] as AgentCan[])
-    const browser = pipeline && can.includes('browser') ? userMcpServer('chrome-devtools') : null
+    const { agent, writes, can } = workerSpec(run, worker)
+    const browser = can.includes('browser') ? userMcpServer('chrome-devtools') : null
     return {
-      systemAppend: `${identity}\n${
-        pipeline ? (agent ? pipelineAgentAppend(run, agent) : pipelineManagerAppend(run)) : agent ? agentAppend(run, agent) : managerAppend(run)
-      }`,
-      mcp: { team: makeTeamMcp(rt, row.id, run) },
-      disallowedTools: agent ? disallowedFor(agent.can) : MANAGER_DISALLOWED,
-      // Pipeline members load only what their stage needs: a short built-in
-      // list and triage's own servers (+ the browser if allowed) — not every
-      // connector and plugin in ~/.claude, whose schemas ride every call.
-      ...(pipeline
-        ? {
-            tools: builtinToolsFor(can, { ask: !agent }),
-            strictMcpConfig: true,
-            ...(browser ? { externalMcp: { 'chrome-devtools': browser } } : {}),
-          }
-        : {}),
+      systemAppend: `${identity}\n${workerAppend(run, worker, agent, writes)}`,
+      mcp: { team: makeTeamMcp(rt, row.id) },
+      disallowedTools: disallowedFor(can as AgentCan[]),
+      // A worker loads only what its step needs: a short built-in list and
+      // triage's own servers (+ the browser if allowed) — not every connector
+      // and plugin in ~/.claude, whose schemas ride every call.
+      tools: builtinToolsFor(can as AgentCan[]),
+      strictMcpConfig: true,
+      ...(browser ? { externalMcp: { 'chrome-devtools': browser } } : {}),
       // Compact long before a 1M window would (it defaults to ~967K there): a
-      // member re-reads its whole history on every call, so history is cost.
+      // worker re-reads its whole history on every call, so history is cost.
       settings: { autoCompactWindow: TEAM_COMPACT_WINDOW },
       // What is left of the run's budget, so one runaway turn can't blow it.
       maxBudgetUsd: Math.max(0.25, run.budgetUsd - runSpent(run)),
@@ -4442,7 +4430,9 @@ async function bootBriefs(rt: WorkspaceRuntime): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Teams (server/teams.ts) — sessions that message each other through triage.
+// Teams v2 (server/teams.ts, core/teams/engine.ts): a recipe run by triage. The
+// lead is the chat session that proposed it; workers are sessions triage spawns
+// per step. The engine decides; this section carries its actions out.
 // ---------------------------------------------------------------------------
 const TEAM_RUNS_KEY = 'team_runs'
 
@@ -4450,60 +4440,41 @@ async function saveTeamRuns(rt: WorkspaceRuntime): Promise<void> {
   await rt.store.config.set(TEAM_RUNS_KEY, [...rt.teamRuns.values()])
 }
 
-/** Boot: mirror stored runs into memory, dropping members whose session was deleted. */
+/** Boot: mirror stored runs into memory. Runs from before recipes (no `recipe`) are dropped. */
 async function loadTeamRuns(rt: WorkspaceRuntime): Promise<void> {
-  for (const run of (await rt.store.config.get<StoredTeamRun[]>(TEAM_RUNS_KEY)) ?? []) {
-    const members = run.members.filter((m) => rt.rows.has(m.sessionId))
-    if (!members.length) continue
-    // Runs from before budgets existed get today's defaults rather than none.
-    const legacy = run as Partial<StoredTeamRun>
-    rt.teamRuns.set(run.id, {
-      ...run,
-      members,
-      budgetUsd: legacy.budgetUsd ?? DEFAULT_TEAM_BUDGET_USD,
-      spend: legacy.spend ?? {},
-      state: legacy.state ?? 'running',
-      stage: legacy.stage ?? 'build',
-      round: legacy.round ?? 0,
-      maxRounds: legacy.maxRounds ?? MAX_FIX_ROUNDS,
-      rev: legacy.rev ?? 0,
-      card: legacy.card ?? null,
-      steps: legacy.steps ?? [],
-      dir: legacy.dir ?? '',
-    })
-    for (const m of members) rt.sessionTeam.set(m.sessionId, { runId: run.id, member: m.member })
+  for (const run of (await rt.store.config.get<TeamRun[]>(TEAM_RUNS_KEY)) ?? []) {
+    if (!run || !(run as Partial<TeamRun>).recipe || !rt.rows.has(run.leadSessionId)) continue
+    for (const w of run.workers) if (w.sessionId && !rt.rows.has(w.sessionId)) w.sessionId = null
+    rt.teamRuns.set(run.id, normalizeRun(run))
+    indexTeamRun(rt, run)
   }
 }
 
-/** A session's place on a team, as the wire carries it. */
-function teamMembership(rt: WorkspaceRuntime, sessionId: string): TeamMembership | undefined {
-  const t = rt.sessionTeam.get(sessionId)
-  const run = t ? rt.teamRuns.get(t.runId) : undefined
-  const order = run ? run.members.findIndex((m) => m.sessionId === sessionId) : -1
-  if (!t || !run || order < 0) return undefined
-  const m = run.members[order]
-  return {
-    id: run.id,
-    member: m.member,
-    label: m.label,
-    ...(m.color ? { color: m.color } : {}),
-    order,
-    role: m.member === 'manager' ? 'manager' : run.agents.find((a) => a.name === m.member)?.role ?? 'checker',
-    spentUsd: run.spend[m.member] ?? 0,
-    run: runInfo(run),
-  }
+/** session id → run id, for the lead and every worker session. */
+function indexTeamRun(rt: WorkspaceRuntime, run: TeamRun): void {
+  rt.sessionTeam.set(run.leadSessionId, run.id)
+  for (const w of run.workers) if (w.sessionId) rt.sessionTeam.set(w.sessionId, run.id)
 }
 
-const runInfo = (run: StoredTeamRun): TeamRunInfo => ({
-  state: run.state,
-  spentUsd: runSpent(run),
-  budgetUsd: run.budgetUsd,
-  ...(run.reason ? { reason: run.reason } : {}),
-  stage: run.stage,
-  round: run.round,
-  maxRounds: run.maxRounds,
-  rev: run.rev,
-})
+const teamRunOf = (rt: WorkspaceRuntime, sessionId: string): TeamRun | undefined => {
+  const id = rt.sessionTeam.get(sessionId)
+  return id ? rt.teamRuns.get(id) : undefined
+}
+
+/** A session's place on a run, as the wire carries it. */
+function teamRunLink(rt: WorkspaceRuntime, sessionId: string): SessionTeamRun | undefined {
+  const run = teamRunOf(rt, sessionId)
+  if (!run) return undefined
+  const lead = run.leadSessionId === sessionId
+  const w = [...run.workers].reverse().find((x) => x.sessionId === sessionId && x.agent !== LEAD)
+  return { id: run.id, role: lead ? 'lead' : 'worker', label: lead ? 'Lead' : w?.label ?? 'Worker', state: run.state, rev: run.rev }
+}
+
+/** The run as the client reads it: everything but the server's own bookkeeping. */
+function teamRunView(run: TeamRun): TeamRunView {
+  const { root: _root, checkCmds: _cmds, baseTree: _base, nudged: _nudged, ...view } = run
+  return { ...view, spentUsd: runSpent(run) }
+}
 
 /**
  * One MCP server from the user's own Claude Code config (~/.claude.json), as a
@@ -4519,7 +4490,7 @@ function userMcpServer(name: string): Record<string, unknown> | null {
   }
 }
 
-/** A member's history is compacted past this many tokens (see extrasFor). */
+/** A worker's history is compacted past this many tokens (see extrasFor). */
 const TEAM_COMPACT_WINDOW = 200_000
 
 /** Write a notice into a session's transcript, live or not. */
@@ -4534,74 +4505,221 @@ async function sessionNotice(rt: WorkspaceRuntime, sessionId: string, text: stri
 
 const usd = (n: number) => `$${n.toFixed(2)}`
 
+/** Work on one run at a time: a turn ending and an API call never interleave their actions. */
+function withTeamRun<T>(rt: WorkspaceRuntime, run: TeamRun, fn: () => Promise<T>): Promise<T> {
+  const prev = rt.teamLocks.get(run.id) ?? Promise.resolve()
+  const next = prev.catch(() => {}).then(fn)
+  rt.teamLocks.set(run.id, next.catch(() => {}))
+  return next
+}
+
+async function teamRunChanged(rt: WorkspaceRuntime, run: TeamRun): Promise<void> {
+  await saveTeamRuns(rt)
+  broadcastSessionList(rt)
+  schedulePlanSync(rt, run)
+}
+
 /**
- * A member's turn ended: book its cost on the run, and pause the run when the
- * budget is reached (or the SDK already stopped the turn at its backstop).
+ * The Plan artifact, rendered from the run (core/teams/plan.ts) — triage's code
+ * is its only writer. Coalesced: a burst of changes is one write (each write is
+ * a git commit in the artifacts folder), and an unchanged body is no write.
+ */
+const PLAN_SYNC_MS = 1500
+function schedulePlanSync(rt: WorkspaceRuntime, run: TeamRun, now = false): Promise<void> | void {
+  const key = `${rt.meta.id}:${run.id}`
+  clearTimeout(planTimers.get(key))
+  planTimers.delete(key)
+  if (now) return syncPlan(rt, run)
+  planTimers.set(
+    key,
+    setTimeout(() => {
+      planTimers.delete(key)
+      void syncPlan(rt, run)
+    }, PLAN_SYNC_MS),
+  )
+}
+const planTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+async function syncPlan(rt: WorkspaceRuntime, run: TeamRun): Promise<void> {
+  if (!rt.teamRuns.has(run.id)) return
+  try {
+    const body = renderPlan(run)
+    if (run.planArtifactId) {
+      const cur = await rt.store.artifacts.get(run.planArtifactId)
+      if (cur) {
+        const onDisk = await readFile(path.join(rt.artifacts.root, cur.path), 'utf8').catch(() => '')
+        if (onDisk.includes(body.trim())) return
+        await rt.artifacts.update(run.planArtifactId, { title: planTitle(run), body })
+        return
+      }
+    }
+    const artifact = await rt.artifacts.create({ title: planTitle(run), body, author: 'model' }, 'plans')
+    run.planArtifactId = artifact.id
+    await rt.store.links.add({ fromKind: 'artifact', fromId: artifact.id, toKind: 'item', toId: run.itemId, role: 'plan' })
+    await rt.store.links.add({ fromKind: 'artifact', fromId: artifact.id, toKind: 'session', toId: run.leadSessionId, role: 'plan' })
+    // The client refetches on a new revision — without this it never learns the plan exists.
+    run.rev += 1
+    await saveTeamRuns(rt)
+    broadcastSessionList(rt)
+  } catch (err) {
+    log('error', 'teams', `could not write the plan: ${err}`, { teamId: run.id, workspace: rt.meta.id })
+  }
+}
+
+/** The spawn-time settings a worker's session gets for the step it is on. */
+function workerSpec(run: TeamRun, w: Worker) {
+  const step = run.recipe.steps.find((s) => s.id === w.stepId)
+  const agent = run.agents.find((a) => a.name === w.agent)
+  const writes = step?.output === 'change'
+  const can = (agent?.can ?? ['read']).filter((c) => writes || c !== 'edit') as AgentCan[]
+  const model = run.card.steps.find((c) => c.id === w.stepId)?.model ?? step?.model ?? agent?.model ?? null
+  return { step, agent, writes, can, model }
+}
+
+/** Carry out the engine's actions, in order. */
+async function applyTeamActions(rt: WorkspaceRuntime, run: TeamRun, actions: TeamAction[]): Promise<void> {
+  for (const a of actions) {
+    if (a.kind === 'notice') await sessionNotice(rt, run.leadSessionId, a.text)
+    else if (a.kind === 'tellLead') await tellSession(rt, run.leadSessionId, a.text)
+    else if (a.kind === 'snapshot') {
+      const tree = (run.root && (await snapshotTree(run.root))) || undefined
+      if (a.scope === 'run') run.runBase = tree
+      run.baseTree = tree
+    }
+    else if (a.kind === 'checks') {
+      await teamRunChanged(rt, run)
+      const results = await runProjectChecks(run)
+      await applyTeamActions(rt, run, checksDone(run, results, Date.now()))
+    } else if (a.kind === 'finish') await finishTeamRun(rt, run)
+    else if (a.kind === 'tell') {
+      const w = workerById(run, a.workerId)
+      if (!w) continue
+      if (!w.sessionId) {
+        const lead = rt.rows.get(run.leadSessionId)
+        const { writes, model, agent } = workerSpec(run, w)
+        const effort = (agent?.effort ?? null) as EffortLevel | null
+        const row = await createSession(rt, `${w.label} · ${run.title}`, lead?.cwd ?? run.root ?? os.homedir(), model, effort, false, writes ? 'acceptEdits' : 'gated', { spawn: false })
+        w.sessionId = row.id
+        rt.sessionTeam.set(row.id, run.id)
+        await linkSessionToItem(rt, row.id, run.itemId, 'dispatch').catch(() => {})
+      }
+      let text = a.text
+      if (a.diff) text += `\n\n${await handoffDiff(rt, run, a.diff)}`
+      if (a.fresh) rt.freshNext.add(w.sessionId)
+      await tellSession(rt, w.sessionId, text)
+    }
+  }
+  await teamRunChanged(rt, run)
+}
+
+/** A message from triage itself — badged "from triage" in the transcript, framed as not-the-user for the model. */
+async function tellSession(rt: WorkspaceRuntime, sessionId: string, text: string): Promise<void> {
+  const live = await getOrRevive(rt, sessionId)
+  await live?.sendUserMessage(text, undefined, undefined, { from: 'triage' })
+}
+
+/** Diffs at most this long go inline; past it the reader gets the map and the patch by reference. */
+const INLINE_DIFF_CHARS = 8000
+
+/**
+ * The diff a checker reads instead of anyone's transcript — this task's, or the
+ * whole run's. Always the stat first (the map: which files, how much). A small
+ * patch rides inline; a big one is written to the run's folder and the reader
+ * pulls what it needs, file by file — it only pays for what it reads.
+ */
+async function handoffDiff(rt: WorkspaceRuntime, run: TeamRun, scope: DiffScope): Promise<string> {
+  const base = scope === 'task' ? run.baseTree : run.runBase ?? run.baseTree
+  const what = scope === 'task' ? `this task's changes` : `the whole run's changes`
+  if (!run.root || !base) return '## Diff\n(no baseline — read the files the handoffs list)'
+  const now = await snapshotTree(run.root)
+  if (!now) return '## Diff\n(could not read the working tree)'
+  const [stat, { patch }] = await Promise.all([
+    treeStat(run.root, base, now).catch(() => ''),
+    treePatch(run.root, base, now, 20_000_000).catch(() => ({ patch: '', truncated: false })),
+  ])
+  if (!patch) return `## Diff — ${what}\n(no file changes were detected)`
+  if (patch.length <= INLINE_DIFF_CHARS) return `## Diff — ${what}\n\`\`\`\n${stat}\n\`\`\`\n\`\`\`diff\n${patch}\n\`\`\``
+  const task = run.task !== null ? run.card.tasks[run.task]?.id : null
+  const file = path.join(workspaceDir(rt.meta.id), 'team-runs', run.id, `${scope}${task && scope === 'task' ? `-${task}` : ''}-round${run.round}.patch`)
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, patch, 'utf8')
+  const lines = patch.split('\n').length
+  return [
+    `## Diff — ${what}: ${lines} lines, too long to inline`,
+    `\`\`\`\n${stat}\n\`\`\``,
+    `The full patch is at ${file} — Read it in parts (offset/limit), or read one file's changes at a time:`,
+    `\`git diff ${base} -- <file>\` (edits to files git already tracks; a brand-new file is only in the patch).`,
+    'Start from the files that matter most for the criteria; you don\'t need to read every line.',
+  ].join('\n')
+}
+
+const CHECK_TIMEOUT_MS = 240_000
+
+/** The project's own typecheck/lint/test — free, and before any checker is paid to find a type error. */
+async function runProjectChecks(run: TeamRun): Promise<CheckResult[]> {
+  const cmds = run.root ? await detectChecks(run.root) : []
+  run.checkCmds = cmds
+  const results: CheckResult[] = []
+  for (const cmd of cmds) {
+    try {
+      await pExec(cmd, { cwd: run.root, timeout: CHECK_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, CI: '1', FORCE_COLOR: '0' } })
+      results.push({ cmd, ok: true, tail: '' })
+    } catch (err) {
+      const e = err as { stdout?: string; stderr?: string; message?: string }
+      const out = `${e.stdout ?? ''}\n${e.stderr ?? ''}`.trim() || e.message || 'failed'
+      results.push({ cmd, ok: false, tail: out.slice(-3000) })
+    }
+  }
+  return results
+}
+
+/** The run is over: the plan gets its Outcome — it is the result on the item — and the lead says so. */
+async function finishTeamRun(rt: WorkspaceRuntime, run: TeamRun): Promise<void> {
+  await schedulePlanSync(rt, run, true)
+  run.resultArtifactId = run.planArtifactId
+  await sessionNotice(rt, run.leadSessionId, `Team done${run.unresolved ? ' — with something unresolved' : ''} · ${usd(runSpent(run))}. The outcome is on the plan.`)
+  log('info', 'teams', `run done at ${usd(runSpent(run))}`, { teamId: run.id, workspace: rt.meta.id })
+}
+
+/**
+ * A team session's turn ended: book its cost, pause the run past its budget (or
+ * when the SDK already stopped the turn at its backstop), then let the engine act.
  */
 async function noteTeamSpend(rt: WorkspaceRuntime, sessionId: string, delta: number, subtype?: string): Promise<void> {
-  const t = rt.sessionTeam.get(sessionId)
-  const run = t ? rt.teamRuns.get(t.runId) : undefined
-  if (!t || !run) return
-  run.spend[t.member] = (run.spend[t.member] ?? 0) + delta
-  const spent = runSpent(run)
-  if (run.state === 'running' && (spent >= run.budgetUsd || subtype === 'error_max_budget_usd')) {
-    await pauseTeamRun(rt, run, `budget reached — ${usd(spent)} of ${usd(run.budgetUsd)}`)
-    return
-  }
-  await saveTeamRuns(rt)
-  broadcastSessionList(rt)
-  await advanceTeamRun(rt, run, t.member)
+  const run = teamRunOf(rt, sessionId)
+  if (!run) return
+  await withTeamRun(rt, run, async () => {
+    if (run.state === 'done' || run.state === 'stopped') return
+    run.spend[sessionId] = (run.spend[sessionId] ?? 0) + delta
+    run.rev += 1
+    const spent = runSpent(run)
+    if (run.state === 'running' && (spent >= run.budgetUsd || subtype === 'error_max_budget_usd')) {
+      await pauseTeamRunNow(rt, run, `budget reached — ${usd(spent)} of ${usd(run.budgetUsd)}`)
+      return
+    }
+    await applyTeamActions(rt, run, turnEnded(run, sessionId))
+  })
 }
 
-/** Stop every member mid-turn and hold messages until the run is resumed. */
-async function pauseTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun, reason: string): Promise<void> {
+/** Stop every worker mid-turn and hold the run until it's resumed. The lead's chat is left alone. */
+async function pauseTeamRunNow(rt: WorkspaceRuntime, run: TeamRun, reason: string): Promise<void> {
   run.state = 'paused'
   run.reason = reason
-  for (const m of run.members) {
-    const live = rt.live.get(m.sessionId)
+  run.rev += 1
+  for (const w of run.workers) {
+    if (!w.sessionId || w.sessionId === run.leadSessionId) continue
+    const live = rt.live.get(w.sessionId)
     if (!live) continue
     await live.interrupt()
     live.stop()
   }
-  await saveTeamRuns(rt)
-  const manager = run.members.find((m) => m.member === 'manager')
-  if (manager) await sessionNotice(rt, manager.sessionId, `Team paused: ${reason}. Resume to raise the budget, or stop the run.`)
+  await teamRunChanged(rt, run)
+  await sessionNotice(rt, run.leadSessionId, `Team paused: ${reason}. Resume to raise the budget, or stop the run.`)
   log('info', 'teams', `run paused: ${reason}`, { teamId: run.id, workspace: rt.meta.id })
-  broadcastSessionList(rt)
 }
 
-async function resumeTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun, addUsd: number | null): Promise<void> {
-  const spent = runSpent(run)
-  // Resume always leaves room to work: at least the requested amount above what's spent.
-  const add = addUsd ?? Math.max(5, Math.round(run.budgetUsd * 0.5))
-  run.budgetUsd = Math.max(run.budgetUsd, spent) + add
-  run.state = 'running'
-  delete run.reason
-  // Members respawn on their next message with the new remaining budget as their backstop.
-  for (const m of run.members) rt.live.get(m.sessionId)?.stop()
-  await saveTeamRuns(rt)
-  const manager = run.members.find((m) => m.member === 'manager')
-  if (manager) await sessionNotice(rt, manager.sessionId, `Team resumed — budget now ${usd(run.budgetUsd)} (${usd(spent)} spent).`)
-  broadcastSessionList(rt)
-  await continueTeamRun(rt, run)
-}
-
-async function stopTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
-  run.state = 'stopped'
-  for (const m of run.members) {
-    const live = rt.live.get(m.sessionId)
-    if (!live) continue
-    await live.interrupt()
-    live.stop()
-  }
-  await saveTeamRuns(rt)
-  const manager = run.members.find((m) => m.member === 'manager')
-  if (manager) await sessionNotice(rt, manager.sessionId, `Team stopped at ${usd(runSpent(run))}.`)
-  broadcastSessionList(rt)
-}
-
-function teamRunFrom(rt: WorkspaceRuntime, raw: unknown): StoredTeamRun {
-  const id = (raw as { teamId?: unknown })?.teamId
+function teamRunFrom(rt: WorkspaceRuntime, raw: unknown): TeamRun {
+  const id = (raw as { runId?: unknown })?.runId
   const run = typeof id === 'string' ? rt.teamRuns.get(id) : undefined
   if (!run) throw new Error('no such team run')
   return run
@@ -4609,125 +4727,6 @@ function teamRunFrom(rt: WorkspaceRuntime, raw: unknown): StoredTeamRun {
 
 async function teamLibraryOp(rt: WorkspaceRuntime): Promise<TeamLibraryResponse & { ok: true }> {
   return { ok: true, ...(await rt.teamLibrary.list()), dir: rt.teamLibrary.root }
-}
-
-/**
- * Start a team on a work item from the dialog's draft: the manager plus one
- * session per agent, in the item's project, each linked to the item as a
- * dispatch. The roster is copied onto the run, so editing a library file later
- * never rewrites what a run was told. Only the manager starts now; the others
- * spawn on their first message.
- */
-async function startTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<{ teamId: string; managerId: string }> {
-  const r = (raw ?? {}) as Record<string, unknown>
-  const item = await rt.store.items.get(typeof r.itemId === 'string' ? r.itemId : '')
-  if (!item) throw new Error('no such work item')
-  const project = await projectFor(rt, item)
-  if (!project) throw new Error('this item has no project — set one on the item so the team knows which folder to work in')
-  const manager = managerFrom(r.manager)
-  const agents = (Array.isArray(r.agents) ? r.agents : []).map((a) => agentFrom(a))
-  checkRoster(agents, { toStart: true })
-  const title = item.title.slice(0, 80)
-  const id = randomUUID()
-  const run: StoredTeamRun = {
-    id,
-    itemId: item.id,
-    title,
-    createdAt: Date.now(),
-    team: isLibraryName(r.team) ? r.team : null,
-    manager,
-    agents,
-    members: [],
-    budgetUsd: budgetFrom(r.budgetUsd) ?? DEFAULT_TEAM_BUDGET_USD,
-    spend: {},
-    state: 'running',
-    // V2: triage runs the stages (.docs/teams-industry.md).
-    mode: 'pipeline',
-    stage: 'spec',
-    round: 0,
-    maxRounds: MAX_FIX_ROUNDS,
-    rev: 0,
-    card: null,
-    steps: [],
-    root: (await repoRoot(project.path)) ?? project.path,
-    dir: path.join(workspaceDir(rt.meta.id), 'team-runs', id),
-  }
-  run.checkCmds = await detectChecks(run.root!)
-  const mgr = await createSession(rt, `Manager · ${title}`, project.path, manager.model, manager.effort, false, 'gated', { spawn: false })
-  run.members.push({ member: 'manager', label: 'Manager', sessionId: mgr.id })
-  for (const a of agents) {
-    const mode = a.can.includes('edit') ? 'acceptEdits' : 'gated'
-    const row = await createSession(rt, `${a.label} · ${title}`, project.path, a.model, a.effort, false, mode, { spawn: false })
-    run.members.push({ member: a.name, label: a.label, color: a.color, sessionId: row.id })
-  }
-  for (const m of run.members) rt.sessionTeam.set(m.sessionId, { runId: run.id, member: m.member })
-  rt.teamRuns.set(run.id, run)
-  await saveTeamRuns(rt)
-  for (const m of run.members) await linkSessionToItem(rt, m.sessionId, item.id, 'dispatch')
-  const live = await getOrRevive(rt, mgr.id)
-  if (!live) throw new Error('could not start the manager session')
-  const brief = await currentBrief(rt, item.id)
-  const mentions: Mention[] = [{ kind: 'item', ref: item.id, label: item.title }]
-  if (brief) mentions.push({ kind: 'artifact', ref: brief.artifact.id, label: brief.artifact.title })
-  const kickoff =
-    typeof r.kickoff === 'string' && r.kickoff.trim()
-      ? r.kickoff.trim()
-      : `Start the team on this work item: "${item.title}". Understand the scope, show me the plan, then delegate the first task.`
-  const images = await itemImageAttachments(rt.attachmentsDir, item.id, item.images)
-  await live.sendUserMessage(`${kickoff}\n\n${mentions.map(mentionToken).join(' ')}`, images, mentions)
-  log('info', 'teams', `team started: ${item.title}`, { teamId: run.id, itemId: item.id, agents: agents.length, workspace: rt.meta.id })
-  return { teamId: run.id, managerId: mgr.id }
-}
-
-/**
- * Save a team draft as a library team. Agents unchanged from their library file
- * are referenced; edited ones are forked into new files (the dialog — never a
- * silent edit to an agent other teams share) or written back (Settings, which
- * shows who uses them). New agents get new files.
- */
-async function saveTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<string> {
-  const r = (raw ?? {}) as Record<string, unknown>
-  const lib = rt.teamLibrary
-  const label = typeof r.label === 'string' ? r.label.trim().slice(0, 60) : ''
-  if (!label) throw new Error('the team needs a name')
-  const drafts = (Array.isArray(r.agents) ? r.agents : []).map((a) => draftAgentFrom(a))
-  checkRoster(drafts)
-  const update = r.agentMode === 'update'
-  const names: string[] = []
-  const taken = new Set<string>()
-  // A forked copy keeps its name unless another agent already carries it — then
-  // the team's name tells the two apart in Settings ("Reviewer (My Development)").
-  const labels = new Set((await lib.agents()).map((a) => a.label.toLowerCase()))
-  for (const { base, dirty, ...raw } of drafts) {
-    const spec = !base || !dirty || update || !labels.has(raw.label.toLowerCase()) ? raw : { ...raw, label: `${raw.label} (${label})`.slice(0, 60) }
-    if (base && (await lib.readAgent(base))) {
-      if (!dirty) {
-        names.push(base)
-        continue
-      }
-      if (update) {
-        await lib.writeAgent({ ...spec, name: base })
-        names.push(base)
-        continue
-      }
-    }
-    const name = await lib.freeName('agent', spec.label, taken)
-    taken.add(name)
-    await lib.writeAgent({ ...spec, name })
-    names.push(name)
-  }
-  const existing = isLibraryName(r.name) && (await lib.readTeam(r.name)) ? r.name : null
-  const name = existing ?? (await lib.freeName('team', label))
-  await lib.writeTeam({
-    name,
-    label,
-    description: typeof r.description === 'string' ? r.description.trim().slice(0, 400) : '',
-    manager: managerFrom(r.manager),
-    agents: names,
-    budgetUsd: budgetFrom(r.budgetUsd) ?? DEFAULT_TEAM_BUDGET_USD,
-  })
-  log('info', 'teams', `team saved: ${label}`, { team: name, agents: names, workspace: rt.meta.id })
-  return name
 }
 
 /** Create or update one agent file (Settings → Teams → Agents). */
@@ -4741,407 +4740,471 @@ async function saveAgentOp(rt: WorkspaceRuntime, raw: unknown): Promise<string> 
   return name
 }
 
-/**
- * The `team` MCP server a member gets. In a pipeline run (V2) its tools are the
- * member's one submission — submit_task_card / submit_handoff / submit_verdict —
- * plus builder↔helper messaging; triage acts on a submission when the member's
- * turn ends. Open runs (V1) keep free-form message_teammate.
- */
-function makeTeamMcp(rt: WorkspaceRuntime, sessionId: string, run: StoredTeamRun) {
-  const me = rt.sessionTeam.get(sessionId)
-  const self = run.agents.find((a) => a.name === me?.member)
-  const role = me?.member === 'manager' ? 'manager' : self?.role ?? 'checker'
-  const pipeline = run.mode === 'pipeline'
+/** What the lead sees when it picks or drafts a team. */
+async function listTeamsOp(rt: WorkspaceRuntime) {
+  const { teams, agents } = await rt.teamLibrary.list()
+  return {
+    teams: teams
+      .filter((t) => t.recipe && !t.missing.length)
+      .map((t) => ({
+        team: t.name,
+        label: t.recipe!.label,
+        description: t.recipe!.description,
+        useFor: t.recipe!.useFor,
+        budgetUsd: t.recipe!.budgetUsd,
+        steps: t.recipe!.steps.map((s) => ({
+          id: s.id,
+          agent: s.agent,
+          output: s.output,
+          ...(s.fanOut ? { fanOut: s.fanOut } : {}),
+          ...(s.onFail ? { onFail: s.onFail } : {}),
+          ...(s.gate ? { gate: s.gate } : {}),
+          ...(s.does ? { does: s.does } : {}),
+        })),
+        advice: t.recipe!.advice,
+      })),
+    agents: agents.map((a) => ({ agent: a.name, label: a.label, description: a.description, can: a.can, model: a.model })),
+  }
+}
 
-  /** The run as it is now (not as it was at spawn), or an error to hand back. */
-  const current = (): { run: StoredTeamRun; member: string } | { error: ReturnType<typeof errResult> } => {
-    const t = rt.sessionTeam.get(sessionId)
-    const cur = t ? rt.teamRuns.get(t.runId) : undefined
-    if (!t || !cur) return { error: errResult('this session is not on a team') }
-    if (cur.state !== 'running') {
-      return { error: errResult(`the team is ${cur.state}${cur.reason ? ` (${cur.reason})` : ''} — stop; the user resumes it`) }
+/** A recipe the lead drafted for this run: checked by the same parser a team file goes through. */
+function draftedRecipe(raw: unknown, known: Set<string>): TeamRecipe {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const steps = (Array.isArray(r.steps) ? r.steps : []).map((x) => {
+    const s = (x ?? {}) as Record<string, unknown>
+    const fan = (s.fanOut ?? null) as { by?: unknown; max?: unknown } | null
+    const fail = (s.onFail ?? null) as { backTo?: unknown; max?: unknown } | null
+    return {
+      id: String(s.id ?? ''),
+      agent: String(s.agent ?? ''),
+      output: (typeof s.output === 'string' ? s.output : null) as RecipeStep['output'],
+      does: typeof s.does === 'string' ? s.does : '',
+      fanOut: fan ? { by: String(fan.by ?? ''), max: Number(fan.max) } : null,
+      onFail: fail ? { backTo: String(fail.backTo ?? ''), max: Number(fail.max) } : null,
+      gate: s.gate === 'you' ? ('you' as const) : null,
+      model: typeof s.model === 'string' && s.model ? s.model : null,
+      forEach: s.forEach === 'task' ? ('task' as const) : null,
+      context: s.context === 'fresh' || s.context === 'carry' ? (s.context as 'fresh' | 'carry') : null,
     }
-    return { run: cur, member: t.member }
+  })
+  const recipe: TeamRecipe = {
+    label: typeof r.label === 'string' && r.label.trim() ? r.label.trim().slice(0, 60) : 'Custom',
+    description: typeof r.description === 'string' ? r.description.trim().slice(0, 400) : '',
+    useFor: [],
+    budgetUsd: typeof r.budgetUsd === 'number' && r.budgetUsd > 0 ? r.budgetUsd : 5,
+    lead: { model: null, effort: null },
+    done: typeof r.done === 'string' ? r.done.trim() : '',
+    steps,
+    advice: '',
   }
+  const parsed = parseRecipe('draft', serializeRecipe(recipe, 'draft'))
+  if (!parsed.recipe) throw new Error(`the drafted team doesn't hold together: ${parsed.errors.join('; ')}`)
+  const missing = recipeAgents(parsed.recipe).filter((a) => !known.has(a))
+  if (missing.length) throw new Error(`no agent file named ${missing.join(', ')} — use list_teams to see the agents there are`)
+  return parsed.recipe
+}
 
-  // Who this member may message: everyone (open), builder ↔ helpers (pipeline).
-  const helpers = run.agents.filter((a) => a.role === 'helper').map((a) => a.name)
-  const builderName = run.agents.find((a) => a.role === 'builder')?.name
-  const reach = !pipeline
-    ? run.members.map((m) => m.member).filter((m) => m !== me?.member)
-    : role === 'builder'
-      ? helpers
-      : role === 'helper' && builderName
-        ? [builderName]
-        : []
-
-  const messageTool = tool(
-    'message_teammate',
-    pipeline
-      ? 'Ask a teammate a question (builder ↔ helpers only). It arrives in their session as a new turn; end your turn after sending.'
-      : 'Send a message to another member of your team, by member name. It arrives in their session as a new turn. After sending, end your turn — their reply arrives as a new message.',
-    {
-      to: (reach.length ? z.enum(reach as [string, ...string[]]) : z.string()).describe('the member to message'),
-      message: z.string().describe('the full message — the member sees only this, not your conversation'),
-    },
-    async (args) => {
-      try {
-        const c = current()
-        if ('error' in c) return c.error
-        if (!reach.includes(args.to)) return errResult(`you can't message ${args.to} — ${reach.length ? `only ${reach.join(', ')}` : 'no one'}`)
-        const target = c.run.members.find((m) => m.member === args.to)
-        if (!target) return errResult(`this team has no member named ${args.to}`)
-        const sent = (rt.teamMessages.get(c.run.id) ?? 0) + 1
-        if (sent > TEAM_MESSAGE_BUDGET) {
-          return errResult(`the team has sent ${TEAM_MESSAGE_BUDGET} messages since the user last spoke — stop and report instead`)
-        }
-        const live = await getOrRevive(rt, target.sessionId)
-        if (!live) return errResult(`could not start ${target.label}'s session`)
-        rt.teamMessages.set(c.run.id, sent)
-        const from = c.run.members.find((m) => m.sessionId === sessionId)?.label ?? c.member
-        await live.sendUserMessage(args.message, undefined, undefined, { from })
-        return okResult(`delivered to ${target.label}. End your turn now; their reply will arrive as a new message.`)
-      } catch (err) {
-        return errResult(errText(err))
-      }
-    },
-  )
-
-  const tools: NonNullable<Parameters<typeof createSdkMcpServer>[0]['tools']> = []
-  if (!pipeline || reach.length) tools.push(messageTool)
-
-  if (pipeline && role === 'manager') {
-    tools.push(
-      tool(
-        'submit_task_card',
-        'Submit the task card: the contract the user approves and the checker verifies against. Replaces any earlier card. Then end your turn.',
-        {
-          goal: z.string().describe('one or two sentences: what the change achieves, for whom'),
-          criteria: z.array(z.string()).min(1).max(8).describe('3–6 observable, checkable behaviours that mean "done"'),
-          outOfScope: z.array(z.string()).max(8).optional().describe('what the builder must not touch or add'),
-          files: z.array(z.string()).max(12).optional().describe('files or areas the builder should start from'),
-          notes: z.string().optional().describe('decisions made, constraints, or "this card is the first slice of …"'),
-        },
-        async (args) => {
-          const c = current()
-          if ('error' in c) return c.error
-          if (c.run.stage !== 'spec' && c.run.stage !== 'approve') return errResult(`the card can't change now — the run is at "${c.run.stage}"`)
-          const card: TaskCard = {
-            goal: args.goal.trim(),
-            criteria: args.criteria.map((x) => x.trim()).filter(Boolean),
-            outOfScope: (args.outOfScope ?? []).map((x) => x.trim()).filter(Boolean),
-            files: (args.files ?? []).map((x) => x.trim()).filter(Boolean),
-            ...(args.notes?.trim() ? { notes: args.notes.trim() } : {}),
-          }
-          c.run.card = card
-          c.run.steps.push({ kind: 'card', at: Date.now(), card })
-          c.run.pending = { member: c.member, kind: 'card' }
-          await writeRunFile(c.run, 'card.md', `# Task card — ${c.run.title}\n\n${renderCard(card)}\n`)
-          await saveTeamRuns(rt)
-          return okResult('Task card submitted. End your turn now — the user approves it and triage runs the build.')
-        },
-      ),
-    )
+/**
+ * The lead proposes a team: a saved team or one it drafted, plus the card. The
+ * run waits, proposed, until you approve. A session with no work item gets one —
+ * the result, "needs you" and the cost all land on an item.
+ */
+async function proposeTeamOp(rt: WorkspaceRuntime, sessionId: string, raw: unknown): Promise<TeamRun> {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const lead = rt.rows.get(sessionId)
+  if (!lead) throw new Error('no such session')
+  const existing = teamRunOf(rt, sessionId)
+  if (existing && existing.leadSessionId !== sessionId) throw new Error('this session is a worker on a team — only a lead proposes one')
+  if (existing && existing.state !== 'proposed' && existing.state !== 'done' && existing.state !== 'stopped') {
+    throw new Error(`this session already leads a ${existing.state} team run — stop it before proposing another`)
   }
+  const lib = rt.teamLibrary
+  const { teams, agents } = await lib.list()
+  let recipe: TeamRecipe
+  let team: string | null = null
+  if (typeof r.team === 'string' && r.team) {
+    const entry = teams.find((t) => t.name === r.team)
+    if (!entry) throw new Error(`no team named "${r.team}" — call list_teams`)
+    if (!entry.recipe) throw new Error(`teams/${entry.name}.md has errors: ${entry.errors.join('; ')}`)
+    if (entry.missing.length) throw new Error(`teams/${entry.name}.md names agents with no file: ${entry.missing.join(', ')}`)
+    recipe = entry.recipe
+    team = entry.name
+  } else if (r.recipe) recipe = draftedRecipe(r.recipe, new Set(agents.map((a) => a.name)))
+  else throw new Error('give either team (a saved team\'s name) or recipe (a drafted one)')
+  const card = cardFrom(r.card, recipe, existing?.state === 'proposed' ? existing.card : undefined)
 
-  if (pipeline && role === 'builder') {
-    tools.push(
-      tool(
-        'submit_handoff',
-        'Hand the finished (or fixed) work to verification. Keep it short. Then end your turn.',
-        {
-          summary: z.string().describe('what you changed, in a few lines'),
-          files: z.array(z.string()).describe('files created or modified'),
-          verification: z.string().describe('what you ran to check it and what it showed'),
-          uncertain: z.string().optional().describe('anything you are unsure about'),
-          rejected: z.string().optional().describe('findings you declined as out of scope, with the reason'),
-        },
-        async (args) => {
-          const c = current()
-          if ('error' in c) return c.error
-          if (c.run.stage !== 'build' && c.run.stage !== 'blocked') return errResult(`there's nothing to hand off — the run is at "${c.run.stage}"`)
-          const step = {
-            kind: 'handoff' as const,
-            at: Date.now(),
-            round: c.run.round,
-            summary: args.summary.trim(),
-            files: args.files,
-            verification: args.verification.trim(),
-            ...(args.uncertain?.trim() ? { uncertain: args.uncertain.trim() } : {}),
-            ...(args.rejected?.trim() ? { rejected: args.rejected.trim() } : {}),
-          }
-          c.run.steps.push(step)
-          c.run.pending = { member: c.member, kind: 'handoff' }
-          await writeRunFile(c.run, `handoff-${c.run.round}.md`, handoffText(step))
-          await saveTeamRuns(rt)
-          return okResult('Handed off. End your turn now — triage runs the checks and the review.')
-        },
-      ),
-      tool(
-        'report_blocked',
-        'Ask the user one question you cannot answer yourself. The run waits for their answer in your session.',
-        { question: z.string().describe('one specific question') },
-        async (args) => {
-          const c = current()
-          if ('error' in c) return c.error
-          c.run.steps.push({ kind: 'blocked', at: Date.now(), question: args.question.trim() })
-          c.run.pending = { member: c.member, kind: 'blocked' }
-          await saveTeamRuns(rt)
-          return okResult('Asked. End your turn now; the user answers here.')
-        },
-      ),
-    )
+  let itemId = rt.sessionItem.get(sessionId) ?? null
+  if (!itemId || !(await rt.store.items.get(itemId))) {
+    const title = (typeof r.title === 'string' && r.title.trim() ? r.title.trim() : card.goal).slice(0, 120)
+    itemId = await createManualOp(rt, { title, description: card.goal })
+    await linkSessionToItem(rt, sessionId, itemId, 'dispatch')
   }
-
-  if (pipeline && role === 'checker') {
-    tools.push(
-      tool(
-        'submit_verdict',
-        'Submit your verdict on the change. "fail" needs at least one P0/P1 finding. Then end your turn.',
-        {
-          verdict: z.enum(['pass', 'fail']),
-          verified: z.string().describe('what you ran or checked, and what it showed'),
-          findings: z
-            .array(
-              z.object({
-                severity: z.enum(['P0', 'P1']),
-                where: z.string().describe('file:line or the behaviour'),
-                problem: z.string(),
-                fix: z.string(),
-              }),
-            )
-            .max(10)
-            .optional(),
-        },
-        async (args) => {
-          const c = current()
-          if ('error' in c) return c.error
-          if (c.run.stage !== 'verify') return errResult(`there's nothing to verify — the run is at "${c.run.stage}"`)
-          const findings = args.findings ?? []
-          if (args.verdict === 'fail' && !findings.length) return errResult('a "fail" needs at least one P0 or P1 finding')
-          const label = c.run.members.find((m) => m.sessionId === sessionId)?.label ?? c.member
-          const step = { kind: 'verdict' as const, at: Date.now(), round: c.run.round, checker: label, verdict: args.verdict, verified: args.verified.trim(), findings }
-          c.run.steps.push(step)
-          c.run.pending = { member: c.member, kind: 'verdict' }
-          await writeRunFile(c.run, `verdict-${c.run.round}-${c.member}.md`, verdictText(step))
-          await saveTeamRuns(rt)
-          return okResult('Verdict submitted. End your turn now.')
-        },
-      ),
-    )
+  const item = await rt.store.items.get(itemId)
+  const root = (await repoRoot(lead.cwd)) ?? lead.cwd
+  const used = new Set(recipeAgents(recipe))
+  const run: TeamRun = {
+    id: existing?.state === 'proposed' ? existing.id : randomUUID(),
+    itemId,
+    title: (item?.title ?? card.goal).slice(0, 80),
+    createdAt: existing?.state === 'proposed' ? existing.createdAt : Date.now(),
+    team,
+    recipe,
+    card,
+    agents: agents.filter((a) => used.has(a.name)).map((a) => ({ name: a.name, label: a.label, color: a.color, model: a.model, effort: a.effort, prompt: a.prompt, can: a.can })),
+    leadSessionId: sessionId,
+    state: 'proposed',
+    step: 0,
+    splitting: false,
+    round: 0,
+    task: null,
+    tasks: {},
+    workers: [],
+    awaiting: [],
+    submitted: [],
+    outputs: [],
+    notes: [],
+    revision: null,
+    feedback: null,
+    unresolved: null,
+    spend: {},
+    budgetUsd: card.budgetUsd,
+    rev: (existing?.rev ?? 0) + 1,
+    nudged: [],
+    root,
+    ...(existing?.state === 'proposed' && existing.planArtifactId ? { planArtifactId: existing.planArtifactId } : {}),
   }
+  if (existing && existing.id !== run.id) rt.teamRuns.delete(existing.id)
+  rt.teamRuns.set(run.id, run)
+  indexTeamRun(rt, run)
+  await teamRunChanged(rt, run)
+  log('info', 'teams', `team proposed: ${recipe.label} for ${run.title}`, { teamId: run.id, workspace: rt.meta.id })
+  return run
+}
 
-  return createSdkMcpServer({
-    name: 'team',
-    version: VERSION,
-    // A member's submit tool is its one job-critical tool: loaded up front,
-    // never behind tool search.
-    alwaysLoad: true,
-    tools,
+/** Your edit to a proposed card (before approving). */
+async function editTeamCardOp(rt: WorkspaceRuntime, raw: unknown): Promise<void> {
+  const run = teamRunFrom(rt, raw)
+  if (run.state !== 'proposed') throw new Error('only a proposed card can be edited')
+  run.card = cardFrom((raw as { card?: unknown }).card, run.recipe, run.card)
+  run.budgetUsd = run.card.budgetUsd
+  run.rev += 1
+  await teamRunChanged(rt, run)
+}
+
+/**
+ * Your edit to a running plan, from the drawer: the tasks still to do, and the
+ * decisions. Tasks land between tasks — the loop reads the list fresh each time.
+ */
+async function editPlanOp(rt: WorkspaceRuntime, raw: unknown): Promise<void> {
+  const run = teamRunFrom(rt, raw)
+  const r = raw as { tasks?: unknown; decisions?: unknown }
+  await withTeamRun(rt, run, async () => {
+    if (run.state === 'done' || run.state === 'stopped') throw new Error(`the run is ${run.state}`)
+    if (r.tasks !== undefined) {
+      if (run.state === 'proposed') run.card = cardFrom({ ...run.card, tasks: r.tasks }, run.recipe, run.card)
+      else editTasks(run, r.tasks)
+    }
+    if (Array.isArray(r.decisions)) {
+      run.card.decisions = r.decisions.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter(Boolean).slice(0, 20)
+    }
+    run.rev += 1
+    await teamRunChanged(rt, run)
   })
 }
 
-// --- the pipeline engine: triage, not an agent, moves a run between stages ---
-
-async function writeRunFile(run: StoredTeamRun, name: string, text: string): Promise<void> {
-  if (!run.dir) return
-  await mkdir(run.dir, { recursive: true }).catch(() => {})
-  await writeFile(path.join(run.dir, name), text, 'utf8').catch(() => {})
+async function settleRevisionOp(rt: WorkspaceRuntime, raw: unknown): Promise<void> {
+  const run = teamRunFrom(rt, raw)
+  await withTeamRun(rt, run, () => applyTeamActions(rt, run, settleRevision(run, (raw as { accept?: unknown }).accept === true)))
 }
 
-type HandoffStep = Extract<TeamStep, { kind: 'handoff' }>
-type VerdictStep = Extract<TeamStep, { kind: 'verdict' }>
-const handoffText = (s: HandoffStep): string =>
-  [
-    `Summary: ${s.summary}`,
-    `Files: ${s.files.join(', ') || '—'}`,
-    `Verified: ${s.verification}`,
-    s.uncertain ? `Uncertain: ${s.uncertain}` : '',
-    s.rejected ? `Declined as out of scope: ${s.rejected}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n')
-const verdictText = (s: VerdictStep): string =>
-  [
-    `${s.checker}: ${s.verdict.toUpperCase()}`,
-    `Verified: ${s.verified}`,
-    ...s.findings.map((f, i) => `${i + 1}. [${f.severity}] ${f.where} — ${f.problem}\n   Fix: ${f.fix}`),
-  ].join('\n')
+async function approveTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<void> {
+  const run = teamRunFrom(rt, raw)
+  await withTeamRun(rt, run, async () => {
+    const card = (raw as { card?: unknown }).card ? cardFrom((raw as { card?: unknown }).card, run.recipe, run.card) : run.card
+    log('info', 'teams', `team approved: ${run.recipe.label}`, { teamId: run.id, workspace: rt.meta.id })
+    await applyTeamActions(rt, run, approve(run, card))
+  })
+}
 
-const memberOf = (run: StoredTeamRun, role: 'builder' | 'checker') =>
-  run.agents.filter((a) => a.role === role).map((a) => run.members.find((m) => m.member === a.name)!).filter(Boolean)
-
-/** Move to a stage: bump the revision, persist, tell every client. */
-async function setStage(rt: WorkspaceRuntime, run: StoredTeamRun, stage: TeamStage): Promise<void> {
-  run.stage = stage
-  run.rev += 1
-  delete run.nudged
+async function discardTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<void> {
+  const run = teamRunFrom(rt, raw)
+  if (run.state !== 'proposed') throw new Error('only a proposed run can be discarded — stop a running one')
+  rt.teamRuns.delete(run.id)
+  rt.sessionTeam.delete(run.leadSessionId)
+  if (run.planArtifactId) await rt.artifacts.remove(run.planArtifactId).catch(() => {})
   await saveTeamRuns(rt)
   broadcastSessionList(rt)
+  await sessionNotice(rt, run.leadSessionId, 'Team card discarded.')
 }
 
-/** A message from triage itself — badged "from triage" in the transcript, framed as not-the-user for the model. */
-async function tellMember(rt: WorkspaceRuntime, sessionId: string, text: string, opts: { fresh?: boolean } = {}): Promise<void> {
-  if (opts.fresh) rt.freshNext.add(sessionId)
-  const live = await getOrRevive(rt, sessionId)
-  await live?.sendUserMessage(text, undefined, undefined, { from: 'triage' })
+async function resumeTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<void> {
+  const run = teamRunFrom(rt, raw)
+  await withTeamRun(rt, run, async () => {
+    if (run.state === 'gate') return applyTeamActions(rt, run, continueGate(run))
+    const spent = runSpent(run)
+    const addUsd = Number((raw as { addUsd?: unknown }).addUsd)
+    // Resume always leaves room to work: at least the requested amount above what's spent.
+    const add = Number.isFinite(addUsd) && addUsd > 0 ? Math.min(addUsd, MAX_RUN_BUDGET_USD) : Math.max(2, Math.round(run.budgetUsd * 0.5))
+    if (spent >= run.budgetUsd) run.budgetUsd = Math.round((spent + add) * 100) / 100
+    // Workers respawn on their next message, with the new remaining budget as their backstop.
+    for (const w of run.workers) if (w.sessionId && w.sessionId !== run.leadSessionId) rt.live.get(w.sessionId)?.stop()
+    await sessionNotice(rt, run.leadSessionId, `Team resumed — budget ${usd(run.budgetUsd)} (${usd(spent)} spent).`)
+    await applyTeamActions(rt, run, resume(run))
+  })
+}
+
+async function stopTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<void> {
+  const run = teamRunFrom(rt, raw)
+  await withTeamRun(rt, run, async () => {
+    if (run.state === 'done' || run.state === 'stopped') return
+    for (const w of run.workers) {
+      if (!w.sessionId || w.sessionId === run.leadSessionId) continue
+      const live = rt.live.get(w.sessionId)
+      if (!live) continue
+      await live.interrupt()
+      live.stop()
+    }
+    run.state = 'stopped'
+    run.awaiting = []
+    run.rev += 1
+    await teamRunChanged(rt, run)
+    await sessionNotice(rt, run.leadSessionId, `Team stopped at ${usd(runSpent(run))}.`)
+  })
+}
+
+/** Save as team: the run's recipe, with your card's models and widths, as a new team file. */
+async function saveRunAsTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<string> {
+  const run = teamRunFrom(rt, raw)
+  const label = String((raw as { label?: unknown }).label ?? '').trim().slice(0, 60)
+  if (!label) throw new Error('the team needs a name')
+  const name = await rt.teamLibrary.freeName('team', label)
+  await rt.teamLibrary.writeRecipe(name, recipeFromRun(run, label))
+  log('info', 'teams', `team saved from a run: ${label}`, { team: name, teamId: run.id, workspace: rt.meta.id })
+  return name
 }
 
 /**
- * A pipeline member's turn ended. Act on the submission it made during the
- * turn, if any; otherwise the run just waits (a question to the user is normal)
- * — except a builder or checker that stopped without submitting gets one nudge.
+ * The dispatch picker: open a lead session on the item, in its project, told to
+ * plan with the chosen team (or to pick/draft one). Nothing runs until you
+ * approve the card it proposes.
  */
-async function advanceTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun, member: string): Promise<void> {
-  if (run.mode !== 'pipeline' || run.state !== 'running') return
-  const p = run.pending
-  if (p && p.member === member) {
-    delete run.pending
-    if (p.kind === 'card') {
-      await setStage(rt, run, 'approve')
-      const mgr = run.members.find((m) => m.member === 'manager')
-      if (mgr) await sessionNotice(rt, mgr.sessionId, 'Task card ready — approve it above to start the build, or tell the manager what to change')
-      return
+async function planTeamOp(rt: WorkspaceRuntime, raw: unknown): Promise<string> {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const item = await rt.store.items.get(typeof r.itemId === 'string' ? r.itemId : '')
+  if (!item) throw new Error('no such work item')
+  const project = await projectFor(rt, item)
+  if (!project) throw new Error('this item has no project — set one on the item so the team knows which folder to work in')
+  const entry = typeof r.team === 'string' && r.team ? (await rt.teamLibrary.list()).teams.find((t) => t.name === r.team) : null
+  if (r.team && !entry?.recipe) throw new Error(entry ? `teams/${entry.name}.md has errors: ${entry.errors.join('; ')}` : `no team named "${r.team}"`)
+  const recipe = entry?.recipe ?? null
+  const row = await createSession(rt, `${recipe?.label ?? 'Team'} · ${item.title}`.slice(0, 80), project.path, recipe?.lead.model ?? null, recipe?.lead.effort ?? null, false, null, { spawn: false })
+  await linkSessionToItem(rt, row.id, item.id, 'dispatch')
+  const live = await getOrRevive(rt, row.id)
+  if (!live) throw new Error('could not start the lead session')
+  const brief = await currentBrief(rt, item.id)
+  const mentions: Mention[] = [{ kind: 'item', ref: item.id, label: item.title }]
+  if (brief) mentions.push({ kind: 'artifact', ref: brief.artifact.id, label: brief.artifact.title })
+  const images = await itemImageAttachments(rt.attachmentsDir, item.id, item.images)
+  const text = planMessage({ team: entry && recipe ? { name: entry.name, label: recipe.label, tasks: !!taskLoop(recipe) } : null, itemTitle: item.title })
+  await live.sendUserMessage(`${text}\n\n${mentions.map(mentionToken).join(' ')}`, images, mentions)
+  log('info', 'teams', `team planning: ${recipe?.label ?? 'pick or draft'} for ${item.title}`, { itemId: item.id, workspace: rt.meta.id })
+  return row.id
+}
+
+/** Which team the picker suggests for an item kind, and what each team has really cost. */
+async function teamPickerOp(rt: WorkspaceRuntime, kind: string): Promise<TeamPickerResponse & { ok: true }> {
+  const { teams } = await rt.teamLibrary.list()
+  const usable = teams.filter((t) => t.recipe && !t.missing.length)
+  const costs = new Map<string, number[]>()
+  for (const run of rt.teamRuns.values()) {
+    if (run.state !== 'done' || !run.team) continue
+    costs.set(run.team, [...(costs.get(run.team) ?? []), runSpent(run)])
+  }
+  const options = usable.map((t) => {
+    const c = costs.get(t.name) ?? []
+    return {
+      team: t.name,
+      label: t.recipe!.label,
+      description: t.recipe!.description,
+      steps: t.recipe!.steps.map((s) => (s.fanOut ? `${s.id} ×${s.fanOut.max}` : s.id)),
+      budgetUsd: t.recipe!.budgetUsd,
+      runs: c.length,
+      ...(c.length ? { avgUsd: Math.round((c.reduce((a, b) => a + b, 0) / c.length) * 100) / 100 } : {}),
     }
-    if (p.kind === 'blocked') {
-      await setStage(rt, run, 'blocked')
-      return
-    }
-    if (p.kind === 'handoff') return runTeamChecks(rt, run)
-    if (p.kind === 'verdict') {
-      run.awaiting = (run.awaiting ?? []).filter((m) => m !== member)
-      await saveTeamRuns(rt)
-      if (!run.awaiting.length) return decideTeamVerdicts(rt, run)
-      return
-    }
+  })
+  const suggested = usable.find((t) => t.recipe!.useFor.includes(kind))?.name ?? (usable.some((t) => t.name === 'solo') ? 'solo' : null)
+  return { ok: true, suggested, options }
+}
+
+/**
+ * The `team` MCP server a worker gets: its one job-critical tool, submit_step.
+ * Rebuilt per spawn, like the brief server.
+ */
+function makeTeamMcp(rt: WorkspaceRuntime, sessionId: string) {
+  return createSdkMcpServer({
+    name: 'team',
+    version: VERSION,
+    // Loaded up front, never behind tool search.
+    alwaysLoad: true,
+    tools: [submitStepTool(rt, sessionId)],
+  })
+}
+
+const FINDING_SHAPE = z.object({
+  severity: z.enum(['P0', 'P1', 'P2']).describe('P0 = a criterion unmet or something broken; P1 = a real defect likely to bite; P2 = worth fixing, not blocking'),
+  where: z.string().describe('file:line, or the behaviour'),
+  problem: z.string(),
+  fix: z.string(),
+})
+
+const SUBMIT_SHAPE = {
+  summary: z.string().describe('one line: what you did or found'),
+  body: z.string().describe('the full handoff, markdown'),
+  verdict: z.enum(['pass', 'fail']).optional().describe('verdict steps only'),
+  findings: z.array(FINDING_SHAPE).max(20).optional().describe('findings and verdict steps: real defects only'),
+  files: z.array(z.string()).max(50).optional().describe('change steps: files created or modified'),
+  notes: z
+    .array(z.string())
+    .max(10)
+    .optional()
+    .describe('change steps: one-liners for whoever builds next — decisions made, conventions followed, traps hit (not what you did)'),
+}
+const SUBMIT_DESCRIPTION = 'Hand in your step of the team run. triage forwards it verbatim to whoever needs it next and moves the run on. Then END YOUR TURN.'
+
+async function submitStepOp(rt: WorkspaceRuntime, sessionId: string, args: Submission) {
+  const run = teamRunOf(rt, sessionId)
+  if (!run) return errResult('this session is not on a team run')
+  try {
+    return okResult(submit(run, sessionId, args, Date.now()))
+  } catch (err) {
+    return errResult(errText(err))
+  } finally {
+    await teamRunChanged(rt, run)
   }
-  if (run.stage === 'report' && member === 'manager') {
-    await setStage(rt, run, 'done')
-    run.state = 'done'
-    await saveTeamRuns(rt)
-    broadcastSessionList(rt)
-    log('info', 'teams', `run done at ${usd(runSpent(run))}`, { teamId: run.id, workspace: rt.meta.id })
-    return
-  }
-  const agent = run.agents.find((a) => a.name === member)
-  const owes =
-    (run.stage === 'build' && agent?.role === 'builder' && 'submit_handoff') ||
-    (run.stage === 'verify' && agent?.role === 'checker' && run.awaiting?.includes(member) && 'submit_verdict')
-  if (owes && run.nudged !== `${run.stage}:${run.round}:${member}`) {
-    run.nudged = `${run.stage}:${run.round}:${member}`
-    await saveTeamRuns(rt)
-    const m = run.members.find((x) => x.member === member)
-    if (m) await tellMember(rt, m.sessionId, `You ended your turn without calling ${owes}. If the work is done, call it now; if you are stuck on something only the user can decide${owes === 'submit_handoff' ? ', call report_blocked' : ', say so in your verdict'}.`)
-  }
 }
 
-/** You approved the card: photograph the tree (the checker's diff base) and start the build. */
-async function approveTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
-  if (run.mode !== 'pipeline' || run.stage !== 'approve' || !run.card) throw new Error('there is no card waiting for approval')
-  if (run.state !== 'running') throw new Error(`the run is ${run.state}`)
-  const builder = memberOf(run, 'builder')[0]
-  if (!builder) throw new Error('this team has no builder')
-  run.steps.push({ kind: 'approved', at: Date.now() })
-  run.baseTree = (run.root && (await snapshotTree(run.root))) || undefined
-  await setStage(rt, run, 'build')
-  await tellMember(rt, builder.sessionId, buildMessage(run, path.join(run.dir, 'card.md')))
+/** A worker's submit_step: its session is known at spawn. */
+function submitStepTool(rt: WorkspaceRuntime, sessionId: string) {
+  return tool('submit_step', SUBMIT_DESCRIPTION, SUBMIT_SHAPE, (args) => submitStepOp(rt, sessionId, args))
 }
 
-const CHECK_TIMEOUT_MS = 240_000
-
-/** The project's own typecheck/lint/test — free, and first: no checker is paid to find a type error. */
-async function runTeamChecks(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
-  await setStage(rt, run, 'checks')
-  const cmds = run.root ? await detectChecks(run.root) : []
-  const results: { cmd: string; ok: boolean; tail: string }[] = []
-  for (const cmd of cmds) {
-    try {
-      await pExec(cmd, { cwd: run.root, timeout: CHECK_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, CI: '1', FORCE_COLOR: '0' } })
-      results.push({ cmd, ok: true, tail: '' })
-    } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; message?: string }
-      const out = `${e.stdout ?? ''}\n${e.stderr ?? ''}`.trim() || e.message || 'failed'
-      results.push({ cmd, ok: false, tail: out.slice(-3000) })
-    }
-  }
-  const ok = results.every((r) => r.ok)
-  run.steps.push({ kind: 'checks', at: Date.now(), round: run.round, ok, commands: results })
-  await writeRunFile(run, `checks-${run.round}.txt`, results.map((r) => `$ ${r.cmd} → ${r.ok ? 'ok' : 'FAILED'}\n${r.tail}`).join('\n\n') || 'no checks configured')
-  if (!ok) {
-    const failed = results.filter((r) => !r.ok)
-    return fixOrReport(rt, run, { checks: failed }, `checks still failing: ${failed.map((f) => f.cmd).join(', ')}`)
-  }
-  return memberOf(run, 'checker').length ? startTeamVerify(rt, run) : startTeamReport(rt, run, 'checks passed (no checker on this team)')
-}
-
-/** Another fix round, or — past the cap — report what's unresolved instead of looping. */
-async function fixOrReport(
-  rt: WorkspaceRuntime,
-  run: StoredTeamRun,
-  parts: Parameters<typeof fixMessage>[2],
-  unresolved: string,
-): Promise<void> {
-  if (run.round >= run.maxRounds) {
-    run.steps.push({ kind: 'failed', at: Date.now(), why: `${unresolved} after ${run.maxRounds} fix rounds` })
-    return startTeamReport(rt, run, `not verified — ${unresolved} after ${run.maxRounds} fix rounds`)
-  }
-  run.round += 1
-  await setStage(rt, run, 'build')
-  const builder = memberOf(run, 'builder')[0]
-  if (builder) await tellMember(rt, builder.sessionId, fixMessage(run.round, run.maxRounds, parts))
-}
-
-/** Every checker gets the card, the handoff and this run's diff — in a fresh context each round. */
-async function startTeamVerify(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
-  const checkers = memberOf(run, 'checker')
-  run.awaiting = checkers.map((c) => c.member)
-  await setStage(rt, run, 'verify')
-  let patch = ''
-  let truncated = false
-  if (run.root && run.baseTree) {
-    const now = await snapshotTree(run.root)
-    if (now) ({ patch, truncated } = await treePatch(run.root, run.baseTree, now).catch(() => ({ patch: '', truncated: false })))
-  }
-  const handoff = [...run.steps].reverse().find((s): s is HandoffStep => s.kind === 'handoff')
-  const text = checkerMessage(run, handoff ? handoffText(handoff) : '(no handoff)', patch, truncated, run.round)
-  for (const c of checkers) await tellMember(rt, c.sessionId, text, { fresh: true })
-}
-
-async function decideTeamVerdicts(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
-  const verdicts = run.steps.filter((s): s is VerdictStep => s.kind === 'verdict' && s.round === run.round)
-  const failing = verdicts.filter((v) => v.verdict === 'fail')
-  if (!failing.length) return startTeamReport(rt, run, `verified — ${verdicts.map((v) => `${v.checker} passed`).join(', ')}`)
-  return fixOrReport(
-    rt,
-    run,
-    { findings: failing.map((v) => ({ checker: v.checker, findings: v.findings })) },
-    `${failing.reduce((n, v) => n + v.findings.length, 0)} open finding(s)`,
-  )
-}
-
-async function startTeamReport(rt: WorkspaceRuntime, run: StoredTeamRun, outcome: string): Promise<void> {
-  await setStage(rt, run, 'report')
-  const mgr = run.members.find((m) => m.member === 'manager')
-  if (mgr) await tellMember(rt, mgr.sessionId, reportMessage(run, outcome))
-}
-
-/** After a resume: act on a submission the pause interrupted, or ask the stage's owner to carry on. */
-async function continueTeamRun(rt: WorkspaceRuntime, run: StoredTeamRun): Promise<void> {
-  if (run.mode !== 'pipeline') return
-  if (run.pending) return advanceTeamRun(rt, run, run.pending.member)
-  const owner =
-    run.stage === 'build'
-      ? memberOf(run, 'builder')[0]
-      : run.stage === 'verify'
-        ? memberOf(run, 'checker').find((c) => run.awaiting?.includes(c.member))
-        : run.stage === 'report' || run.stage === 'spec'
-          ? run.members.find((m) => m.member === 'manager')
-          : undefined
-  if (owner) await tellMember(rt, owner.sessionId, 'The run was paused and is now resumed. Carry on with your stage where you left off, and finish with your submit tool.')
-}
-
-function teamRunDetail(run: StoredTeamRun): TeamRunDetail {
-  return { id: run.id, itemId: run.itemId, title: run.title, info: runInfo(run), card: run.card, steps: run.steps, dir: run.dir }
+/** The lead's tools, in every chat's triage server: pick or draft a team, propose it, split a step, hand in its own steps. */
+function teamLeadTools(rt: WorkspaceRuntime) {
+  const sid = z.string().describe('your triage session id — it is in your system prompt')
+  return [
+    tool(
+      'list_teams',
+      'The saved teams (recipes: steps, fan-out, gates, budget) and the agents they are made of. Call before propose_team; prefer a saved team over drafting one.',
+      {},
+      async () => {
+        try {
+          return okResult(JSON.stringify(await listTeamsOp(rt), null, 2))
+        } catch (err) {
+          return errResult(errText(err))
+        }
+      },
+    ),
+    tool(
+      'propose_team',
+      'Propose a team run for the work this session is on — when the user asks for a team ("get a team to …"), or the session was opened to plan one. Shows the user an editable team card; nothing runs until they approve it. Give `team` (a saved team, from list_teams) or `recipe` (a drafted one, only when no saved team fits). If this session has no work item, one is created from `title`. Proposing again replaces the card. After calling it, END YOUR TURN.',
+      {
+        sessionId: sid,
+        team: z.string().optional().describe('a saved team\'s name, e.g. "solo"'),
+        recipe: z
+          .object({
+            label: z.string(),
+            description: z.string().optional(),
+            done: z.string().optional(),
+            budgetUsd: z.number().optional(),
+            steps: z
+              .array(
+                z.object({
+                  id: z.string().describe('short lowercase name, e.g. "build"'),
+                  agent: z.string().describe('"lead", "checks", or an agent name from list_teams'),
+                  output: z.enum(['change', 'findings', 'verdict', 'notes', 'report']).optional().describe('omit only for agent "checks"'),
+                  does: z.string().optional(),
+                  fanOut: z.object({ by: z.string(), max: z.number() }).optional(),
+                  onFail: z.object({ backTo: z.string(), max: z.number() }).optional(),
+                  gate: z.enum(['you']).optional(),
+                  model: z.string().optional(),
+                  forEach: z.enum(['task']).optional().describe('"task": part of the per-task loop (contiguous steps, run once per task)'),
+                  context: z.enum(['fresh', 'carry']).optional().describe('the change step in a task loop: fresh (default) or carry'),
+                }),
+              )
+              .min(1)
+              .max(8),
+          })
+          .optional()
+          .describe('a drafted recipe — same rules as a team file: one change step, never fanned out; fan-out ≤ 6; only the lead reports'),
+        title: z.string().optional().describe('the work item title, when this session has none yet'),
+        card: z.object({
+          goal: z.string().describe('ONE sentence: what the run achieves — the user reads it at a glance'),
+          criteria: z.array(z.string()).min(1).max(8).describe('3–5 observable behaviours a checker can prove by running something, each ONE short line (~12 words) — no file paths or line numbers'),
+          outOfScope: z.array(z.string()).max(8).optional().describe('a few words each'),
+          tasks: z
+            .array(z.object({ title: z.string().describe('one line'), criteria: z.array(z.string()).max(3).optional().describe('1–3 short checkable lines') }))
+            .max(8)
+            .optional()
+            .describe('teams with a task loop (e.g. Build): 2–6 tasks, in order, each leaving the project working; omit for other teams'),
+          decisions: z.array(z.string()).max(10).optional().describe('decisions already made with the user'),
+          steps: z
+            .array(
+              z.object({
+                id: z.string().describe('a step id of the recipe'),
+                model: z.string().optional().describe('a model for this step if it should differ'),
+                slices: z.array(z.object({ title: z.string(), brief: z.string() })).max(6).optional().describe('fan-out steps: the slices, if you can already tell them apart'),
+              }),
+            )
+            .optional(),
+          budgetUsd: z.number().optional().describe('the run\'s spend cap; defaults to the team\'s budget'),
+          note: z.string().optional().describe('one or two lines to the user: why this team and size'),
+        }),
+      },
+      async (args) => {
+        try {
+          const run = await proposeTeamOp(rt, args.sessionId, args)
+          return okResult(`Team card shown to the user (${run.recipe.label}, ${run.recipe.steps.length} steps, up to ${usd(run.card.budgetUsd)}). END YOUR TURN — they approve or edit it, then triage runs the steps and wakes you when you're needed.`)
+        } catch (err) {
+          return errResult(errText(err))
+        }
+      },
+    ),
+    tool(
+      'split_step',
+      'Split the current fan-out step of your team run into slices — one worker each. Only when triage asks you to. Then END YOUR TURN.',
+      { sessionId: sid, slices: z.array(z.object({ title: z.string().describe('a few words'), brief: z.string().describe('what this worker looks at, and what could go wrong there') })).min(1).max(6) },
+      async (args) => {
+        const run = teamRunOf(rt, args.sessionId)
+        if (!run || run.leadSessionId !== args.sessionId) return errResult('you are not leading a team run')
+        try {
+          await withTeamRun(rt, run, () => applyTeamActions(rt, run, split(run, args.slices)))
+          return okResult('Split. END YOUR TURN — the workers start now.')
+        } catch (err) {
+          return errResult(errText(err))
+        }
+      },
+    ),
+    tool(
+      'revise_plan',
+      'Propose a change to the tasks still to do on your running team plan — add, split, reorder or drop tasks that have not started. The user accepts or turns it down; the run carries on meanwhile, and an accepted change applies from the next task. Give the whole task list as it should be (keep the ids of tasks that stay).',
+      {
+        sessionId: sid,
+        tasks: z.array(z.object({ id: z.string().optional().describe('keep the id of a task that stays'), title: z.string(), criteria: z.array(z.string()).max(3).optional() })).min(1).max(8),
+        why: z.string().describe('one line the user reads: why the plan should change'),
+      },
+      async (args) => {
+        const run = teamRunOf(rt, args.sessionId)
+        if (!run || run.leadSessionId !== args.sessionId) return errResult('you are not leading a team run')
+        try {
+          await withTeamRun(rt, run, () => applyTeamActions(rt, run, proposeRevision(run, args.tasks, args.why)))
+          return okResult('Proposed. The user decides; carry on — do not wait for it.')
+        } catch (err) {
+          return errResult(errText(err))
+        }
+      },
+    ),
+    tool('submit_step', `${SUBMIT_DESCRIPTION} Only when triage hands you a step.`, { sessionId: sid, ...SUBMIT_SHAPE }, ({ sessionId, ...args }) => submitStepOp(rt, sessionId, args)),
+  ]
 }
 
 /** What a dispatched session opens with: the kind's template, the item, and the brief as a mention. */
@@ -5199,6 +5262,8 @@ function makeTriageMcp(rt: WorkspaceRuntime) {
     // transports, one explanation of it.
     instructions: TRIAGE_MCP_INSTRUCTIONS,
     tools: [
+      // Teams v2: any chat can become a lead (list_teams, propose_team, split_step, submit_step).
+      ...teamLeadTools(rt),
       tool(
         'list_work_items',
         'Read the ranked triage queue: work items with their score, group, and reason. Open items by default — pass status to read the done, snoozed or archived lists instead. Optional filters narrow by source or kind.',
@@ -6760,20 +6825,17 @@ const server = http.createServer(async (req, res) => {
     }
     return
   }
-  // Teams (.docs/teams.md): the agent/team library, saving it, and starting a run.
+  // Teams v2 (.docs/teams.md): the library, the dispatch picker, and a run's card and controls.
   if (url.pathname.startsWith('/api/teams')) {
     const route = `${req.method} ${url.pathname}`
     try {
       const lib = rt.teamLibrary
       if (route === 'GET /api/teams/library') {
         json(200, await teamLibraryOp(rt))
-      } else if (route === 'POST /api/teams/start') {
-        const body: StartTeamResponse = { ok: true, ...(await startTeamOp(rt, await readJsonBody(req))) }
-        json(200, body)
-      } else if (route === 'POST /api/teams/save') {
-        const team = await saveTeamOp(rt, await readJsonBody(req))
-        const body: SaveTeamResponse = { ok: true, team, library: await teamLibraryOp(rt) }
-        json(200, body)
+      } else if (route === 'GET /api/teams/picker') {
+        json(200, await teamPickerOp(rt, url.searchParams.get('kind') ?? ''))
+      } else if (route === 'POST /api/teams/plan') {
+        json(200, { ok: true, sessionId: await planTeamOp(rt, await readJsonBody(req)) })
       } else if (route === 'PUT /api/teams/agent') {
         await saveAgentOp(rt, await readJsonBody(req))
         json(200, await teamLibraryOp(rt))
@@ -6785,22 +6847,40 @@ const server = http.createServer(async (req, res) => {
         if (!isLibraryName(b.name) || (b.kind !== 'agent' && b.kind !== 'team')) throw new Error('need a kind and a name')
         await lib.reset(b.kind, b.name)
         json(200, await teamLibraryOp(rt))
-      } else if (route === 'POST /api/teams/approve') {
-        await approveTeamRun(rt, teamRunFrom(rt, await readJsonBody(req)))
-        json(200, { ok: true })
       } else if (route === 'GET /api/teams/run') {
-        const body: TeamRunResponse = { ok: true, run: teamRunDetail(teamRunFrom(rt, { teamId: url.searchParams.get('teamId') })) }
+        const body: TeamRunResponse = { ok: true, run: teamRunView(teamRunFrom(rt, { runId: url.searchParams.get('runId') })) }
         json(200, body)
+      } else if (route === 'PUT /api/teams/card') {
+        await editTeamCardOp(rt, await readJsonBody(req))
+        json(200, { ok: true })
+      } else if (route === 'PUT /api/teams/plan') {
+        await editPlanOp(rt, await readJsonBody(req))
+        json(200, { ok: true })
+      } else if (route === 'POST /api/teams/revision') {
+        await settleRevisionOp(rt, await readJsonBody(req))
+        json(200, { ok: true })
+      } else if (route === 'POST /api/teams/approve') {
+        await approveTeamOp(rt, await readJsonBody(req))
+        json(200, { ok: true })
+      } else if (route === 'POST /api/teams/discard') {
+        await discardTeamOp(rt, await readJsonBody(req))
+        json(200, { ok: true })
       } else if (route === 'POST /api/teams/pause') {
-        await pauseTeamRun(rt, teamRunFrom(rt, await readJsonBody(req)), 'paused by you')
+        const run = teamRunFrom(rt, await readJsonBody(req))
+        await withTeamRun(rt, run, async () => {
+          if (run.state !== 'running' && run.state !== 'gate') throw new Error(`the run is ${run.state}`)
+          await pauseTeamRunNow(rt, run, 'paused by you')
+        })
         json(200, { ok: true })
       } else if (route === 'POST /api/teams/resume') {
-        const body = (await readJsonBody(req)) as { addUsd?: unknown } | null
-        await resumeTeamRun(rt, teamRunFrom(rt, body), budgetFrom(body?.addUsd))
+        await resumeTeamOp(rt, await readJsonBody(req))
         json(200, { ok: true })
       } else if (route === 'POST /api/teams/stop') {
-        await stopTeamRun(rt, teamRunFrom(rt, await readJsonBody(req)))
+        await stopTeamOp(rt, await readJsonBody(req))
         json(200, { ok: true })
+      } else if (route === 'POST /api/teams/save-as') {
+        const team = await saveRunAsTeamOp(rt, await readJsonBody(req))
+        json(200, { ok: true, team, library: await teamLibraryOp(rt) })
       } else if (route === 'POST /api/teams/open') {
         await openInEditor(lib.root)
         json(200, { ok: true })

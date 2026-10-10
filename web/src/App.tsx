@@ -35,8 +35,7 @@ import { TerminalPage } from './components/TerminalPage.js'
 import { TopBar } from './components/TopBar.js'
 import { SessionCost } from './components/SessionCost.js'
 import { Transcript } from './components/Transcript.js'
-import { TeamStrip } from './components/TeamStrip.js'
-import { teamMembers } from './teams.js'
+import { TeamDock, TeamSide, TeamStrip, useTeamRun } from './components/TeamRun.js'
 import { WatchesPage } from './components/WatchesPage.js'
 import { REFINE_WATCH_KEY, WatchFormPage } from './components/WatchFormPage.js'
 import { WatchPage } from './components/WatchPage.js'
@@ -286,6 +285,9 @@ export function App() {
   const goPrefix = useRef<number | undefined>(undefined)
 
   const current = sessions.find((s) => s.id === currentId) ?? null
+  // A team run in this session: one fetch shared by the strip, the dock and the details drawer.
+  const teamRun = useTeamRun(current?.teamRun)
+  const [teamSide, setTeamSide] = useState(false)
   const currentTerminal = terminals.find((t) => t.id === currentTerminalId) ?? null
   const currentDraft = drafts.find((d) => d.id === currentDraftId) ?? null
   // Drafts are per workspace; bind before anything reads them.
@@ -1030,7 +1032,8 @@ export function App() {
                 <div id="empty">This draft was discarded.</div>
               )
             ) : route.page === 'home' || route.page === 'settings' ? null : current ? (
-              <>
+              <div className={`sessRow${teamRun && teamSide ? ' withSide' : ''}`}>
+              <div className="sessCol">
                 <div id="chatHeader">
                   <span id="chatTitle" title={current.title}>
                     {current.title}
@@ -1061,12 +1064,15 @@ export function App() {
                     {STATUS_LABEL[current.status]}
                   </span>
                 </div>
-                {current.team && (
+                {teamRun && (
                   <TeamStrip
-                    members={teamMembers(sessions, current.team.id)}
-                    currentId={current.id}
-                    modelName={(s) => findModel(models, s.model)?.name ?? s.model}
-                    onOpen={navigate}
+                    run={teamRun}
+                    sessionId={current.id}
+                    sessions={sessions}
+                    models={models}
+                    sideOpen={teamSide}
+                    onToggleSide={() => setTeamSide((o) => !o)}
+                    onNavigate={navigate}
                   />
                 )}
                 <Transcript
@@ -1076,6 +1082,7 @@ export function App() {
                   turns={sessionChanges?.turns}
                   onRespond={respond}
                 />
+                {teamRun && current.teamRun?.role === 'lead' && <TeamDock run={teamRun} onDetails={() => setTeamSide((o) => !o)} onNavigate={navigate} />}
                 <Composer
                   key={`composer-${current.id}`}
                   status={current.status}
@@ -1093,7 +1100,11 @@ export function App() {
                   onFastModeChange={setFastMode}
                   onPermissionModeChange={setPermissionMode}
                 />
-              </>
+              </div>
+              {teamRun && teamSide && (
+                <TeamSide run={teamRun} lead={current.teamRun?.role === 'lead'} models={models} onClose={() => setTeamSide(false)} onNavigate={navigate} />
+              )}
+              </div>
             ) : (
               <div id="empty">Session not found — it may have been deleted.</div>
             )}

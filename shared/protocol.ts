@@ -12,6 +12,8 @@
 // ---------------------------------------------------------------------------
 
 import type { WatchRunStatus, WatchRunTrigger } from '../core/watch/types.js'
+import type { TeamRecipe } from '../core/teams/recipe.js'
+import type { RunState, TeamRun } from '../core/teams/engine.js'
 
 export type SessionStatus = 'starting' | 'idle' | 'running' | 'error'
 
@@ -84,33 +86,22 @@ export type WorkspaceVerifyResponse =
 export type SessionKind = 'chat' | 'watch-run' | 'brief'
 
 // ---------------------------------------------------------------------------
-// Teams (server/teams.ts, .docs/teams.md): a manager plus agents working one
-// work item, each its own chat session. Agents are Claude Code agent files and
-// teams are files too, both in the workspace folder, seeded with defaults.
+// Teams v2 (server/teams.ts, core/teams/recipe.ts): a team is a recipe file —
+// steps, fan-out, gates, budget — filled in by agents, which are Claude Code
+// agent files. Both live in the workspace folder, seeded with defaults.
 // ---------------------------------------------------------------------------
 
 /** What an agent may do. Compiled to tool rules at spawn — never a prompt-only promise. */
 export type AgentCan = 'read' | 'edit' | 'run' | 'web' | 'browser'
 export const AGENT_CANS: AgentCan[] = ['read', 'edit', 'run', 'web', 'browser']
 
-/**
- * An agent's stage in the team pipeline (.docs/teams-industry.md): the one
- * builder writes; checkers verify the result in a clean context; helpers are
- * consulted by the builder and never write.
- */
-export type AgentRole = 'builder' | 'checker' | 'helper'
-export const AGENT_ROLES: AgentRole[] = ['builder', 'checker', 'helper']
-
 /** Claude Code's own agent colours. */
 export const AGENT_COLORS = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'cyan'] as const
 export type AgentColor = (typeof AGENT_COLORS)[number]
 
-/** Most agents a team may have besides its manager (V1). */
-export const MAX_TEAM_AGENTS = 4
-
 /** One agent — the fields of a Claude Code agent file triage understands. */
 export type AgentSpec = {
-  /** slug: the file name and the address other members message */
+  /** slug: the file name, and how a recipe step names it */
   name: string
   label: string
   description: string
@@ -119,26 +110,8 @@ export type AgentSpec = {
   effort: EffortLevel | null
   color: AgentColor
   can: AgentCan[]
-  role: AgentRole
   prompt: string
 }
-
-/** The manager is triage's own; these are the parts a team may tune. */
-export type ManagerSpec = { model: string | null; effort: EffortLevel | null; instructions: string }
-
-export type TeamSpec = {
-  name: string
-  label: string
-  description: string
-  manager: ManagerSpec
-  /** agent names, in roster order */
-  agents: string[]
-  /** what one run of this team may spend before it pauses, USD */
-  budgetUsd: number
-}
-
-/** Default spend ceiling for a team run (USD) when a team file sets none. */
-export const DEFAULT_TEAM_BUDGET_USD = 15
 
 /**
  * Where a library file stands against what triage ships: untouched, edited,
@@ -146,115 +119,47 @@ export const DEFAULT_TEAM_BUDGET_USD = 15
  */
 export type LibraryStatus = 'default' | 'edited' | 'update' | 'yours'
 
+/** An agent file, with the teams whose steps name it. */
 export type AgentEntry = AgentSpec & { status: LibraryStatus; path: string; usedBy: string[] }
-export type TeamEntry = TeamSpec & { status: LibraryStatus; path: string; missing: string[] }
+
+/** One team file: its recipe, or null with the errors that hold it (a typo never runs). */
+export type RecipeEntry = {
+  name: string
+  recipe: TeamRecipe | null
+  errors: string[]
+  status: LibraryStatus
+  path: string
+  /** agents the steps name that have no file */
+  missing: string[]
+}
 
 export type TeamLibraryResponse =
-  | { ok: true; teams: TeamEntry[]; agents: AgentEntry[]; dir: string }
+  | { ok: true; teams: RecipeEntry[]; agents: AgentEntry[]; dir: string }
   | { ok: false; error: string }
 
-/** An agent as the team editor holds it: the spec, plus the library file it came from. */
-export type DraftAgent = AgentSpec & { base: string | null; dirty: boolean }
+export type { CardStep, Finding, Handoff, PlanNote, PlanTask, RunState, Slice, TaskState, TeamCard, TeamRun, Worker } from '../core/teams/engine.js'
 
-export type StartTeamRequest = {
-  itemId: string
-  /** the library team the draft started from, if any */
-  team: string | null
-  manager: ManagerSpec
-  agents: DraftAgent[]
-  kickoff: string
-  /** the run's spend ceiling; it pauses when reached */
-  budgetUsd: number
-}
-export type StartTeamResponse = { ok: true; teamId: string; managerId: string } | { ok: false; error: string }
+/** A session's place on a team run: the lead (the chat that proposed it) or one of its workers. */
+export type SessionTeamRun = { id: string; role: 'lead' | 'worker'; label: string; state: RunState; rev: number }
 
-export type SaveTeamRequest = {
-  /** the team file to overwrite; null = a new team */
-  name: string | null
+/** A run as the client reads it (GET /api/teams/run): everything but the server's bookkeeping. */
+export type TeamRunView = Omit<TeamRun, 'root' | 'checkCmds' | 'baseTree' | 'nudged'> & { spentUsd: number }
+export type TeamRunResponse = { ok: true; run: TeamRunView } | { ok: false; error: string }
+
+/** One team in the dispatch picker, with what its finished runs really cost (never an estimate). */
+export type TeamPickerOption = {
+  team: string
   label: string
   description: string
-  manager: ManagerSpec
-  agents: DraftAgent[]
-  /** edited agents: fork them into new files (the dialog) or update their files (Settings) */
-  agentMode: 'fork' | 'update'
-}
-export type SaveTeamResponse = { ok: true; team: string; library: TeamLibraryResponse & { ok: true } } | { ok: false; error: string }
-
-/**
- * Where a team run stands. `paused` = stopped by its budget or by you; resume
- * raises the budget. `stopped` = ended by you.
- */
-export type TeamRunState = 'running' | 'paused' | 'stopped' | 'done'
-
-/**
- * Where a run is in its pipeline. triage — not an agent — moves it along:
- * spec (manager writes the task card) → approve (you) → build (builder) →
- * checks (the project's own typecheck/tests, free) → verify (checkers, clean
- * context) → fix (≤ maxRounds, back to build) → report (manager) → done.
- * `blocked` = the builder asked you something.
- */
-export type TeamStage = 'spec' | 'approve' | 'build' | 'blocked' | 'checks' | 'verify' | 'report' | 'done'
-
-/** The run-level facts every member's summary carries, so any tab can show them. */
-export type TeamRunInfo = {
-  state: TeamRunState
-  spentUsd: number
+  /** step ids, a fan-out shown as "review ×4" */
+  steps: string[]
   budgetUsd: number
-  /** why it paused, when it did */
-  reason?: string
-  stage: TeamStage
-  /** fix rounds used so far, and the cap */
-  round: number
-  maxRounds: number
-  /** bumps whenever the run's documents change — the cue to refetch the detail */
-  rev: number
+  runs: number
+  avgUsd?: number
 }
-
-/** The contract the manager writes and you approve: what "done" means, checkably. */
-export type TaskCard = {
-  goal: string
-  criteria: string[]
-  outOfScope: string[]
-  files: string[]
-  notes?: string
-}
-
-export type Finding = { severity: 'P0' | 'P1'; where: string; problem: string; fix: string }
-
-/** One pipeline step's record, in order — what the run's panel lists. */
-export type TeamStep =
-  | { kind: 'card'; at: number; card: TaskCard }
-  | { kind: 'approved'; at: number }
-  | { kind: 'handoff'; at: number; round: number; summary: string; files: string[]; verification: string; uncertain?: string; rejected?: string }
-  | { kind: 'checks'; at: number; round: number; ok: boolean; commands: { cmd: string; ok: boolean; tail: string }[] }
-  | { kind: 'verdict'; at: number; round: number; checker: string; verdict: 'pass' | 'fail'; verified: string; findings: Finding[] }
-  | { kind: 'blocked'; at: number; question: string }
-  | { kind: 'failed'; at: number; why: string }
-
-export type TeamRunDetail = {
-  id: string
-  itemId: string
-  title: string
-  info: TeamRunInfo
-  card: TaskCard | null
-  steps: TeamStep[]
-  /** the run's folder: card.md, handoff-N.md, verdict-N.md, checks-N.txt */
-  dir: string
-}
-export type TeamRunResponse = { ok: true; run: TeamRunDetail } | { ok: false; error: string }
-
-/** A session's place on a team: the run, which member it is, and what it has spent. */
-export type TeamMembership = {
-  id: string
-  member: string
-  label: string
-  color?: AgentColor
-  order: number
-  /** the member's stage role; the manager is 'manager' */
-  role: AgentRole | 'manager'
-  spentUsd: number
-  run: TeamRunInfo
-}
+export type TeamPickerResponse = { ok: true; suggested: string | null; options: TeamPickerOption[] } | { ok: false; error: string }
+export type TeamPlanResponse = { ok: true; sessionId: string } | { ok: false; error: string }
+export type SaveAsTeamResponse = { ok: true; team: string; library: TeamLibraryResponse & { ok: true } } | { ok: false; error: string }
 
 /**
  * What the user did with one prompt. `allow_always` is `allow` plus the SDK's
@@ -352,12 +257,12 @@ export type SessionSummary = {
   watchId?: string
   /** the work item this session was dispatched for, or briefs (from the links table). */
   itemId?: string
-  /** the team run this session is a member of, and which member. */
-  team?: TeamMembership
   /** A permission prompt is waiting on the user. Absent = none. */
   waiting?: boolean
   /** Last activity, epoch ms. The sidebar sorts and time-buckets on this. */
   updatedAt: number
+  /** the team run this session leads or works on */
+  teamRun?: SessionTeamRun
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,8 +1054,8 @@ export const isLinkKind = (v: unknown): v is LinkKind => LINK_KINDS.includes(v a
  * artifact→session: `context`; session→item: `dispatch` (the session works
  * the item) or `brief` (the session wrote its brief).
  */
-export type LinkRole = 'brief' | 'report' | 'context' | 'dispatch'
-export const LINK_ROLES: readonly LinkRole[] = ['brief', 'report', 'context', 'dispatch']
+export type LinkRole = 'brief' | 'report' | 'context' | 'dispatch' | 'plan'
+export const LINK_ROLES: readonly LinkRole[] = ['brief', 'report', 'context', 'dispatch', 'plan']
 export const isLinkRole = (v: unknown): v is LinkRole => LINK_ROLES.includes(v as LinkRole)
 
 export type Link = {
@@ -1337,7 +1242,7 @@ export type SessionEvent =
       text: string
       images?: ImageAttachment[]
       mentions?: ResolvedMention[]
-      /** the label of the teammate that sent this over `message_teammate`; absent = the user */
+      /** who sent it when it wasn't the user — a teammate agent's label, or 'triage'; absent = the user */
       from?: string
     }
   | { kind: 'error'; message: string }

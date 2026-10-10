@@ -895,8 +895,9 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 /* team strip: the members of a team, one tab per session, over the transcript */
 #teamStrip {
   display: flex; align-items: center; gap: 4px; padding: 6px 20px; flex: none;
-  border-bottom: 1px solid var(--hair); min-width: 0; overflow-x: auto;
+  border-bottom: 1px solid var(--hair); min-width: 0; overflow-x: auto; scrollbar-width: none;
 }
+#teamStrip::-webkit-scrollbar { display: none; }
 #teamStrip .teamLabel { font-family: var(--mono); font-size: 0.8462rem; color: var(--stone); margin-right: 6px; }
 .teamTab {
   display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px; flex: none;
@@ -906,6 +907,11 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .teamTab:hover { color: var(--ink); background: var(--wash-2); }
 .teamTab[data-state="active"] { color: var(--ink); background: var(--elev); border-color: var(--hair-strong); }
 .teamTab:focus-visible { outline: 1px solid var(--ink); outline-offset: 1px; }
+/* an agent the recipe brings in that has no session yet: listed, not clickable */
+.teamTab.planned { cursor: default; color: var(--ash); border-style: dashed; border-color: var(--hair-strong); }
+.teamTab.planned:hover { background: none; color: var(--ash); }
+.teamTab.planned .swatch { opacity: 0.5; }
+.teamTab.planned .state { color: var(--stone); }
 .teamTab .model { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); }
 .teamTab .state { font-size: 0.8462rem; color: var(--charcoal); }
 .teamTab .state { display: inline-flex; align-items: center; gap: 5px; }
@@ -923,40 +929,175 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .teamBudget { display: inline-flex; align-items: center; gap: 4px; color: var(--ash); font-size: 0.8846rem; white-space: nowrap; }
 .teamBudget .teamInp { width: 64px; height: 26px; padding: 0 6px; }
 .teamHint.warn { color: var(--yellow); }
-.teamRoles { display: inline-flex; border: 1px solid var(--hair-strong); border-radius: var(--r); overflow: hidden; }
-.teamRole { height: 28px; padding: 0 12px; border: 0; border-right: 1px solid var(--hair-strong); background: transparent; color: var(--mute); font: inherit; font-size: 0.9231rem; cursor: pointer; }
-.teamRole:last-child { border-right: 0; }
-.teamRole:hover { background: var(--wash-2); color: var(--ink); }
-.teamRole.on { background: var(--elev); color: var(--ink); }
-.teamRole:focus-visible { outline: 1px solid var(--ink); outline-offset: -1px; }
-.roleTag { font-family: var(--mono); font-size: 0.7308rem; color: var(--ash); border: 1px solid var(--hair); border-radius: var(--r-xs); padding: 0 4px; margin-right: 3px; }
-.roleTag.builder { color: var(--body); border-color: var(--hair-strong); }
-.teamCan:disabled { opacity: 0.4; cursor: not-allowed; }
 /* the pipeline panel under the team strip: stages, your one decision, the step log */
-.teamPanel { border-bottom: 1px solid var(--hair); padding: 8px 20px 10px; display: flex; flex-direction: column; gap: 8px; flex: none; }
-.teamStages { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.teamStage { font-size: 0.8462rem; color: var(--stone); padding: 1px 8px; border-radius: var(--r-full); border: 1px solid transparent; white-space: nowrap; }
-.teamStage.done { color: var(--ash); }
-.teamStage.on { color: var(--ink); border-color: var(--hair-strong); background: var(--elev); }
-.teamStage.end { color: var(--green); }
-.teamCard { border: 1px solid var(--hair-strong); border-radius: var(--r-lg); background: var(--card); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; max-width: var(--measure); }
-.teamCard.ask { border-color: var(--edge-yellow); }
-.teamCard .t { font-size: 0.9615rem; color: var(--ink); font-weight: 500; }
-.teamCardHead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.teamCardHead .hint { font-size: 0.8462rem; color: var(--ash); }
-.teamCard .goal { margin: 0; color: var(--body); font-size: 1rem; line-height: 1.55; }
-.teamCardCols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-.teamCard .lbl { font-family: var(--mono); font-size: 0.7692rem; color: var(--stone); margin-bottom: 4px; }
-.teamCard ul { margin: 0; padding-left: 18px; color: var(--body); font-size: 0.9231rem; line-height: 1.55; }
-.teamCard .files { font-size: 0.8462rem; color: var(--ash); }
-.teamCard .notes { margin: 0; font-size: 0.8846rem; color: var(--ash); }
-.teamCardActs { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
-.teamCardActs .why { color: var(--red); font-size: 0.8846rem; }
-.teamSteps summary { cursor: pointer; font-size: 0.8846rem; color: var(--charcoal); list-style: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.teamSteps summary::-webkit-details-marker { display: none; }
-.teamSteps summary .more { color: var(--stone); }
-.teamSteps ol { margin: 6px 0 0; padding-left: 20px; font-size: 0.8846rem; color: var(--ash); line-height: 1.6; }
-.teamSteps .dir { font-size: 0.7692rem; color: var(--stone); margin-top: 4px; }
+.teamRunWhy.done { color: var(--green); }
+.teamUnresolved { font-size: 0.8846rem; color: var(--yellow); }
+
+/* Teams v2 in a session: the strip over the transcript, a small dock above the
+   composer, and every detail in a drawer on the right. */
+.sessRow { flex: 1; min-height: 0; display: flex; }
+.sessCol { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.teamSideBtn.on { color: var(--ink); background: var(--elev); }
+.swatch.sys { background: none; border: 1px dashed var(--ash); }
+
+.teamDock {
+  width: calc(100% - 80px); max-width: var(--measure); margin: 8px auto 0; flex: none;
+  border: 1px solid var(--hair-strong); border-radius: var(--r-lg); background: var(--card);
+  padding: 8px 10px 8px 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.teamDock.ask { border-color: var(--edge-yellow); }
+.tdRow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tdRow .sp { flex: 1; }
+.tdTitle { font-size: 0.9615rem; color: var(--ink); white-space: nowrap; }
+.tdLine { font-size: 0.8846rem; color: var(--ash); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tdFlow { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+.tdStepWrap { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.tdArrow { color: var(--stone); font-size: 0.7692rem; }
+.tdChip {
+  display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px;
+  border: 1px solid var(--hair-strong); border-radius: var(--r-full); font-size: 0.8462rem; color: var(--body); white-space: nowrap;
+}
+.tdChip.sys { border-style: dashed; color: var(--ash); }
+.tdChip.done { color: var(--ash); border-color: var(--hair); }
+.tdChip.on { color: var(--ink); border-color: var(--hair-bright); background: var(--elev); }
+.tdChip .m { font-family: var(--mono); font-size: 0.7308rem; color: var(--ash); }
+.tdTick { color: var(--green); font-size: 0.7692rem; }
+.tdLoop { font-family: var(--mono); font-size: 0.7308rem; color: var(--ash); }
+.tdCap { font-size: 0.7692rem; color: var(--ash); white-space: nowrap; }
+.tdErr { font-size: 0.8462rem; color: var(--red); }
+.tdEach { font-family: var(--mono); font-size: 0.7308rem; color: var(--ash); border-left: 1px solid var(--hair-strong); padding-left: 6px; margin-left: 2px; white-space: nowrap; }
+
+.teamSide {
+  width: 468px; max-width: 50%; flex: none; min-height: 0; display: flex; flex-direction: column;
+  border-left: 1px solid var(--hair); background: var(--deep);
+}
+.tsHead { display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 16px; border-bottom: 1px solid var(--hair); flex: none; }
+.tsHead .t { font-size: 0.9615rem; color: var(--ink); white-space: nowrap; }
+.tsHead .k { font-family: var(--mono); font-size: 0.7308rem; color: var(--stone); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tsHead .sp { flex: 1; }
+.tsBody { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 16px; }
+.tsNote { margin: 0; font-size: 0.8846rem; color: var(--ash); line-height: 1.5; }
+.tsSec { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tsK { font-family: var(--mono); font-size: 0.7692rem; color: var(--stone); }
+.tsSteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.tsStep { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 10px; position: relative; padding-bottom: 14px; }
+.tsStep:not(:last-child)::before { content: ""; position: absolute; left: 9.5px; top: 22px; bottom: 2px; border-left: 1px solid var(--hair-strong); }
+.tsNode {
+  width: 20px; height: 20px; border-radius: var(--r-full); border: 1px solid var(--hair-strong); background: var(--card);
+  display: inline-flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 0.7308rem; color: var(--ash);
+}
+.tsStep.done .tsNode { color: var(--green); border-color: var(--hair); }
+.tsStep.on .tsNode { color: var(--ink); border-color: var(--ink); }
+.tsStep.todo .tsStepMain { opacity: 0.7; }
+.tsStepMain { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding-top: 1px; }
+.tsStepHead { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.tsId { font-size: 0.8462rem; color: var(--stone); }
+.tsWho { font-size: 0.9231rem; color: var(--ink); }
+.tsMeta { font-size: 0.8077rem; color: var(--ash); }
+.tsMeta.mono { font-size: 0.7692rem; }
+.tsDoes { font-size: 0.8462rem; color: var(--ash); line-height: 1.45; }
+.teamSel.uiSelect.tsModel { height: 26px; font-size: 0.8462rem; align-self: flex-start; max-width: 100%; margin-top: 2px; }
+.tsSlices { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.tsSlice { display: grid; grid-template-columns: minmax(0, 1fr) 22px; gap: 4px; align-items: start; border-left: 1px solid var(--hair-strong); padding-left: 8px; }
+.tsSliceText { display: flex; flex-direction: column; min-width: 0; }
+.tsSliceText .edText:first-child { color: var(--ink); }
+.tsWorkers { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.tsWorker {
+  display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border: 1px solid var(--hair-strong);
+  border-radius: var(--r-full); background: none; color: var(--body); font: inherit; font-size: 0.8077rem; cursor: pointer;
+}
+.tsWorker:hover:not(:disabled) { border-color: var(--hair-bright); color: var(--ink); }
+.tsWorker .mono { font-size: 0.7308rem; color: var(--ash); }
+.tsBudget { display: flex; align-items: center; gap: 4px; font-size: 0.8846rem; color: var(--body); }
+.tsBudget .muted { margin-left: 4px; }
+.tsMeta.warn { color: var(--yellow); }
+/* the plan's tasks: a mark, the id, the title (editable until it starts), its checks */
+.tsTasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tsTask { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 6px; align-items: start; }
+.tsMark {
+  width: 16px; height: 16px; margin-top: 4px; border: 1px solid var(--hair-strong); border-radius: var(--r-xs);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 0.7308rem; color: var(--ash);
+}
+.tsTask.done .tsMark { color: var(--green); border-color: var(--hair); }
+.tsTask.unresolved .tsMark { color: var(--yellow); border-color: var(--edge-yellow); }
+.tsTask.running .tsMark { border-color: var(--ink); }
+.tsTask.done .tsTaskHead .edText { color: var(--ash); }
+.tsTaskMain { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.tsTaskHead { display: grid; grid-template-columns: auto minmax(0, 1fr) 22px; gap: 6px; align-items: start; }
+.tsTaskHead .tsId { padding-top: 4px; }
+.tsTaskMain .edList { margin-left: 2px; }
+.tsTaskMain .edList .edText { font-size: 0.8462rem; color: var(--ash); }
+.tsRevision { border: 1px solid var(--edge-yellow); border-radius: var(--r); padding: 8px 10px; background: var(--card); }
+.tsRevActs { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+.tsNotes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 0.8846rem; color: var(--body); line-height: 1.5; }
+.tsNotes .tsId { margin-right: 4px; }
+.teamSide .hoBody { padding-left: 6px; }
+.tsErr { padding: 6px 16px; border-top: 1px solid var(--hair); }
+.tsFoot { display: flex; align-items: center; gap: 6px; padding: 10px 12px 12px 16px; border-top: 1px solid var(--hair); flex: none; }
+.tsFoot .sp { flex: 1; }
+.tsFoot .teamSaveInline .teamInp { width: 150px; }
+
+/* edit in place: reads as text, a click makes it a field */
+.edText {
+  display: block; width: 100%; margin: 0 -6px; padding: 3px 6px; border: 1px solid transparent; border-radius: var(--r-sm);
+  background: none; color: var(--body); font: inherit; font-size: 0.9231rem; line-height: 1.5; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+button.edText { cursor: text; width: calc(100% + 12px); }
+button.edText:hover { background: var(--wash-2); }
+button.edText:focus-visible { outline: none; border-color: var(--hair-bright); }
+.edText.mono { font-family: var(--mono); font-size: 0.8462rem; width: auto; margin: 0; }
+.edText .muted, .teamSide .muted { color: var(--stone); }
+.edInput {
+  display: block; width: calc(100% + 12px); margin: 0 -6px; padding: 3px 6px; border: 1px solid var(--ink); border-radius: var(--r-sm);
+  background: var(--card); color: var(--ink); font: inherit; font-size: 0.9231rem; line-height: 1.5; resize: none; outline: none;
+}
+.edInput.mono { font-family: var(--mono); font-size: 0.8462rem; width: 80px; margin: 0; }
+.edList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.edList li { display: grid; grid-template-columns: minmax(0, 1fr) 22px; align-items: start; gap: 4px; position: relative; padding-left: 12px; }
+.edList li::before { content: "·"; position: absolute; left: 2px; top: 3px; color: var(--stone); }
+.edList li:last-child:has(.edAdd)::before { content: none; }
+.edDel { opacity: 0; width: 22px; height: 22px; margin-top: 2px; }
+.edList li:hover .edDel, .tsSlice:hover .edDel, .edDel:focus-visible { opacity: 1; }
+.edAdd {
+  display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 6px; margin-left: -6px; border: 0; border-radius: var(--r-sm);
+  background: none; color: var(--stone); font: inherit; font-size: 0.8462rem; cursor: pointer; justify-self: start;
+}
+.edAdd:hover { color: var(--ink); background: var(--wash-2); }
+.sessCard .rs .needsYou { color: var(--yellow); }
+.planLine { width: 100%; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; border-radius: var(--r-sm); }
+.planLine:hover { background: var(--wash-2); }
+.planLine .needsYou { color: var(--yellow); }
+.teamPickMenu { min-width: 320px; max-width: 420px; }
+.teamPickTag { margin-left: 8px; font-family: var(--mono); font-size: 0.7308rem; color: var(--body); border: 1px solid var(--hair-strong); border-radius: var(--r-full); padding: 0 6px; }
+
+
+/* handoffs: one line each, open for the full text */
+.hoList { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; max-width: var(--measure); }
+.hoLine {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 26px; padding: 0 6px; border: 0; border-radius: var(--r-sm);
+  background: none; color: var(--charcoal); font: inherit; font-size: 0.8846rem; text-align: left; cursor: pointer;
+}
+.hoLine:hover:not(:disabled) { background: var(--wash-2); color: var(--ink); }
+.hoLine:disabled { cursor: default; }
+.hoLine:focus-visible { outline: 1px solid var(--ink); outline-offset: -1px; }
+.hoCaret { flex: none; color: var(--stone); transition: transform 0.12s ease; }
+.hoCaret.on { transform: rotate(90deg); }
+.hoCaret.none { visibility: hidden; }
+.hoStep { flex: none; color: var(--stone); font-size: 0.7692rem; }
+.hoWho { flex: none; color: var(--body); }
+.hoSum { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ash); }
+.hoCount { flex: none; margin-left: auto; color: var(--stone); font-size: 0.7692rem; }
+.hoVerdict { flex: none; font-family: var(--mono); font-size: 0.7308rem; border-radius: var(--r-full); padding: 0 6px; border: 1px solid var(--hair-strong); }
+.hoVerdict.pass { color: var(--green); }
+.hoVerdict.fail { color: var(--red); }
+.hoBody { padding: 4px 6px 8px 26px; display: flex; flex-direction: column; gap: 6px; }
+.hoText { margin: 0; white-space: pre-wrap; font-family: var(--mono); font-size: 0.8077rem; line-height: 1.6; color: var(--body); background: var(--deep); border: 1px solid var(--hair); border-radius: var(--r); padding: 8px 10px; max-height: 280px; overflow: auto; }
+.hoFindings { margin: 0; padding-left: 18px; font-size: 0.8846rem; color: var(--body); line-height: 1.55; }
+.hoSev { font-family: var(--mono); font-size: 0.7308rem; color: var(--ash); }
+.hoSev.P0 { color: var(--red); }
+.hoSev.P1 { color: var(--yellow); }
+.hoFix { color: var(--ash); font-size: 0.8462rem; }
+.hoFiles { font-size: 0.7692rem; color: var(--stone); }
 
 /* ---------- teams: the Start-a-team dialog and the editor it shares with Settings ---------- */
 .teamOverlay { position: fixed; inset: 0; z-index: 90; background: var(--scrim); animation: fadeIn 0.14s ease; }
@@ -970,11 +1111,8 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .teamDialogHead .t { margin: 0; font-size: 1.1538rem; font-weight: 500; color: var(--ink); white-space: nowrap; }
 .teamDialogHead .item { color: var(--ash); font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .teamDialogHead .r { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
-.teamPickLbl { color: var(--ash); font-size: 0.9231rem; }
 .pill.edited { color: var(--yellow); border-color: var(--edge-yellow, rgba(255, 197, 61, 0.35)); background: var(--tint-yellow); }
-.teamLoading { padding: 60px 20px; text-align: center; color: var(--ash); }
 .teamDialogFoot { border-top: 1px solid var(--hair); padding: 12px 18px 14px; display: flex; flex-direction: column; gap: 10px; flex: none; }
-.teamKick label { display: block; font-family: var(--mono); font-size: 0.8077rem; color: var(--stone); margin-bottom: 6px; }
 .teamFootRow { display: flex; align-items: center; gap: 12px; font-size: 0.8846rem; color: var(--ash); min-width: 0; }
 .teamFootRow .sp { flex: 1; }
 .teamFootRow .path { color: var(--body); }
@@ -982,37 +1120,7 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .teamFootRow .why.quiet { color: var(--ash); }
 .teamSaveInline { display: inline-flex; gap: 6px; align-items: center; }
 .teamSaveInline .teamInp { height: 26px; width: 180px; }
-.teamMeta { display: flex; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--hair); }
-.teamMeta .teamInp:first-child { width: 220px; flex: none; }
 .teamSolo { overflow: auto; }
-
-.teamEd { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 380px; overflow: hidden; flex: 1 1 auto; }
-.teamTree { display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; border-right: 1px solid var(--hair); background: var(--deep); overflow: auto; }
-.teamTreeLbl { font-family: var(--mono); font-size: 0.8077rem; color: var(--stone); padding: 2px 8px 8px; }
-.teamNode {
-  display: grid; grid-template-columns: 14px 10px minmax(0, 1fr) auto; align-items: center; gap: 8px;
-  width: 100%; min-height: 32px; padding: 0 9px; border: 1px solid transparent; border-radius: var(--r);
-  background: none; color: var(--mute); text-align: left; font: inherit; cursor: pointer;
-}
-.teamNode:hover { background: var(--wash-2); }
-.teamNode.on { background: var(--elev); border-color: var(--hair-strong); color: var(--ink); }
-.teamNode:focus-visible { outline: 1px solid var(--ink); outline-offset: 1px; }
-.teamNode .branch, .teamAddRow .branch { font-family: var(--mono); font-size: 0.9231rem; color: var(--stone); text-align: right; }
-.teamNode .nn { font-size: 0.9615rem; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 5px; }
-.teamNode .nn.empty { color: var(--stone); font-style: italic; }
-.teamNode .nm { font-family: var(--mono); font-size: 0.7692rem; color: var(--ash); }
-.teamNode .flag { width: 6px; height: 6px; border-radius: var(--r-full); background: var(--red); flex: none; }
-.teamAddRow { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; align-items: center; padding: 0 9px; margin-top: 4px; }
-.teamAdd {
-  display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 9px; border: 1px dashed var(--hair-strong);
-  border-radius: var(--r); background: none; color: var(--ash); font: inherit; font-size: 0.9231rem; cursor: pointer; text-align: left;
-}
-.teamAdd:hover:not(:disabled) { color: var(--ink); border-color: var(--hair-bright); }
-.teamAdd:disabled { opacity: 0.5; cursor: default; }
-.teamAddMenu .uiMenuItem { display: flex; align-items: center; gap: 8px; }
-.teamAddName { color: var(--ink); }
-.teamAddCan { margin-left: auto; padding-left: 14px; font-size: 0.8462rem; color: var(--ash); }
-.teamTreeFoot { margin-top: auto; padding: 10px 8px 2px; font-size: 0.8462rem; color: var(--stone); line-height: 1.5; }
 
 .teamForm { display: flex; flex-direction: column; gap: 12px; padding: 14px 18px; overflow: auto; min-width: 0; }
 .teamRow { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 12px; align-items: start; }
@@ -1065,13 +1173,9 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .teamCan.on .box::after { content: ""; width: 6px; height: 3px; border-left: 1.6px solid var(--on-primary); border-bottom: 1.6px solid var(--on-primary); transform: rotate(-45deg) translate(1px, -1px); }
 .teamCan .ct { display: block; font-size: 0.9231rem; }
 .teamCan .cs { display: block; font-size: 0.8077rem; color: var(--ash); line-height: 1.4; }
-.teamCan.locked { opacity: 0.55; cursor: default; }
-.teamCan.locked:hover { border-color: var(--hair-strong); }
 .teamCallout { margin-top: 8px; padding: 8px 11px; border-radius: var(--r); font-size: 0.9231rem; line-height: 1.5; color: var(--body); }
 .teamCallout.err { border: 1px solid var(--edge-red); background: var(--tint-red); }
 .teamCallout b { font-weight: 500; color: var(--red); }
-.teamFixed { border: 1px dashed var(--hair-strong); border-radius: var(--r); padding: 9px 11px; color: var(--ash); font-size: 0.8846rem; line-height: 1.55; }
-.teamFixed b { color: var(--charcoal); font-weight: 500; }
 .teamFormFoot { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
 .teamFormFoot .teamHint { margin: 0; flex: 1; }
 
@@ -1102,6 +1206,21 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .libRow:hover .libActs, .libRow:focus-within .libActs, .libActs.confirm { opacity: 1; }
 .libConfirmText { font-size: 0.8846rem; color: var(--body); margin-right: 6px; }
 .libPath { font-size: 0.8462rem; color: var(--stone); }
+.libRow.team { grid-template-columns: 170px minmax(0, 1fr) 44px auto; }
+.libSteps { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.libStepLine { font-size: 0.8462rem; color: var(--charcoal); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.libStepLine .arrow { color: var(--stone); }
+.libStepLine .gate { color: var(--yellow); }
+.libErr { font-size: 0.8846rem; color: var(--red); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.libErr .more { color: var(--ash); }
+.libBudget { font-size: 0.8462rem; color: var(--ash); text-align: right; font-variant-numeric: tabular-nums; }
+.libHint { margin-top: 10px; font-size: 0.8462rem; color: var(--stone); line-height: 1.5; }
+.libHint .mono { color: var(--ash); }
+@media (max-width: 767px) {
+  /* a phone: the steps drop under the name, budget and status */
+  .libRow.team { grid-template-columns: minmax(0, 1fr) auto auto; row-gap: 2px; padding: 8px 14px; }
+  .libRow.team .libSteps { grid-column: 1 / -1; grid-row: 2; }
+}
 
 .msg.assistant { align-self: stretch; font-size: 1.1538rem; line-height: 1.7; color: var(--body); }
 .msg.assistant.live .md > :last-child::after { content: "▍"; color: var(--ink); margin-left: 1px; animation: caret 1s steps(1) infinite; }
@@ -3283,6 +3402,10 @@ html.kbOpen .shell.mobile .panel { bottom: 0; }
   #teamStrip::-webkit-scrollbar { display: none; }
   #teamStrip .teamLabel, .teamTab .model, .teamTab .spend { display: none; }
   .teamTab { height: 34px; }
+  /* On a phone the details drawer is a full sheet over the session, and the dock goes edge to edge. */
+  .teamSide { position: fixed; inset: 0; z-index: 60; width: auto; max-width: none; border-left: 0; background: var(--canvas); padding-bottom: env(safe-area-inset-bottom); }
+  .teamDock { width: calc(100% - 20px); }
+  .tdLine { display: none; }
 }
 @media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
   /* Tool calls: the verb takes only its own width, so what was run gets the rest of the line. */

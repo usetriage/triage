@@ -250,6 +250,12 @@ export async function currentBranch(dir: string): Promise<string | null> {
  * The whole patch between two trees, capped: what a checker reads to review a
  * team run's work (the run's own change, whatever else sits uncommitted).
  */
+/** `git diff --stat` between two trees: the map a reader gets before (or instead of) the patch. */
+export async function treeStat(root: string, from: string, to: string): Promise<string> {
+  if (from === to) return ''
+  return (await git(root, ['diff', '--no-renames', '--no-color', '--stat=100', from, to])).trimEnd()
+}
+
 export async function treePatch(root: string, from: string, to: string, budget = 60_000): Promise<{ patch: string; truncated: boolean }> {
   if (from === to) return { patch: '', truncated: false }
   const out = await git(root, ['diff', '--no-renames', '--no-color', '--no-ext-diff', '--unified=3', from, to])

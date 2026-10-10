@@ -4,7 +4,7 @@
  * why it ranked, what has happened to it, and the sessions working on it.
  * The actions live in the right column so the left reads as a page, not a form.
  */
-import { AlarmClock, Archive, Check, ChevronDown, ChevronRight, ExternalLink, FileText, Folder, Hash, ImagePlus, Play, Sparkles, Users, X } from 'lucide-react'
+import { AlarmClock, Archive, Check, ChevronDown, ChevronRight, ExternalLink, FileText, Folder, Hash, ImagePlus, Play, Sparkles, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BriefJobsResponse,
@@ -21,6 +21,7 @@ import type {
   LinksResponse,
   Project,
   ProjectsResponse,
+  RunState,
   ScoredItem,
   SessionsUsage,
   SessionsUsageResponse,
@@ -39,7 +40,7 @@ import { store } from '../store.js'
 import { KIND_LABEL, PRIORITY_LABEL, PRIORITY_VALUES, ago, kindIcon, relTime } from '../itemUi.js'
 import { CreateBriefDialog } from './CreateBriefDialog.js'
 import { Markdown } from './Markdown.js'
-import { StartTeamDialog } from './StartTeamDialog.js'
+import { TeamPicker } from './TeamPicker.js'
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu.js'
 import { ProjectIdPicker } from './ProjectPicker.js'
 import { ItemLinks } from './ItemLinks.js'
@@ -72,6 +73,15 @@ function actorLabel(actor: string): string {
 
 const OTHER_STATUSES: ItemStatus[] = ['snoozed', 'done', 'archived']
 
+const TEAM_STATE: Record<RunState, string> = {
+  proposed: 'needs you · approve the card',
+  running: 'running',
+  gate: 'needs you · a step is done',
+  paused: 'paused',
+  stopped: 'stopped',
+  done: 'done',
+}
+
 export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
   const snap = useInbox()
   const sessions = useSessions()
@@ -95,7 +105,6 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
   const [feedback, setFeedback] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [teamOpen, setTeamOpen] = useState(false)
   const [spend, setSpend] = useState<SessionsUsage | null>(null)
   /** the readout is optional — a ledger that can't be read hides it rather than sitting on a skeleton */
   const [spendFailed, setSpendFailed] = useState(false)
@@ -705,9 +714,7 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
             <Play size={12} aria-hidden="true" />
             {linkedSessions.some((x) => x.role === 'dispatch') ? 'Dispatch another session' : 'Dispatch to a session'}
           </button>
-          <button type="button" className="btn wide" onClick={() => setTeamOpen(true)} title="A manager plus agents, each its own session — you talk to the manager">
-            <Users size={12} aria-hidden="true" /> Start a team
-          </button>
+          <TeamPicker item={item} onStarted={onNavigate} onError={setNotice} />
           {isOpen && settled && (
             <button type="button" className="btn wide" onClick={() => setBriefOpen(true)}>
               <Sparkles size={12} aria-hidden="true" /> {brief?.artifact ? 'Re-brief' : 'Create brief'}
@@ -777,6 +784,28 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
           )}
         </div>
 
+        {/* Team runs: each has one Plan — tasks, notes, progress, and the outcome when it's done. */}
+        {links.some((l) => l.fromKind === 'artifact' && l.role === 'plan') && (
+          <>
+            <div className="secLabel mute">Plans</div>
+            {links
+              .filter((l) => l.fromKind === 'artifact' && l.role === 'plan')
+              .map((l, i, all) => {
+                // The newest plan belongs to the run the lead session is on now; older ones are finished runs.
+                const lead = i === all.length - 1 ? linkedSessions.find(({ s: x }) => x.teamRun?.role === 'lead')?.s : undefined
+                return (
+                  <button key={l.fromId} type="button" className="line planLine" onClick={() => onNavigate(`/artifact/${l.fromId}`)}>
+                    <span className="dash">—</span>
+                    <span>
+                      Plan{all.length > 1 ? ` ${i + 1}` : ''}
+                      {lead?.teamRun ? <span className={`k${lead.teamRun.state === 'proposed' || lead.teamRun.state === 'gate' ? ' needsYou' : ''}`}> · {TEAM_STATE[lead.teamRun.state]}</span> : null}
+                    </span>
+                  </button>
+                )
+              })}
+          </>
+        )}
+
         <div className="secLabel mute">
           Sessions <span className="n">{linkedSessions.length}</span>
         </div>
@@ -799,7 +828,16 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
                 <div className="top">
                   <span className="ti">{s.title}</span>
                   <span className="rs">
-                    <span className="role">{role} ·</span> {s.status}
+                    {s.teamRun?.role === 'lead' ? (
+                      // A team's lead stands for the run: whether it needs you (a card to approve, a gate), is going, or is done.
+                      <span className={s.teamRun.state === 'proposed' || s.teamRun.state === 'gate' ? 'needsYou' : undefined}>
+                        <span className="role">team lead ·</span> {TEAM_STATE[s.teamRun.state]}
+                      </span>
+                    ) : (
+                      <>
+                        <span className="role">{s.teamRun ? 'team worker' : role} ·</span> {s.status}
+                      </>
+                    )}
                   </span>
                 </div>
                 <div className="me">
@@ -923,7 +961,6 @@ export function ItemPage({ id, onDispatch, onNavigate, onDirty }: Props) {
       </div>
 
       <CreateBriefDialog open={briefOpen} items={[item]} onClose={() => setBriefOpen(false)} onQueued={() => {}} />
-      <StartTeamDialog open={teamOpen} item={item} onClose={() => setTeamOpen(false)} onStarted={onNavigate} />
     </div>
   )
 }

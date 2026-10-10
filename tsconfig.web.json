@@ -25,6 +25,8 @@
     "web/src",
     "shared",
     "core/work/types.ts",
+    "core/teams/recipe.ts",
+    "core/teams/engine.ts",
     "core/work/state.ts",
     "core/work/labels.ts",
     "core/work/due.ts",

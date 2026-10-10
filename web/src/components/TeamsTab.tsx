@@ -2,22 +2,9 @@ import * as Dialog from '@radix-ui/react-dialog'
 import * as Tabs from '@radix-ui/react-tabs'
 import { FolderOpen, Plus, X } from 'lucide-react'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import type { AgentEntry, LibraryStatus, SaveTeamResponse, TeamEntry, TeamLibraryResponse } from '../../../shared/protocol.js'
-import {
-  AGENT_HEX,
-  blankAgent,
-  canSummary,
-  draftFromTeam,
-  fromEntry,
-  loadTeamLibrary,
-  problems,
-  teamsCall,
-  wireAgents,
-  type EditorAgent,
-  type TeamDraft,
-  type TeamLibrary,
-} from '../teams.js'
-import { AgentForm, TeamEditor } from './TeamEditor.js'
+import type { AgentEntry, LibraryStatus, RecipeEntry, TeamLibraryResponse } from '../../../shared/protocol.js'
+import { AGENT_HEX, canSummary, loadTeamLibrary, stepLine, teamsCall, usd, type TeamLibrary } from '../teams.js'
+import { AgentForm, agentBody, agentProblem, blankDraft, draftFromEntry, type AgentDraft } from './AgentForm.js'
 
 const STATUS: Record<LibraryStatus, { label: string; title: string }> = {
   default: { label: 'default', title: 'Exactly as triage ships it' },
@@ -26,24 +13,28 @@ const STATUS: Record<LibraryStatus, { label: string; title: string }> = {
   yours: { label: 'yours', title: 'Made by you — triage never touches it' },
 }
 
-type Editing = { kind: 'team'; name: string | null; copy?: boolean } | { kind: 'agent'; name: string | null }
-
 const asLib = (b: TeamLibraryResponse): TeamLibrary => {
   if (!b.ok) throw new Error(b.error)
   return { teams: b.teams, agents: b.agents, dir: b.dir }
 }
 
+/** "$3", or "$2.50" when the budget isn't whole dollars. */
+const budget = (n: number): string => (Number.isInteger(n) ? `$${n}` : usd(n))
+
+const openFolder = () => void teamsCall('POST', 'open').catch(() => {})
+
 /**
  * Settings → Teams: the workspace's teams and the agents they're made of. Both
- * are files (server/teams.ts); this is the one place that shows where each
- * stands against the defaults triage ships, and the only place a shared agent
- * is edited in place — with who uses it said out loud.
+ * are files (server/teams.ts). A team is a recipe — edited as its file, made
+ * from a run with "Save as team" — so this lists teams and edits only agents,
+ * the one place a shared agent changes in place with who uses it said out loud.
  */
 export function TeamsTab() {
   const [lib, setLib] = useState<TeamLibrary | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<'teams' | 'agents'>('teams')
-  const [editing, setEditing] = useState<Editing | null>(null)
+  // undefined: closed; null: a new agent; a name: that agent's file
+  const [editing, setEditing] = useState<string | null | undefined>(undefined)
   const [confirm, setConfirm] = useState<string | null>(null)
 
   const load = useCallback(() => {
@@ -80,12 +71,14 @@ export function TeamsTab() {
             </Tabs.Trigger>
           </Tabs.List>
           <span className="sp" />
-          <button type="button" className="btn sm ghost" onClick={() => void teamsCall('POST', 'open').catch(() => {})} title={lib?.dir}>
+          <button type="button" className="btn sm ghost" onClick={openFolder} title={lib?.dir}>
             <FolderOpen size={12} aria-hidden="true" /> Open folder
           </button>
-          <button type="button" className="btn sm" onClick={() => setEditing({ kind: view === 'teams' ? 'team' : 'agent', name: null })}>
-            <Plus size={12} aria-hidden="true" /> New {view === 'teams' ? 'team' : 'agent'}
-          </button>
+          {view === 'agents' && (
+            <button type="button" className="btn sm" onClick={() => setEditing(null)}>
+              <Plus size={12} aria-hidden="true" /> New agent
+            </button>
+          )}
         </div>
 
         {error && <div className="msg error">{error}</div>}
@@ -95,17 +88,14 @@ export function TeamsTab() {
           <>
             <Tabs.Content value="teams">
               {lib.teams.length === 0 ? (
-                <div className="projEmpty">No teams — New team makes one, or delete the folder's .seeded.json to get the defaults back.</div>
+                <div className="projEmpty">No teams — "Save as team" on a run's card makes one, or delete the folder's .seeded.json to get the defaults back.</div>
               ) : (
                 <div className="libList">
                   {lib.teams.map((t) => (
                     <TeamRow
                       key={t.name}
                       team={t}
-                      agents={lib.agents}
                       confirming={confirm === `team:${t.name}`}
-                      onEdit={() => setEditing({ kind: 'team', name: t.name })}
-                      onDuplicate={() => setEditing({ kind: 'team', name: t.name, copy: true })}
                       onReset={() => void reset('team', t.name)}
                       onDelete={() => setConfirm(`team:${t.name}`)}
                       onConfirm={() => void remove('team', t.name)}
@@ -114,6 +104,9 @@ export function TeamsTab() {
                   ))}
                 </div>
               )}
+              <div className="libHint">
+                Teams are recipe files in <span className="mono">teams/</span> — edit one in your editor. "Save as team" on a run's card makes a new one.
+              </div>
             </Tabs.Content>
             <Tabs.Content value="agents">
               {lib.agents.length === 0 ? (
@@ -125,7 +118,7 @@ export function TeamsTab() {
                       key={a.name}
                       agent={a}
                       confirming={confirm === `agent:${a.name}`}
-                      onEdit={() => setEditing({ kind: 'agent', name: a.name })}
+                      onEdit={() => setEditing(a.name)}
                       onReset={() => void reset('agent', a.name)}
                       onDelete={() => setConfirm(`agent:${a.name}`)}
                       onConfirm={() => void remove('agent', a.name)}
@@ -139,11 +132,8 @@ export function TeamsTab() {
         )}
       </Tabs.Root>
 
-      {lib && editing?.kind === 'team' && (
-        <TeamEditDialog lib={lib} name={editing.name} copy={!!editing.copy} onClose={() => setEditing(null)} onSaved={(l) => (setLib(l), setEditing(null))} />
-      )}
-      {lib && editing?.kind === 'agent' && (
-        <AgentEditDialog lib={lib} name={editing.name} onClose={() => setEditing(null)} onSaved={(l) => (setLib(l), setEditing(null))} />
+      {lib && editing !== undefined && (
+        <AgentEditDialog lib={lib} name={editing} onClose={() => setEditing(undefined)} onSaved={(l) => (setLib(l), setEditing(undefined))} />
       )}
     </section>
   )
@@ -162,7 +152,7 @@ function RowActions({
   confirming,
   confirmText,
   onEdit,
-  onDuplicate,
+  onOpen,
   onReset,
   onDelete,
   onConfirm,
@@ -171,8 +161,8 @@ function RowActions({
   status: LibraryStatus
   confirming: boolean
   confirmText: string
-  onEdit: () => void
-  onDuplicate?: () => void
+  onEdit?: () => void
+  onOpen?: () => void
   onReset: () => void
   onDelete: () => void
   onConfirm: () => void
@@ -192,12 +182,14 @@ function RowActions({
     )
   return (
     <span className="libActs">
-      <button type="button" className="btn sm ghost" onClick={onEdit}>
-        Edit
-      </button>
-      {onDuplicate && (
-        <button type="button" className="btn sm ghost" onClick={onDuplicate}>
-          Duplicate
+      {onEdit && (
+        <button type="button" className="btn sm ghost" onClick={onEdit}>
+          Edit
+        </button>
+      )}
+      {onOpen && (
+        <button type="button" className="btn sm ghost" onClick={onOpen} title="Teams are edited as files — opens the teams folder">
+          Open file
         </button>
       )}
       {(status === 'edited' || status === 'update') && (
@@ -214,41 +206,53 @@ function RowActions({
 
 function TeamRow({
   team,
-  agents,
   confirming,
   ...acts
 }: {
-  team: TeamEntry
-  agents: AgentEntry[]
+  team: RecipeEntry
   confirming: boolean
-  onEdit: () => void
-  onDuplicate: () => void
   onReset: () => void
   onDelete: () => void
   onConfirm: () => void
   onCancel: () => void
 }) {
+  const r = team.recipe
+  const file = `teams/${team.name}.md`
   return (
-    <div className="libRow">
-      <span className="libName">
-        <span className="mgrGlyph" aria-hidden="true" />
-        {team.label}
+    <div className="libRow team">
+      <span className="libName" title={r?.description || file}>
+        {r ? r.label : <span className="mono">{team.name}</span>}
       </span>
-      <span className="libRoster">
-        {team.agents.map((n) => {
-          const a = agents.find((x) => x.name === n)
-          return a ? (
-            <span key={n} className="libMember">
-              <span className="swatch" style={{ background: AGENT_HEX[a.color] }} aria-hidden="true" />
-              {a.label}
+      {r ? (
+        <span className="libSteps">
+          <span className="libStepLine mono" title={r.steps.map((s) => `${s.id}: ${s.agent}${s.fanOut ? ` ×${s.fanOut.max} by ${s.fanOut.by}` : ''}${s.output ? ` → ${s.output}` : ''}${s.gate ? ' · waits for you' : ''}`).join('\n')}>
+            {r.steps.map((s, i) => (
+              <span key={s.id}>
+                {i > 0 && <span className="arrow"> → </span>}
+                {stepLine(s)}
+                {s.gate === 'you' && <span className="gate"> · you</span>}
+              </span>
+            ))}
+          </span>
+          {team.missing.length > 0 && (
+            <span className="libMissing" title={`No agent file for: ${team.missing.join(', ')}`}>
+              missing {team.missing.join(', ')}
             </span>
-          ) : null
-        })}
-        {team.missing.length > 0 && <span className="libMissing" title={`No agent file for: ${team.missing.join(', ')}`}>missing {team.missing.join(', ')}</span>}
-        {team.agents.length === 0 && <span className="libMuted">just the manager</span>}
+          )}
+        </span>
+      ) : (
+        <span className="libSteps">
+          <span className="libErr" title={team.errors.length > 1 ? team.errors.join('\n') : undefined}>
+            {team.errors[0] ?? 'this file is not a valid recipe'}
+            {team.errors.length > 1 && <span className="more"> +{team.errors.length - 1}</span>}
+          </span>
+        </span>
+      )}
+      <span className="libBudget mono" title={r ? 'What one run may spend before it pauses' : undefined}>
+        {r ? budget(r.budgetUsd) : ''}
       </span>
       <Status s={team.status} />
-      <RowActions status={team.status} confirming={confirming} confirmText={`Delete ${team.label}?`} {...acts} />
+      <RowActions status={team.status} confirming={confirming} confirmText={`Delete ${r?.label ?? team.name}?`} onOpen={openFolder} {...acts} />
     </div>
   )
 }
@@ -279,7 +283,7 @@ function AgentRow({
       <RowActions
         status={agent.status}
         confirming={confirming}
-        confirmText={agent.usedBy.length ? `Delete ${agent.label}? It leaves ${agent.usedBy.join(', ')}.` : `Delete ${agent.label}?`}
+        confirmText={agent.usedBy.length ? `Delete ${agent.label}? ${agent.usedBy.join(', ')} will be missing it.` : `Delete ${agent.label}?`}
         {...acts}
       />
     </div>
@@ -312,109 +316,18 @@ function EditShell({ title, children, footer, onClose }: { title: string; childr
   )
 }
 
-function TeamEditDialog({
-  lib,
-  name,
-  copy,
-  onClose,
-  onSaved,
-}: {
-  lib: TeamLibrary
-  name: string | null
-  copy: boolean
-  onClose: () => void
-  onSaved: (l: TeamLibrary) => void
-}) {
-  const base = name ? lib.teams.find((t) => t.name === name) ?? null : null
-  const [label, setLabel] = useState(base ? (copy ? `${base.label} copy` : base.label) : '')
-  const [description, setDescription] = useState(base?.description ?? '')
-  const [draft, setDraft] = useState<TeamDraft>(() => draftFromTeam(base, lib))
-  const [selected, setSelected] = useState('manager')
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const probs = problems(draft.agents)
-  const reason = !label.trim() ? 'name the team' : probs[0]?.message
-
-  async function save() {
-    setBusy(true)
-    setError(null)
-    try {
-      const b = await teamsCall<SaveTeamResponse & { ok: true }>('POST', 'save', {
-        name: copy ? null : name,
-        label: label.trim(),
-        description,
-        manager: draft.manager,
-        agents: wireAgents(draft.agents),
-        agentMode: 'update',
-        budgetUsd: draft.budgetUsd,
-      })
-      onSaved({ teams: b.library.teams, agents: b.library.agents, dir: b.library.dir })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      setBusy(false)
-    }
-  }
-
-  return (
-    <EditShell
-      title={base && !copy ? `Edit ${base.label}` : copy ? `Duplicate ${base?.label ?? ''}` : 'New team'}
-      onClose={onClose}
-      footer={
-        <>
-          <span className="sp" />
-          {(error || reason) && <span className="why">{error ?? reason}</span>}
-          <Dialog.Close asChild>
-            <button type="button" className="btn ghost">
-              Cancel
-            </button>
-          </Dialog.Close>
-          <button type="button" className="btn primary" disabled={busy || !!reason} onClick={() => void save()}>
-            {busy ? 'Saving…' : 'Save team'}
-          </button>
-        </>
-      }
-    >
-      <div className="teamMeta">
-        <input className="teamInp" value={label} placeholder="Team name" aria-label="Team name" autoFocus={!label} onChange={(e) => setLabel(e.target.value)} />
-        <input
-          className="teamInp wide"
-          value={description}
-          placeholder="What this team is for"
-          aria-label="Description"
-          onChange={(e) => setDescription(e.target.value)}
-        />
-        <label className="teamBudget" title="What one run may spend before it pauses">
-          Budget $
-          <input
-            className="teamInp"
-            type="number"
-            min={1}
-            max={500}
-            value={draft.budgetUsd}
-            aria-label="Budget in dollars"
-            onChange={(e) => setDraft({ ...draft, budgetUsd: Math.max(1, Math.min(500, Number(e.target.value) || 1)) })}
-          />
-        </label>
-      </div>
-      <TeamEditor draft={draft} onChange={setDraft} selected={selected} onSelect={setSelected} library={lib.agents} mode="library" />
-    </EditShell>
-  )
-}
-
 function AgentEditDialog({ lib, name, onClose, onSaved }: { lib: TeamLibrary; name: string | null; onClose: () => void; onSaved: (l: TeamLibrary) => void }) {
   const entry = name ? lib.agents.find((a) => a.name === name) ?? null : null
-  const [agent, setAgent] = useState<EditorAgent>(() => (entry ? fromEntry(entry) : blankAgent([])))
+  const [agent, setAgent] = useState<AgentDraft>(() => (entry ? draftFromEntry(entry) : blankDraft(lib.agents)))
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const probs = problems([agent])
-  const reason = probs[0]?.message
+  const problem = agentProblem(agent)
 
   async function save() {
     setBusy(true)
     setError(null)
     try {
-      const b = await teamsCall<TeamLibraryResponse>('PUT', 'agent', { name, agent: wireAgents([agent])[0] })
-      onSaved(asLib(b))
+      onSaved(asLib(await teamsCall<TeamLibraryResponse>('PUT', 'agent', agentBody(agent))))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setBusy(false)
@@ -429,26 +342,20 @@ function AgentEditDialog({ lib, name, onClose, onSaved }: { lib: TeamLibrary; na
         <>
           <span className="mono libPath">{entry ? `agents/${entry.name}.md` : ''}</span>
           <span className="sp" />
-          {(error || reason) && <span className={`why${!error && probs[0]?.quiet ? ' quiet' : ''}`}>{error ?? reason}</span>}
+          {(error || problem) && <span className={`why${!error && problem?.quiet ? ' quiet' : ''}`}>{error ?? problem?.message}</span>}
           <Dialog.Close asChild>
             <button type="button" className="btn ghost">
               Cancel
             </button>
           </Dialog.Close>
-          <button type="button" className="btn primary" disabled={busy || !!reason} onClick={() => void save()}>
+          <button type="button" className="btn primary" disabled={busy || !!problem} onClick={() => void save()}>
             {busy ? 'Saving…' : 'Save agent'}
           </button>
         </>
       }
     >
       <div className="teamSolo">
-        <AgentForm
-          agent={agent}
-          problems={probs}
-          usedBy={entry?.usedBy ?? []}
-          mode="library"
-          onChange={(patch) => setAgent((a) => ({ ...a, ...patch, dirty: true }))}
-        />
+        <AgentForm agent={agent} usedBy={entry?.usedBy ?? []} onChange={(patch) => setAgent((a) => ({ ...a, ...patch }))} />
       </div>
     </EditShell>
   )
