@@ -440,10 +440,8 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .wsLabelled .wsName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wsLabelled svg { color: var(--ash); flex: none; transition: color 0.1s ease; }
 .wsLabelled:hover svg, .wsLabelled[data-state="open"] svg { color: var(--ink); }
-/* Panel hidden: the left zone keeps its width, so the toggle, ← → and the
-   workspace stay where the hand left them; only its divider goes, as there is
-   no panel edge below to line up with. */
-.desktopBar.panelHidden .dbSide { border-right-color: transparent; }
+/* Panel hidden: nothing in the bar moves — the left zone keeps its width and
+   its divider, so the toggle, ← → and the workspace stay where the hand left them. */
 /* Fullscreen hides the traffic lights, so their inset goes too. */
 .desktopBar.fullscreen .dbSide { padding-left: 14px; }
 
