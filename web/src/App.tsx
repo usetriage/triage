@@ -1,5 +1,5 @@
 import { FileDiff, FileText, Eye, Terminal as TerminalIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import type { DispatchPreviewResponse,
   EffortLevel,
   ImageAttachment,
@@ -66,6 +66,38 @@ import { projectColor, useLastRoutes, useOpenTabs } from './tabs.js'
 
 /** `/Users/you/Code/x` → `~/Code/x` — display only. */
 const homely = (p: string) => p.replace(/^\/(?:Users|home)\/[^/]+/, '~')
+
+/** `/Users/you/Code/x` → `x` — the header's fallback once the homely path won't fit. */
+const folderName = (p: string) => p.replace(/\/+$/, '').split('/').filter(Boolean).pop() ?? p
+
+/**
+ * Whether the folder pill has given up the homely path for just the folder name: true once the
+ * header can't fit the full path even with the title shrunk to nothing. Measured each resize
+ * against the full path (the hidden `.measure` twin of the pill), so switching back doesn't lag
+ * behind the header's real slack the way a latched "we're short" flag would.
+ */
+function useNarrowFolder(
+  headerRef: RefObject<HTMLDivElement | null>,
+  shownRef: RefObject<HTMLSpanElement | null>,
+  fullRef: RefObject<HTMLSpanElement | null>,
+  dep: string,
+) {
+  const [short, setShort] = useState(false)
+  useEffect(() => {
+    const header = headerRef.current
+    if (!header) return
+    const read = () => {
+      const extra = (fullRef.current?.scrollWidth ?? 0) - (shownRef.current?.scrollWidth ?? 0)
+      // Sub-pixel layout means scrollWidth can sit a hair above clientWidth with nothing actually hidden.
+      setShort(header.scrollWidth + extra > header.clientWidth + 1)
+    }
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(header)
+    return () => ro.disconnect()
+  }, [headerRef, shownRef, fullRef, dep])
+  return short
+}
 
 const STATUS_LABEL: Record<SessionStatus, string> = {
   starting: 'starting',
@@ -285,6 +317,10 @@ export function App() {
   const goPrefix = useRef<number | undefined>(undefined)
 
   const current = sessions.find((s) => s.id === currentId) ?? null
+  const chatHeaderRef = useRef<HTMLDivElement>(null)
+  const folderTextRef = useRef<HTMLSpanElement>(null)
+  const folderMeasureRef = useRef<HTMLSpanElement>(null)
+  const folderShort = useNarrowFolder(chatHeaderRef, folderTextRef, folderMeasureRef, `${current?.cwd}`)
   // A team run in this session: one fetch shared by the strip, the dock and the details drawer.
   const teamRun = useTeamRun(current?.teamRun)
   const [teamSide, setTeamSide] = useState(false)
@@ -1034,7 +1070,7 @@ export function App() {
             ) : route.page === 'home' || route.page === 'settings' ? null : current ? (
               <div className={`sessRow${teamRun && teamSide ? ' withSide' : ''}`}>
               <div className="sessCol">
-                <div id="chatHeader">
+                <div id="chatHeader" ref={chatHeaderRef}>
                   <span id="chatTitle" title={current.title}>
                     {current.title}
                   </span>
@@ -1046,8 +1082,15 @@ export function App() {
                       </span>
                     )}
                     <span className="pill mono" title={current.cwd}>
-                      <span className="t">{homely(current.cwd)}</span>
+                      <span className="t" ref={folderTextRef}>
+                        {folderShort ? folderName(current.cwd) : homely(current.cwd)}
+                      </span>
                       {current.branch ? ` · ${current.branch}` : ''}
+                    </span>
+                    <span className="pill mono measure" aria-hidden="true">
+                      <span className="t" ref={folderMeasureRef}>
+                        {homely(current.cwd)}
+                      </span>
                     </span>
                   </span>
                   <SessionCost sessionId={current.id} status={current.status} />

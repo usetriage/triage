@@ -826,9 +826,12 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
   display: flex; align-items: center; gap: 10px; height: var(--bar-h); padding: 0 20px; flex: none;
   border-bottom: 1px solid var(--hair); min-width: 0;
 }
-#chatTitle { font-size: 1.0769rem; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-#chatHeader .pills { display: flex; gap: 6px; margin-left: 8px; min-width: 0; }
-#chatHeader .pills .pill { max-width: 320px; }
+#chatTitle { flex: 1 1 auto; font-size: 1.0769rem; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#chatHeader .pills { display: flex; flex: none; gap: 6px; margin-left: 8px; }
+#chatHeader .pills .pill { flex: none; max-width: 320px; }
+/* The folder pill's hidden twin, always holding the full path — measured to decide when the
+   shown pill can afford it back, never rendered. */
+#chatHeader .pills .pill.measure { position: fixed; top: -9999px; left: -9999px; visibility: hidden; pointer-events: none; }
 #chatHeader .state { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--mute); font-size: 0.9231rem; flex: none; }
 #chatHeader .state.running, #chatHeader .state.starting { color: var(--body); }
 #chatHeader .state.error { color: var(--red); }
@@ -3285,8 +3288,10 @@ html.kbOpen .shell.mobile .panel { bottom: 0; }
 }
 .termKeys button:active { background: var(--wash-2); color: var(--ink); }
 @media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
-  /* The top bar names the shell; its header keeps the folder. */
-  #chatHeader.termHeader .pills .pill.mono { display: inline-flex; max-width: 50vw; }
+  /* The top bar names the shell; its header keeps the folder. Stay inline-block
+     (not inline-flex) so the pill truncates its own text as one line — flexing
+     it makes the inner .t span an unshrinkable flex item that spills past the cap. */
+  #chatHeader.termHeader .pills .pill.mono { max-width: 50vw; }
 }
 
 /* ---------- phone: a changed file — the file on one line, the view controls on the next ---------- */
