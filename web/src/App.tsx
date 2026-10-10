@@ -30,6 +30,7 @@ import { SettingsModal } from './components/SettingsModal.js'
 import { SystemModal, type SystemTab } from './components/SystemModal.js'
 import { TabBand, type OpenTab, type PageTab, type TabKind } from './components/TabBand.js'
 import { dispatchPrompt, dispatchTitle } from './dispatch.js'
+import { composerDrafts } from './composerDrafts.js'
 import { draftStore, draftTitle, useDrafts } from './drafts.js'
 import { TerminalPage } from './components/TerminalPage.js'
 import { TopBar } from './components/TopBar.js'
@@ -535,6 +536,7 @@ export function App() {
   const deleteSession = useCallback(
     (sessionId: string) => {
       store.send({ type: 'delete_session', sessionId })
+      composerDrafts.set(sessionId, '') // no session, no draft to keep
       closeTab(sessionId)
       // Deleting what you are looking at leaves nothing to look at.
       if (sessionId === currentId) navigate('')
@@ -1127,10 +1129,12 @@ export function App() {
                   events={events}
                   turns={sessionChanges?.turns}
                   onRespond={respond}
+                  onNavigate={navigate}
                 />
                 {teamRun && current.teamRun?.role === 'lead' && <TeamDock run={teamRun} onDetails={() => setTeamSide((o) => !o)} onNavigate={navigate} />}
                 <Composer
                   key={`composer-${current.id}`}
+                  sessionId={current.id}
                   status={current.status}
                   cwd={current.cwd}
                   branch={current.branch}

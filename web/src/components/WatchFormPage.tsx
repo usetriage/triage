@@ -575,6 +575,7 @@ export function WatchFormPage({ id, onNavigate }: { id: string | null; onNavigat
             complete={complete}
             saveLabel={id ? 'Save changes' : 'Create watch'}
             error={error}
+            onNavigate={onNavigate}
           />
         )}
       </div>
@@ -599,6 +600,7 @@ function PreviewStep({
   complete,
   saveLabel,
   error,
+  onNavigate,
 }: {
   preview: Preview
   stale: boolean
@@ -610,6 +612,7 @@ function PreviewStep({
   complete: boolean
   saveLabel: string
   error: string
+  onNavigate: (hash: string) => void
 }) {
   const sessionId = preview.phase === 'idle' || !preview.id ? null : preview.id
   const events = useEvents(sessionId)
@@ -645,7 +648,7 @@ function PreviewStep({
 
       <div className="previewTranscript">
         {sessionId && events.length > 0 ? (
-          <Transcript sessionId={sessionId} events={events} onRespond={() => {}} />
+          <Transcript sessionId={sessionId} events={events} onRespond={() => {}} onNavigate={onNavigate} />
         ) : (
           <div className="waiting">{running ? 'Starting the run…' : 'No transcript.'}</div>
         )}

@@ -12,6 +12,8 @@ import { parseQuestions } from '../askQuestions.js'
 import { useLiveText } from '../hooks.js'
 import { openSettings } from '../settings.js'
 import { store } from '../store.js'
+import { artifactStore, useArtifacts } from '../artifactStore.js'
+import { useRefIndex, type RefIndex } from '../refs.js'
 import { buildTranscript, type TranscriptItem } from '../transcript.js'
 import { AskCard } from './AskCard.js'
 import { InitCard } from './InitCard.js'
@@ -27,6 +29,8 @@ type Props = {
   /** per-turn file counts, so a turn marker can say what that turn changed */
   turns?: readonly SessionTurnSummary[]
   onRespond: (requestId: string, behavior: PermissionBehavior, answers?: QuestionAnswers) => void
+  /** Open an entity a reference chip points at (an app route hash). */
+  onNavigate: (hash: string) => void
 }
 
 /**
@@ -43,9 +47,16 @@ function overlapLabel(titles: readonly string[]): string {
   return t.length > MAX_OVERLAP_CHARS ? `${t.slice(0, MAX_OVERLAP_CHARS - 1).trimEnd()}…` : t
 }
 
-export function Transcript({ sessionId, events, turns, onRespond }: Props) {
+export function Transcript({ sessionId, events, turns, onRespond, onNavigate }: Props) {
   const items = useMemo(() => buildTranscript(events, store.eventTime), [events])
   const { ref, scrollToBottom } = useStickToBottom()
+  const refs = useRefIndex()
+  // Reference chips resolve against the artifacts index, which isn't otherwise
+  // loaded while a chat is in front — pull it once so names appear.
+  const { loaded } = useArtifacts()
+  useEffect(() => {
+    if (!loaded) void artifactStore.refresh()
+  }, [loaded])
 
   // Committed events grow the transcript; the streaming line grows it too, but
   // re-renders separately (see LiveLine), so it calls back in here to scroll.
@@ -60,6 +71,8 @@ export function Transcript({ sessionId, events, turns, onRespond }: Props) {
             item={item}
             turn={item.kind === 'meta' && item.turn ? turns?.find((t) => t.seq === item.turn) : undefined}
             onRespond={onRespond}
+            refs={refs}
+            onRef={onNavigate}
           />
         ))}
         <LiveLine sessionId={sessionId} onGrow={scrollToBottom} />
@@ -104,10 +117,14 @@ const Item = memo(function Item({
   item,
   turn,
   onRespond,
+  refs,
+  onRef,
 }: {
   item: TranscriptItem
   turn?: SessionTurnSummary
   onRespond: Props['onRespond']
+  refs: RefIndex
+  onRef: (hash: string) => void
 }) {
   switch (item.kind) {
     case 'user':
@@ -116,7 +133,7 @@ const Item = memo(function Item({
         return (
           <div className="msg teammate">
             <div className="msgFrom">from {item.from}</div>
-            <Markdown text={item.text} />
+            <Markdown text={item.text} refs={refs} onRef={onRef} />
           </div>
         )
       return (
@@ -157,7 +174,7 @@ const Item = memo(function Item({
     case 'assistant':
       return (
         <div className="msg assistant">
-          <Markdown text={item.text} />
+          <Markdown text={item.text} refs={refs} onRef={onRef} />
         </div>
       )
     case 'thinking':

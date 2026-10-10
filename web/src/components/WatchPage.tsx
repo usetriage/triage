@@ -526,7 +526,7 @@ export function WatchPage({ id, onNavigate }: { id: string; onNavigate: (hash: s
           ))}
       </div>
 
-      <RunTranscriptModal run={openRun} watchTitle={watch.title} onClose={() => setOpenRun(null)} />
+      <RunTranscriptModal run={openRun} watchTitle={watch.title} onClose={() => setOpenRun(null)} onNavigate={onNavigate} />
     </div>
   )
 }
@@ -616,7 +616,7 @@ const days0 = (days: Array<{ at: number }>) => days[0].at
 // log into the same Transcript the session page uses.
 // ---------------------------------------------------------------------------
 
-function RunTranscriptModal({ run, watchTitle, onClose }: { run: ActivityRun | null; watchTitle: string; onClose: () => void }) {
+function RunTranscriptModal({ run, watchTitle, onClose, onNavigate }: { run: ActivityRun | null; watchTitle: string; onClose: () => void; onNavigate: (hash: string) => void }) {
   const sessionId = run?.sessionId ?? null
   const events = useEvents(sessionId)
   useEffect(() => {
@@ -666,7 +666,7 @@ function RunTranscriptModal({ run, watchTitle, onClose }: { run: ActivityRun | n
                 </div>
               </div>
               <div className="body">
-                {events.length === 0 ? <div className="empty">Loading the run’s transcript…</div> : <Transcript sessionId={run.sessionId} events={events} onRespond={() => {}} />}
+                {events.length === 0 ? <div className="empty">Loading the run’s transcript…</div> : <Transcript sessionId={run.sessionId} events={events} onRespond={() => {}} onNavigate={onNavigate} />}
               </div>
             </>
           )}

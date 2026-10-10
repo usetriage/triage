@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type {
   EffortLevel,
   ImageAttachment,
@@ -10,10 +10,13 @@ import type {
   ProjectsResponse,
   SessionStatus,
 } from '../../../shared/protocol.js'
+import { composerDrafts, useComposerDraft } from '../composerDrafts.js'
 import { PromptBox } from './PromptBox.js'
 import { PromptHead } from './PromptHead.js'
 
 type Props = {
+  /** The live session this composer steers — keys its unsent draft. */
+  sessionId: string
   status: SessionStatus
   cwd: string
   branch?: string
@@ -35,6 +38,7 @@ type Props = {
  * folder the session runs in, plus the interrupt button while a turn is live.
  */
 export function Composer({
+  sessionId,
   status,
   cwd,
   branch,
@@ -50,7 +54,10 @@ export function Composer({
   onFastModeChange,
   onPermissionModeChange,
 }: Props) {
-  const [text, setText] = useState('')
+  // The unsent draft lives in a per-session store, not local state, so leaving
+  // this session for another tab and coming back keeps what you had typed.
+  const text = useComposerDraft(sessionId)
+  const setText = useCallback((next: string) => composerDrafts.set(sessionId, next), [sessionId])
   const [projects, setProjects] = useState<Project[]>([])
   const running = status === 'running' || status === 'starting'
 

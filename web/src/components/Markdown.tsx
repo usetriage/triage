@@ -25,6 +25,8 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { useTheme } from '../appearance.js'
 import { diagram, renderDiagrams } from '../mermaid.js'
+import type { LinkKind } from '../../../shared/protocol.js'
+import type { RefIndex } from '../refs.js'
 
 marked.setOptions({
   gfm: true,
@@ -82,7 +84,78 @@ function renderMarkdown(text: string): { html: string; diagrams: string[] } {
   }
 }
 
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+// The kind glyphs, matching MentionIcon (lucide) so a reference in the prose
+// reads as the same thing as the `@` chip that attached it.
+const REF_ICON: Record<LinkKind, string> = {
+  artifact:
+    '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  session:
+    '<path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/>',
+  item:
+    '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+}
+
+const REF_KIND_LABEL: Record<LinkKind, string> = { artifact: 'artifact', session: 'session', item: 'work item' }
+
+function refChip(kind: LinkKind, label: string, hash: string): HTMLElement {
+  const span = document.createElement('span')
+  span.className = `refLink ${kind}`
+  span.dataset.refNav = hash
+  span.title = `Open ${REF_KIND_LABEL[kind]}: ${label}`
+  span.innerHTML = `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${REF_ICON[kind]}</svg>`
+  const name = document.createElement('span')
+  name.className = 'n'
+  name.textContent = label
+  span.appendChild(name)
+  return span
+}
+
+/**
+ * Swaps every bare entity id in the rendered markup for a clickable chip of the
+ * entity's name. Runs over text nodes only, skipping code fences, links and
+ * chips already placed, so an id inside a ``` block stays literal and nothing is
+ * linkified twice. An id the index doesn't know is left exactly as it was.
+ */
+function linkifyRefs(root: HTMLElement, index: RefIndex): void {
+  const pattern = index.pattern()
+  if (!pattern) return
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const targets: Text[] = []
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const el = (n as Text).parentElement
+    if (el && !el.closest('pre, a, .refLink')) targets.push(n as Text)
+  }
+  for (const node of targets) {
+    const text = node.nodeValue ?? ''
+    pattern.lastIndex = 0
+    if (!pattern.test(text)) continue
+    pattern.lastIndex = 0
+    const frag = document.createDocumentFragment()
+    let last = 0
+    for (let m = pattern.exec(text); m; m = pattern.exec(text)) {
+      const hit = index.lookup(m[0])
+      if (!hit) continue
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)))
+      frag.appendChild(refChip(hit.kind, hit.label, hit.hash))
+      last = m.index + m[0].length
+    }
+    if (last === 0) continue // every match was unknown — leave the node be
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)))
+    node.parentNode?.replaceChild(frag, node)
+  }
+}
+
+export const Markdown = memo(function Markdown({
+  text,
+  refs,
+  onRef,
+}: {
+  text: string
+  /** When given, bare entity ids in the text become clickable name chips. */
+  refs?: RefIndex
+  /** Where a reference chip navigates on click (an app route hash). */
+  onRef?: (hash: string) => void
+}) {
   const theme = useTheme()
   const [rendered, redraw] = useReducer((n: number) => n + 1, 0)
   const [zoomed, setZoomed] = useState<string | null>(null)
@@ -113,6 +186,13 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
     }
   }, [html, diagrams, theme, rendered])
 
+  // After each render of the markup, turn known ids into name chips. Keyed on
+  // the markup and the index, so a newly-loaded artifact name resolves a chip
+  // that was plain text a moment ago.
+  useLayoutEffect(() => {
+    if (host.current && refs) linkifyRefs(host.current, refs)
+  }, [html, refs])
+
   useEffect(() => {
     if (diagrams.length === 0) return
     let live = true
@@ -127,6 +207,12 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const onClick = useCallback(
     (e: MouseEvent) => {
       const target = e.target as HTMLElement
+      const refEl = target.closest<HTMLElement>('[data-ref-nav]')
+      if (refEl) {
+        e.preventDefault()
+        onRef?.(refEl.dataset.refNav ?? '')
+        return
+      }
       const expandButton = target.closest<HTMLElement>('[data-mermaid-expand]')
       if (expandButton) {
         const code = diagrams[Number(expandButton.dataset.mermaidExpand)]
@@ -153,7 +239,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
         setPreview(code)
       }
     },
-    [diagrams, theme],
+    [diagrams, theme, onRef],
   )
 
   // Copies the rendered markdown as rich text (HTML + a plain-text fallback)

@@ -2307,6 +2307,18 @@ dialog.itemComposer { width: 800px; max-width: calc(100vw - 48px); padding: 0; o
 .mchip .x:hover { color: var(--ink); }
 .msg.user .mtok { color: var(--ink); font-family: var(--mono); font-size: 0.9615rem; background: var(--wash-2); border-radius: var(--r-xs); padding: 1px 5px; }
 
+/* An entity reference the agent dropped into prose, resolved to its name and
+   made clickable — reads as the same object as the @ chip that attaches it. */
+.refLink {
+  display: inline-flex; align-items: baseline; gap: 4px; max-width: 320px; vertical-align: baseline;
+  padding: 0 5px 1px; border-radius: var(--r-xs); background: var(--wash-2);
+  border: 1px solid var(--hair); color: var(--body); cursor: pointer; text-decoration: none;
+}
+.refLink svg { flex: none; align-self: center; color: var(--ash); }
+.refLink .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.refLink:hover { color: var(--ink); border-color: var(--hair-strong); background: var(--wash-1); }
+.refLink:hover svg { color: var(--ink); }
+
 /* ---------- / commands: the picker, and what a local command printed ---------- */
 /* Narrower than the @ picker: one line per command, no tabs, no groups. */
 .slPop { width: 560px; }
