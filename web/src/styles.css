@@ -427,11 +427,23 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
   border-right: 1px solid var(--hair);
 }
 .desktopBar .dbMain { flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; height: 100%; padding: 0 12px; }
-.desktopBar .dbMain .wsPill { margin-right: 8px; }
-/* Panel hidden: one row — lights, lockup, toggle, ← →, a hairline, the workspace. */
-.desktopBar.panelHidden .dbSide { width: auto; padding-right: 0; border-right: 0; }
-.desktopBar.panelHidden .dbSide .spacer { flex: 0 0 10px; }
-.desktopBar.panelHidden .dbMain::before { content: ""; width: 1px; height: 16px; margin-right: 12px; background: var(--hair-strong); flex: none; }
+/* The workspace switcher as a labelled title (.docs/titlebar-variations.html, switcher 3). */
+.wsLabelled {
+  display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; margin: 0 8px 0 -4px; max-width: 360px;
+  border: 0; border-radius: var(--r); background: transparent; color: var(--ink); font-size: 1rem; font-weight: 500;
+  transition: background 0.1s ease;
+}
+.wsLabelled:hover, .wsLabelled[data-state="open"] { background: var(--wash-3); }
+.wsLabelled .wsLabel { font: 500 0.7692rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ash); flex: none; }
+.wsLabelled .wsLabelSep { width: 1px; height: 14px; background: var(--hair-strong); flex: none; }
+.wsLabelled .wsDot { width: 7px; height: 7px; border-radius: var(--r-full); flex: none; }
+.wsLabelled .wsName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wsLabelled svg { color: var(--ash); flex: none; transition: color 0.1s ease; }
+.wsLabelled:hover svg, .wsLabelled[data-state="open"] svg { color: var(--ink); }
+/* Panel hidden: the left zone keeps its width, so the toggle, ← → and the
+   workspace stay where the hand left them; only its divider goes, as there is
+   no panel edge below to line up with. */
+.desktopBar.panelHidden .dbSide { border-right-color: transparent; }
 /* Fullscreen hides the traffic lights, so their inset goes too. */
 .desktopBar.fullscreen .dbSide { padding-left: 14px; }
 

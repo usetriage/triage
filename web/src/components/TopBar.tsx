@@ -1,4 +1,4 @@
-import { Activity, Check, ChevronLeft, ChevronRight, ChevronsUpDown, CircleHelp, Gauge, PanelLeft, Plus, Settings, Settings2, SquareArrowOutUpRight } from 'lucide-react'
+import { Activity, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, CircleHelp, Gauge, PanelLeft, Plus, Settings, Settings2, SquareArrowOutUpRight } from 'lucide-react'
 import { useRef, useState, type ReactNode } from 'react'
 import { goBack, goForward, useDesktopNav } from '../desktop.js'
 import { MOD_LABEL } from '../keys.js'
@@ -55,6 +55,7 @@ export function TopBar({
         {...desktop}
         switcher={
           <WorkspaceSwitcher
+            labelled
             workspaces={workspaces}
             workspaceId={workspaceId}
             onSwitch={onSwitchWorkspace}
@@ -193,12 +194,15 @@ function DesktopBar({
  * every workspace (active checked), plus New and Settings.
  */
 function WorkspaceSwitcher({
+  labelled,
   workspaces,
   workspaceId,
   onSwitch,
   onNew,
   onSettings,
 }: {
+  /** Triage.app's bar: a WORKSPACE eyebrow and the name at full size instead of the pill. */
+  labelled?: boolean
   workspaces: readonly Workspace[]
   workspaceId: string
   onSwitch: (id: string) => void
@@ -228,11 +232,21 @@ function WorkspaceSwitcher({
       }}
     >
       <MenuTrigger asChild>
-        <button type="button" className="wsPill" title={`Workspace: ${active.name}`}>
-          <span className="wsDot" style={{ background: active.color }} aria-hidden="true" />
-          <span className="wsName">{active.name}</span>
-          <ChevronsUpDown size={11} aria-hidden="true" />
-        </button>
+        {labelled ? (
+          <button type="button" className="wsLabelled" title={`Workspace: ${active.name}`}>
+            <span className="wsLabel">Workspace</span>
+            <span className="wsLabelSep" aria-hidden="true" />
+            <span className="wsDot" style={{ background: active.color }} aria-hidden="true" />
+            <span className="wsName">{active.name}</span>
+            <ChevronDown size={13} aria-hidden="true" />
+          </button>
+        ) : (
+          <button type="button" className="wsPill" title={`Workspace: ${active.name}`}>
+            <span className="wsDot" style={{ background: active.color }} aria-hidden="true" />
+            <span className="wsName">{active.name}</span>
+            <ChevronsUpDown size={11} aria-hidden="true" />
+          </button>
+        )}
       </MenuTrigger>
       <MenuContent align="start" className="wsMenu">
         {workspaces.map((w) => (
