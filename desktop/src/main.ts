@@ -1,7 +1,11 @@
 /**
- * Triage.app's main process (ARCHITECTURE.md): one window over the local
- * daemon, a menu, a menu-bar icon. The app attaches, it does not own — quitting
- * it never stops the daemon, so live sessions and watches carry on.
+ * Triage.app's main process (ARCHITECTURE.md): windows over the local daemon,
+ * a menu, a menu-bar icon. The app attaches, it does not own — quitting it
+ * never stops the daemon, so live sessions and watches carry on.
+ *
+ * One main window, which only hides on close so the app lives on in the Dock;
+ * opening a workspace "in a new tab" (the switcher's ⌘-click / external icon)
+ * opens a second window on that workspace's URL (`/w/<id>/`), which closes for real.
  */
 import {
   app,
@@ -30,7 +34,11 @@ const MIN_SIZE = { width: 900, height: 600 }
 
 type SplashStatus = { state: 'starting' | 'error'; text: string; detail?: string }
 
-let win: BrowserWindow | null = null
+let win: BrowserWindow | null = null // the main window
+const extra = new Set<BrowserWindow>() // workspace windows opened from it
+// Where each window goes once the daemon answers — and goes back to after a
+// reconnect, so a workspace window comes back on its own workspace.
+const target = new WeakMap<BrowserWindow, string>()
 let tray: Tray | null = null
 let quitting = false
 // One connect at a time: did-fail-load, the watchdog and Retry all funnel here.
@@ -53,19 +61,25 @@ function start() {
   ipcMain.on('splash:open-log', () => void openLog())
   // The web UI's ← → buttons. Hash routes are history entries, so the
   // window's own navigation history is the app's history.
-  ipcMain.on('nav:back', (e) => isWin(e.sender) && history()?.canGoBack() && history()?.goBack())
-  ipcMain.on('nav:forward', (e) => isWin(e.sender) && history()?.canGoForward() && history()?.goForward())
-  ipcMain.handle('nav:state', () => navState())
-  createWindow()
+  ipcMain.on('nav:back', (e) => goBack(windowOf(e.sender)))
+  ipcMain.on('nav:forward', (e) => goForward(windowOf(e.sender)))
+  ipcMain.handle('nav:state', (e) => navState(windowOf(e.sender)))
+  win = createWindow(daemonUrl())
   void connect()
   setInterval(watchdog, 5000)
 }
 
 // ── window ─────────────────────────────────────────────────────────────────
 
-function createWindow() {
-  const state = loadWindowState()
-  win = new BrowserWindow({
+/**
+ * A window over the daemon, headed for `url` (the main window: the daemon's
+ * root; a workspace window: its `/w/<id>/`). It shows the splash until the
+ * daemon answers, then loads its target.
+ */
+function createWindow(url: string, bounds?: Partial<Rectangle>): BrowserWindow {
+  const main = !bounds
+  const state = main ? loadWindowState() : { bounds: { ...DEFAULT_SIZE, ...bounds }, maximized: false }
+  const w = new BrowserWindow({
     ...state.bounds,
     minWidth: MIN_SIZE.width,
     minHeight: MIN_SIZE.height,
@@ -84,62 +98,110 @@ function createWindow() {
       additionalArguments: [`--triage-version=${app.getVersion()}`],
     },
   })
-  if (state.maximized) win.maximize()
-  win.once('ready-to-show', () => win?.show())
+  target.set(w, url)
+  if (state.maximized) w.maximize()
+  w.once('ready-to-show', () => w.show())
 
-  // Closing hides: the app lives on in the Dock and the menu bar until ⌘Q.
-  win.on('close', (e) => {
-    saveWindowState()
-    if (!quitting) {
-      e.preventDefault()
-      win?.hide()
+  if (main) {
+    // Closing hides: the app lives on in the Dock and the menu bar until ⌘Q.
+    w.on('close', (e) => {
+      saveWindowState()
+      if (!quitting) {
+        e.preventDefault()
+        w.hide()
+      }
+    })
+    w.on('closed', () => (win = null))
+    let saveTimer: NodeJS.Timeout | undefined
+    const saveSoon = () => {
+      clearTimeout(saveTimer)
+      saveTimer = setTimeout(saveWindowState, 500)
     }
-  })
-  win.on('closed', () => (win = null))
-  let saveTimer: NodeJS.Timeout | undefined
-  const saveSoon = () => {
-    clearTimeout(saveTimer)
-    saveTimer = setTimeout(saveWindowState, 500)
+    w.on('resize', saveSoon)
+    w.on('move', saveSoon)
+    w.on('maximize', saveSoon)
+    w.on('unmaximize', saveSoon)
+  } else {
+    extra.add(w)
+    w.on('closed', () => extra.delete(w))
   }
-  win.on('resize', saveSoon)
-  win.on('move', saveSoon)
-  win.on('maximize', saveSoon)
-  win.on('unmaximize', saveSoon)
   // Fullscreen hides the traffic lights, so the bar drops their inset.
-  win.on('enter-full-screen', sendNav)
-  win.on('leave-full-screen', sendNav)
+  w.on('enter-full-screen', () => sendNav(w))
+  w.on('leave-full-screen', () => sendNav(w))
 
-  const wc = win.webContents
+  const wc = w.webContents
   wc.on('did-finish-load', () => {
-    if (onSplash()) wc.send('splash:status', splash)
+    if (onSplash(w)) wc.send('splash:status', splash)
     else {
-      sendNav()
+      sendNav(w)
       void fitLegacyBar(wc)
     }
   })
-  wc.on('did-navigate-in-page', sendNav)
-  // Links out of triage go to the default browser; the app never opens a
-  // second window. A same-origin window.open (⌘-click a workspace) has one
-  // window to land in, so it takes this one.
-  wc.setWindowOpenHandler(({ url }) => {
-    if (isDaemonUrl(url)) void wc.loadURL(url)
-    else openExternal(url)
+  // In-page moves count too: the SPA pins its workspace with replaceState, and a
+  // reconnect should land back on the same route.
+  wc.on('did-navigate-in-page', (_e, navUrl, isMainFrame) => {
+    if (isMainFrame && isDaemonUrl(navUrl)) target.set(w, navUrl)
+    sendNav(w)
+  })
+  // A full navigation inside triage (switching workspace) moves the window's target with it.
+  wc.on('did-navigate', (_e, navUrl) => {
+    if (isDaemonUrl(navUrl)) target.set(w, navUrl)
+  })
+  // Links out of triage go to the default browser. A same-origin window.open
+  // (the workspace switcher's "open in a new tab") opens a workspace window.
+  wc.setWindowOpenHandler(({ url: openUrl }) => {
+    if (isDaemonUrl(openUrl)) openWorkspaceWindow(openUrl, w)
+    else openExternal(openUrl)
     return { action: 'deny' }
   })
-  wc.on('will-navigate', (e, url) => {
-    if (isDaemonUrl(url) || url === SPLASH_URL) return
+  wc.on('will-navigate', (e, navUrl) => {
+    if (isDaemonUrl(navUrl) || navUrl === SPLASH_URL) return
     e.preventDefault()
-    openExternal(url)
+    openExternal(navUrl)
   })
   // The daemon went away under a load (restart, crash, `triage stop`).
-  wc.on('did-fail-load', (_e, code, _desc, url, isMainFrame) => {
-    if (!isMainFrame || code === -3 /* ERR_ABORTED: superseded by another load */ || !isDaemonUrl(url)) return
+  wc.on('did-fail-load', (_e, code, _desc, failUrl, isMainFrame) => {
+    if (!isMainFrame || code === -3 /* ERR_ABORTED: superseded by another load */ || !isDaemonUrl(failUrl)) return
     reconnect()
   })
   wc.on('render-process-gone', (_e, details) => {
     if (details.reason !== 'clean-exit') reconnect()
   })
+  return w
 }
+
+/** `/w/<id>/` of a daemon URL, or '' for a bare one (the cookie decides). */
+function workspaceOf(raw: string): string {
+  try {
+    return /^\/w\/([^/]+)\/?/.exec(new URL(raw).pathname)?.[1] ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * A workspace in its own window: focus the window already on it, else open one
+ * cascaded off the window that asked. A window still on the splash loads it
+ * once the daemon answers; otherwise it goes straight there.
+ */
+function openWorkspaceWindow(url: string, from: BrowserWindow) {
+  const ws = workspaceOf(url)
+  const existing = ws ? allWindows().find((w) => workspaceOf(target.get(w) ?? '') === ws) : undefined
+  if (existing) {
+    if (existing.isMinimized()) existing.restore()
+    existing.show()
+    existing.focus()
+    return
+  }
+  const b = from.getNormalBounds()
+  const w = createWindow(url, { x: b.x + 28, y: b.y + 28, width: b.width, height: b.height })
+  if (connecting) void w.loadFile(SPLASH)
+  else void loadTarget(w)
+}
+
+const allWindows = (): BrowserWindow[] => [...(win ? [win] : []), ...extra].filter((w) => !w.isDestroyed())
+
+const windowOf = (sender: Electron.WebContents): BrowserWindow | null => BrowserWindow.fromWebContents(sender)
 
 /**
  * A daemon older than the desktop title bar (web/src/desktop.ts) serves a UI
@@ -158,7 +220,7 @@ async function fitLegacyBar(wc: Electron.WebContents) {
 function showWindow() {
   if (!app.isReady()) return // a Dock click or second launch racing startup; start() opens the window
   if (!win) {
-    createWindow()
+    win = createWindow(daemonUrl())
     void connect()
     return
   }
@@ -167,34 +229,37 @@ function showWindow() {
   win.focus()
 }
 
-function onSplash(): boolean {
-  return win?.webContents.getURL() === SPLASH_URL
-}
+const onSplash = (w: BrowserWindow): boolean => !w.isDestroyed() && w.webContents.getURL() === SPLASH_URL
 
 // ── connecting ─────────────────────────────────────────────────────────────
 
 function setSplash(s: SplashStatus) {
   splash = s
-  if (win && onSplash()) win.webContents.send('splash:status', s)
+  for (const w of allWindows()) if (onSplash(w)) w.webContents.send('splash:status', s)
 }
 
-/** Splash → find or start the daemon (or restart it) → load the UI. Errors stay on the splash. */
+/** The window's own target, with the splash's history cleared so Back can't land on it. */
+async function loadTarget(w: BrowserWindow) {
+  await w.loadURL(target.get(w) ?? daemonUrl())
+  w.webContents.navigationHistory.clear()
+  sendNav(w)
+}
+
+/**
+ * Every window to the splash → find or start the daemon (or restart it) →
+ * each window back to its target. Errors stay on the splash.
+ */
 async function connect(how: 'ensure' | 'restart' = 'ensure') {
-  if (connecting || !win) return
+  if (connecting || allWindows().length === 0) return
   connecting = true
-  const w = win
   try {
     setSplash({ state: 'starting', text: how === 'restart' ? 'Restarting triage…' : 'Looking for triage…' })
-    if (!onSplash()) await w.loadFile(SPLASH)
+    await Promise.all(allWindows().map((w) => (onSplash(w) ? undefined : w.loadFile(SPLASH))))
     if (how === 'restart') await restartDaemon()
     else await ensureDaemon((text) => setSplash({ state: 'starting', text }))
-    await w.loadURL(daemonUrl())
-    // Back must never land on the splash: the UI's history starts here.
-    w.webContents.navigationHistory.clear()
-    sendNav()
+    await Promise.all(allWindows().map((w) => loadTarget(w)))
   } catch (err) {
-    if (w.isDestroyed()) return
-    if (!onSplash()) await w.loadFile(SPLASH).catch(() => {})
+    await Promise.all(allWindows().map((w) => (onSplash(w) ? undefined : w.loadFile(SPLASH).catch(() => {}))))
     // daemon.ts errors are "headline\n\ncli output\n\nlog tail".
     const msg = err instanceof Error ? err.message : String(err)
     const cut = msg.indexOf('\n\n')
@@ -214,9 +279,9 @@ async function connect(how: 'ensure' | 'restart' = 'ensure') {
  * to load ends on the splash's error, waiting for Retry, instead of a loop.
  */
 function reconnect() {
-  if (connecting || !win) return
+  if (connecting || allWindows().length === 0) return
   if (Date.now() - lastAutoConnect < 10_000) {
-    void win.loadFile(SPLASH).then(() =>
+    void Promise.all(allWindows().map((w) => w.loadFile(SPLASH))).then(() =>
       setSplash({ state: 'error', text: 'Triage stopped answering', detail: `Nothing at ${daemonUrl()} — Retry to start it again, or check the log.` }),
     )
     return
@@ -227,13 +292,14 @@ function reconnect() {
 
 // A loaded SPA doesn't fail a load when the daemon dies — its socket just
 // drops. Two misses in a row (not one: `triage restart` is a short gap) sends
-// it back to the splash. And a splash showing an error recovers on its own once
-// a daemon appears.
+// every window back to the splash. And a splash showing an error recovers on
+// its own once a daemon appears.
 let misses = 0
 async function watchdog() {
-  if (connecting || !win) return
+  const windows = allWindows()
+  if (connecting || windows.length === 0) return
   const health = await probe()
-  if (onSplash()) {
+  if (windows.some(onSplash)) {
     if (splash.state === 'error' && health && health !== 'other') void connect()
     return
   }
@@ -247,11 +313,11 @@ async function watchdog() {
 
 async function confirmRestart(message = 'Restart the triage server?') {
   if (connecting) return
-  showWindow()
-  if (!win) return
+  const parent = BrowserWindow.getFocusedWindow() ?? (showWindow(), win)
+  if (!parent) return
   const health = await probe()
   const live = health && health !== 'other' ? health.liveSessions : 0
-  const { response } = await dialog.showMessageBox(win, {
+  const { response } = await dialog.showMessageBox(parent, {
     type: 'warning',
     message,
     detail:
@@ -270,17 +336,22 @@ async function confirmRestart(message = 'Restart the triage server?') {
 
 type NavState = { canGoBack: boolean; canGoForward: boolean; fullscreen: boolean }
 
-const history = () => win?.webContents.navigationHistory
-const isWin = (sender: Electron.WebContents) => !!win && sender === win.webContents
-
-function navState(): NavState {
-  const h = history()
-  return { canGoBack: !!h?.canGoBack(), canGoForward: !!h?.canGoForward(), fullscreen: !!win?.isFullScreen() }
+function navState(w: BrowserWindow | null): NavState {
+  const h = w && !w.isDestroyed() ? w.webContents.navigationHistory : null
+  return { canGoBack: !!h?.canGoBack(), canGoForward: !!h?.canGoForward(), fullscreen: !!w?.isFullScreen() }
 }
 
-/** Push ← → availability (and fullscreen) to the web UI after every move. */
-function sendNav() {
-  if (win && !win.isDestroyed() && !onSplash()) win.webContents.send('nav:state', navState())
+function goBack(w: BrowserWindow | null) {
+  if (w && navState(w).canGoBack) w.webContents.navigationHistory.goBack()
+}
+
+function goForward(w: BrowserWindow | null) {
+  if (w && navState(w).canGoForward) w.webContents.navigationHistory.goForward()
+}
+
+/** Push ← → availability (and fullscreen) to a window's web UI after every move. */
+function sendNav(w: BrowserWindow) {
+  if (!w.isDestroyed() && !onSplash(w)) w.webContents.send('nav:state', navState(w))
 }
 
 // ── menu + tray ────────────────────────────────────────────────────────────
@@ -313,8 +384,8 @@ function buildMenu(): Menu {
         { role: 'forceReload' },
         { role: 'toggleDevTools' },
         { type: 'separator' },
-        { label: 'Back', accelerator: 'CmdOrCtrl+[', click: () => history()?.canGoBack() && history()?.goBack() },
-        { label: 'Forward', accelerator: 'CmdOrCtrl+]', click: () => history()?.canGoForward() && history()?.goForward() },
+        { label: 'Back', accelerator: 'CmdOrCtrl+[', click: (_i, w) => goBack(w instanceof BrowserWindow ? w : null) },
+        { label: 'Forward', accelerator: 'CmdOrCtrl+]', click: (_i, w) => goForward(w instanceof BrowserWindow ? w : null) },
         { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },
