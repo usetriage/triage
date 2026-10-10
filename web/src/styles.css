@@ -248,6 +248,9 @@ a:hover { color: var(--link-hover); }
 button:focus-visible, a:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
   outline: 1px solid var(--ink); outline-offset: 2px;
 }
+/* Focus rings are for the keyboard. After a click, a menu or dialog handing
+   focus back to its trigger shouldn't ring it (inputModality.ts). */
+html[data-input="pointer"] :focus-visible { outline: none !important; }
 @keyframes pulse { 50% { opacity: 0.35; } }
 @keyframes caret { 50% { opacity: 0; } }
 

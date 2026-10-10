@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App.js'
 import { initAppearance } from './appearance.js'
+import { trackInputModality } from './inputModality.js'
 import { store } from './store.js'
 import { installWorkspaceFetch } from './workspaceUrl.js'
 import { trackViewport } from './viewport.js'
@@ -14,6 +15,7 @@ installWorkspaceFetch()
 // flash of the default dark theme when a light-theme user loads the page.
 initAppearance()
 trackViewport()
+trackInputModality()
 store.connect()
 // Phones suspend background tabs and drop their sockets: reconnect the moment
 // the page is looked at again, not on the next retry tick.
