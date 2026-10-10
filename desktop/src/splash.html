@@ -19,7 +19,8 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--canvas); color: var(--ink); font: 13px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
-  body { display: flex; align-items: center; justify-content: center; user-select: none; cursor: default; }
+  body { display: flex; align-items: center; justify-content: center; user-select: none; cursor: default; -webkit-app-region: drag; }
+  button { -webkit-app-region: no-drag; }
   main { width: min(560px, 100% - 48px); display: flex; flex-direction: column; align-items: center; gap: 24px; }
   .lockup { height: 44px; width: auto; display: block; }
   .status { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px; color: var(--ash); min-height: 18px; }

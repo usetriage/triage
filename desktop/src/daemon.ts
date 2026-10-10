@@ -32,10 +32,17 @@ export function logFile(): string {
 /**
  * Same three outcomes as `checkHealth` in server/state.ts: a health body,
  * 'other' (the port answers, or hangs, but isn't triage), null (nothing listens).
+ * Tries IPv4 then IPv6 loopback: the daemon listens on both, but a dev server
+ * (Vite on :5189) may hold only [::1].
  */
 export async function probe(): Promise<DaemonHealth | 'other' | null> {
+  const v4 = await probeHost('127.0.0.1')
+  return v4 === null ? probeHost('[::1]') : v4
+}
+
+async function probeHost(host: string): Promise<DaemonHealth | 'other' | null> {
   try {
-    const res = await fetch(`http://127.0.0.1:${PORT}/api/health`, {
+    const res = await fetch(`http://${host}:${PORT}/api/health`, {
       signal: AbortSignal.timeout(1500),
     })
     const body: unknown = await res.json().catch(() => null)

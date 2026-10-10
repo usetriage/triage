@@ -404,6 +404,26 @@ kbd { font-family: var(--mono); font-size: 0.8462rem; color: var(--ash); border:
 .topIcon .connDot { position: absolute; right: 4px; top: 4px; width: 6px; height: 6px; border-radius: var(--r-full); background: var(--green); }
 .topIcon .connDot.down { background: var(--red); animation: pulse 1.2s infinite; }
 .topIcon .connDot.connecting { background: var(--yellow); }
+.topIcon:disabled { color: var(--stone); background: transparent; cursor: default; }
+
+/* Triage.app's title bar (desktop.ts): the bar is the window's drag handle,
+   its controls are not. The left zone tracks rail + panel; the traffic lights
+   (trafficLightPosition x 16, desktop/src/main.ts) sit in its 92px inset. */
+.desktopBar { padding: 0; gap: 0; -webkit-app-region: drag; user-select: none; }
+.desktopBar button, .desktopBar [role="button"] { -webkit-app-region: no-drag; }
+.desktopBar .dbSide {
+  display: flex; align-items: center; gap: 2px; height: 100%; flex: none;
+  width: calc(var(--rail-w) + var(--panel-w)); padding: 0 8px 0 92px;
+  border-right: 1px solid var(--hair); background: var(--card);
+}
+.desktopBar .dbMain { flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; height: 100%; padding: 0 12px; }
+.desktopBar .dbMain .wsPill { margin-right: 8px; }
+/* Panel hidden: one row — lights, lockup, toggle, ← →, a hairline, the workspace. */
+.desktopBar.panelHidden .dbSide { width: auto; padding-right: 0; border-right: 0; background: transparent; }
+.desktopBar.panelHidden .dbSide .spacer { flex: 0 0 10px; }
+.desktopBar.panelHidden .dbMain::before { content: ""; width: 1px; height: 16px; margin-right: 12px; background: var(--hair-strong); flex: none; }
+/* Fullscreen hides the traffic lights, so their inset goes too. */
+.desktopBar.fullscreen .dbSide { padding-left: 14px; }
 
 /* rail */
 .rail {

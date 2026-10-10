@@ -51,6 +51,11 @@ function start() {
   createTray()
   ipcMain.on('splash:retry', () => void connect())
   ipcMain.on('splash:open-log', () => void openLog())
+  // The web UI's ← → buttons. Hash routes are history entries, so the
+  // window's own navigation history is the app's history.
+  ipcMain.on('nav:back', (e) => isWin(e.sender) && history()?.canGoBack() && history()?.goBack())
+  ipcMain.on('nav:forward', (e) => isWin(e.sender) && history()?.canGoForward() && history()?.goForward())
+  ipcMain.handle('nav:state', () => navState())
   createWindow()
   void connect()
   setInterval(watchdog, 5000)
@@ -66,6 +71,10 @@ function createWindow() {
     minHeight: MIN_SIZE.height,
     title: 'Triage',
     backgroundColor: '#000000',
+    // No grey title bar: the traffic lights sit inside triage's own 44px bar
+    // (web/src/components/TopBar.tsx, desktop layout), centred vertically.
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 16, y: 15 },
     show: false,
     webPreferences: {
       preload: path.join(here, 'preload.cjs'),
@@ -96,11 +105,19 @@ function createWindow() {
   win.on('move', saveSoon)
   win.on('maximize', saveSoon)
   win.on('unmaximize', saveSoon)
+  // Fullscreen hides the traffic lights, so the bar drops their inset.
+  win.on('enter-full-screen', sendNav)
+  win.on('leave-full-screen', sendNav)
 
   const wc = win.webContents
   wc.on('did-finish-load', () => {
     if (onSplash()) wc.send('splash:status', splash)
+    else {
+      sendNav()
+      void fitLegacyBar(wc)
+    }
   })
+  wc.on('did-navigate-in-page', sendNav)
   // Links out of triage go to the default browser; the app never opens a
   // second window. A same-origin window.open (⌘-click a workspace) has one
   // window to land in, so it takes this one.
@@ -122,6 +139,20 @@ function createWindow() {
   wc.on('render-process-gone', (_e, details) => {
     if (details.reason !== 'clean-exit') reconnect()
   })
+}
+
+/**
+ * A daemon older than the desktop title bar (web/src/desktop.ts) serves a UI
+ * that doesn't draw one, so its top bar would sit under the traffic lights.
+ * Give that bar the lights' inset and make it the drag handle instead.
+ */
+async function fitLegacyBar(wc: Electron.WebContents) {
+  const modern = await wc.executeJavaScript(`document.documentElement.classList.contains('desktop-mac')`).catch(() => true)
+  if (modern) return
+  await wc.insertCSS(
+    '.topbar { padding-left: 84px !important; -webkit-app-region: drag; }' +
+      '.topbar button, .topbar [role="button"] { -webkit-app-region: no-drag; }',
+  )
 }
 
 function showWindow() {
@@ -158,6 +189,9 @@ async function connect(how: 'ensure' | 'restart' = 'ensure') {
     if (how === 'restart') await restartDaemon()
     else await ensureDaemon((text) => setSplash({ state: 'starting', text }))
     await w.loadURL(daemonUrl())
+    // Back must never land on the splash: the UI's history starts here.
+    w.webContents.navigationHistory.clear()
+    sendNav()
   } catch (err) {
     if (w.isDestroyed()) return
     if (!onSplash()) await w.loadFile(SPLASH).catch(() => {})
@@ -232,10 +266,26 @@ async function confirmRestart(message = 'Restart the triage server?') {
   if (response === 0) void connect('restart')
 }
 
+// ── navigation ─────────────────────────────────────────────────────────────
+
+type NavState = { canGoBack: boolean; canGoForward: boolean; fullscreen: boolean }
+
+const history = () => win?.webContents.navigationHistory
+const isWin = (sender: Electron.WebContents) => !!win && sender === win.webContents
+
+function navState(): NavState {
+  const h = history()
+  return { canGoBack: !!h?.canGoBack(), canGoForward: !!h?.canGoForward(), fullscreen: !!win?.isFullScreen() }
+}
+
+/** Push ← → availability (and fullscreen) to the web UI after every move. */
+function sendNav() {
+  if (win && !win.isDestroyed() && !onSplash()) win.webContents.send('nav:state', navState())
+}
+
 // ── menu + tray ────────────────────────────────────────────────────────────
 
 function buildMenu(): Menu {
-  const history = () => win?.webContents.navigationHistory
   const template: MenuItemConstructorOptions[] = [
     {
       label: app.name,

@@ -33,6 +33,7 @@ import { dispatchPrompt, dispatchTitle } from './dispatch.js'
 import { draftStore, draftTitle, useDrafts } from './drafts.js'
 import { TerminalPage } from './components/TerminalPage.js'
 import { TopBar } from './components/TopBar.js'
+import { isDesktop } from './desktop.js'
 import { SessionCost } from './components/SessionCost.js'
 import { Transcript } from './components/Transcript.js'
 import { TeamDock, TeamSide, TeamStrip, useTeamRun } from './components/TeamRun.js'
@@ -335,7 +336,7 @@ export function App() {
   }, [activeWorkspace?.name])
   // The old home route: the inbox is the product's home now.
   useEffect(() => {
-    if (route.page === 'home') navigate('/inbox')
+    if (route.page === 'home') navigate('/inbox', { replace: true })
   }, [route.page, navigate])
 
   // `#/settings/<tab>` is a door, not a page: open the modal on that tab and
@@ -935,7 +936,8 @@ export function App() {
     )
 
   return (
-    <div className="app">
+    // --panel-w lives on .app so the desktop title bar's left zone tracks the panel's width.
+    <div className="app" style={{ '--panel-w': `${panelSize.width}px` } as CSSProperties}>
       <TopBar
         mobile={mobile}
         title={mobileTitle}
@@ -949,11 +951,11 @@ export function App() {
         onOpenSystem={(tab) => setSystem({ open: true, tab })}
         onOpenSettings={() => openSettings()}
         onHelp={() => setHelpOpen(true)}
+        desktop={isDesktop ? { panelCollapsed: panelSize.collapsed, onTogglePanel: panelSize.toggleCollapsed } : undefined}
       />
 
       <div
         className={`shell${panelSize.dragging ? ' resizing' : ''}${panelSize.collapsed ? ' collapsed' : ''}${mobile ? ' mobile' : ''}${sheet ? ' sheetOpen' : ''}`}
-        style={{ '--panel-w': `${panelSize.width}px` } as CSSProperties}
       >
         <Rail
           active={mobile ? sheet ?? railActive : railActive}
@@ -965,7 +967,8 @@ export function App() {
           onGo={onRailGo}
         />
 
-        <PanelCollapseContext.Provider value={mobile ? null : collapsePanel}>{panel}</PanelCollapseContext.Provider>
+        {/* Triage.app's title bar carries the panel toggle, so the panel and tab band drop theirs. */}
+        <PanelCollapseContext.Provider value={mobile || isDesktop ? null : collapsePanel}>{panel}</PanelCollapseContext.Provider>
         {!panelSize.collapsed && !mobile && (
           <div
             className="panelResize"
@@ -985,7 +988,7 @@ export function App() {
             onPin={pin}
             pageTab={pageTab}
             onInbox={() => navigate('/inbox')}
-            onShowPanel={panelSize.collapsed ? () => panelSize.setCollapsed(false) : undefined}
+            onShowPanel={panelSize.collapsed && !isDesktop ? () => panelSize.setCollapsed(false) : undefined}
             onSelect={(key) => navigate(routeOfKey(key))}
             onClose={closeOpenTab}
             onCloseAll={closeAllOpenTabs}

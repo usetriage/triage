@@ -110,15 +110,18 @@ function parseRoute(hash: string): Route {
 }
 
 /** Route state, kept in the URL hash so `/#<id>` opens a session in its own tab. */
-export function useHashRoute(): [Route, (hash: string) => void] {
+export function useHashRoute(): [Route, (hash: string, opts?: { replace?: boolean }) => void] {
   const [route, setRoute] = useState<Route>(() => parseRoute(location.hash.slice(1)))
   useEffect(() => {
     const onChange = () => setRoute(parseRoute(location.hash.slice(1)))
     addEventListener('hashchange', onChange)
     return () => removeEventListener('hashchange', onChange)
   }, [])
-  const navigate = useCallback((hash: string) => {
-    location.hash = hash
+  // Every navigation is a history entry (Triage.app's ← → walk them); a
+  // redirect replaces instead, so Back never lands on the page that bounced.
+  const navigate = useCallback((hash: string, opts?: { replace?: boolean }) => {
+    if (opts?.replace) location.replace(`#${hash}`)
+    else location.hash = hash
     setRoute(parseRoute(hash))
   }, [])
   return [route, navigate]

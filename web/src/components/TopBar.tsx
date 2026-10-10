@@ -1,5 +1,6 @@
-import { Activity, Check, ChevronLeft, ChevronsUpDown, CircleHelp, Gauge, Plus, Settings, Settings2, SquareArrowOutUpRight } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { Activity, Check, ChevronLeft, ChevronRight, ChevronsUpDown, CircleHelp, Gauge, PanelLeft, Plus, Settings, Settings2, SquareArrowOutUpRight } from 'lucide-react'
+import { useRef, useState, type ReactNode } from 'react'
+import { goBack, goForward, useDesktopNav } from '../desktop.js'
 import { MOD_LABEL } from '../keys.js'
 import type { Workspace } from '../../../shared/protocol.js'
 import type { ConnState } from '../store.js'
@@ -22,6 +23,8 @@ type Props = {
   onOpenSystem: (tab: 'status' | 'activity') => void
   onOpenSettings: () => void
   onHelp: () => void
+  /** Inside Triage.app: the bar is the window's title bar (see desktop.ts). */
+  desktop?: { panelCollapsed: boolean; onTogglePanel: () => void }
 }
 
 const CONN_TITLE: Record<ConnState, string> = {
@@ -44,7 +47,25 @@ export function TopBar({
   onOpenSystem,
   onOpenSettings,
   onHelp,
+  desktop,
 }: Props) {
+  if (desktop && !mobile) {
+    return (
+      <DesktopBar
+        {...desktop}
+        switcher={
+          <WorkspaceSwitcher
+            workspaces={workspaces}
+            workspaceId={workspaceId}
+            onSwitch={onSwitchWorkspace}
+            onNew={onNewWorkspace}
+            onSettings={onWorkspaceSettings}
+          />
+        }
+        system={<SystemIcons conn={conn} onOpenSystem={onOpenSystem} onOpenSettings={onOpenSettings} onHelp={onHelp} />}
+      />
+    )
+  }
   if (mobile) {
     return (
       <header className="topbar mobile">
@@ -85,6 +106,20 @@ export function TopBar({
         onSettings={onWorkspaceSettings}
       />
       <span className="spacer" />
+      <SystemIcons conn={conn} onOpenSystem={onOpenSystem} onOpenSettings={onOpenSettings} onHelp={onHelp} />
+    </header>
+  )
+}
+
+/** System status, activity, settings, help — the right end of the bar. */
+function SystemIcons({
+  conn,
+  onOpenSystem,
+  onOpenSettings,
+  onHelp,
+}: Pick<Props, 'conn' | 'onOpenSystem' | 'onOpenSettings' | 'onHelp'>) {
+  return (
+    <>
       <button type="button" className="topIcon" title={CONN_TITLE[conn]} onClick={() => onOpenSystem('status')}>
         <Gauge size={15} aria-hidden="true" />
         <span className={`connDot ${conn === 'connected' ? '' : conn === 'connecting' ? 'connecting' : 'down'}`} aria-hidden="true" />
@@ -98,6 +133,56 @@ export function TopBar({
       <button type="button" className="topIcon" title="Keyboard shortcuts (?)" onClick={onHelp}>
         <CircleHelp size={15} aria-hidden="true" />
       </button>
+    </>
+  )
+}
+
+/**
+ * Triage.app's title bar (.docs/titlebar-variations.html, E). Two zones that
+ * line up with the columns below: over the rail + panel, the traffic lights,
+ * the lockup, the panel toggle and ← →; over the content, the workspace and
+ * the system icons. With the panel hidden the zones run together as one row.
+ * Empty space drags the window; double-clicking it zooms (both native).
+ */
+function DesktopBar({
+  panelCollapsed,
+  onTogglePanel,
+  switcher,
+  system,
+}: {
+  panelCollapsed: boolean
+  onTogglePanel: () => void
+  switcher: ReactNode
+  system: ReactNode
+}) {
+  const nav = useDesktopNav()
+  return (
+    <header className={`topbar desktopBar${panelCollapsed ? ' panelHidden' : ''}${nav.fullscreen ? ' fullscreen' : ''}`}>
+      <div className="dbSide">
+        <TriageLogo />
+        <span className="spacer" />
+        <button
+          type="button"
+          className="topIcon"
+          title={`${panelCollapsed ? 'Show' : 'Hide'} panel (${MOD_LABEL}B)`}
+          aria-label={panelCollapsed ? 'Show panel' : 'Hide panel'}
+          aria-pressed={!panelCollapsed}
+          onClick={onTogglePanel}
+        >
+          <PanelLeft size={15} aria-hidden="true" />
+        </button>
+        <button type="button" className="topIcon" title={`Back (${MOD_LABEL}[)`} aria-label="Back" disabled={!nav.canGoBack} onClick={goBack}>
+          <ChevronLeft size={16} aria-hidden="true" />
+        </button>
+        <button type="button" className="topIcon" title={`Forward (${MOD_LABEL}])`} aria-label="Forward" disabled={!nav.canGoForward} onClick={goForward}>
+          <ChevronRight size={16} aria-hidden="true" />
+        </button>
+      </div>
+      <div className="dbMain">
+        {switcher}
+        <span className="spacer" />
+        {system}
+      </div>
     </header>
   )
 }
