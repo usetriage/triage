@@ -5157,11 +5157,12 @@ async function dispatchPreviewOp(rt: WorkspaceRuntime, itemId: string): Promise<
   ])
   const mentions: Mention[] = [{ kind: 'item', ref: item.id, label: item.title }]
   if (brief) mentions.push({ kind: 'artifact', ref: brief.artifact.id, label: brief.artifact.title })
+  // No description here — the @item: mention below attaches the work item itself,
+  // and the agent can read its description via get_work_item rather than duplicating it.
   const body = renderTemplate(tpl, {
     kind: item.kind,
     title: item.title,
     url: item.url || undefined,
-    description: item.description,
     reason: scored?.reason,
     note: latest?.note ?? undefined,
     brief: !!brief,
