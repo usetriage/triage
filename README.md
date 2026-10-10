@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="#install">Install</a> ·
+  <a href="#mac-app">Mac app</a> ·
   <a href="#what-feeds-it">Sources</a> ·
   <a href="#watches">Watches</a> ·
   <a href="#development">Development</a> ·
@@ -76,6 +77,19 @@ triage logs        # tail the server log
 
 > Early software. Expect rough edges and breaking changes between minor versions.
 
+## Mac app
+
+```sh
+curl -fsSL https://usetriage.sh/install.sh | sh
+```
+
+Triage.app is a native window over the same server, with its own Node bundled, so it doesn't need the npm package. On
+launch it attaches to the triage that's already running, or starts one. Quitting the app leaves triage running, so live
+sessions and watches keep going. You still need Claude Code installed and logged in.
+
+Until usetriage.sh serves the script, use `https://raw.githubusercontent.com/usetriage/triage/main/install.sh`. The app is
+ad-hoc signed, not notarized: install it with the script, not a browser download. More in [desktop/README.md](desktop/README.md).
+
 ## What's new in 0.9
 
 - **Connect from anywhere with a URL**: the daemon serves its tools at `POST /mcp`, so Claude Code, Codex and Cursor point at `http://localhost:5178/mcp` instead of spawning a process.
@@ -145,6 +159,7 @@ the end-to-end check against a running server.
 | `core/` | store interfaces and SQLite adapter, scoring, watches, sources |
 | `server/` | HTTP and WebSocket server, the `triage` and `triage-mcp` bins |
 | `web/` | Vite + React UI |
+| `desktop/` | Triage.app, the Electron window over the server |
 
 ## Links
 

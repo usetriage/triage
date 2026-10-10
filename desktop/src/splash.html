@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<title>Triage</title>
+<style>
+  /* tokens from web/src/styles.css — the splash ships without the SPA's CSS */
+  :root {
+    --canvas: #000000; --card: #0a0a0c; --elev: #101012;
+    --hair: rgba(255, 255, 255, 0.06); --hair-strong: rgba(255, 255, 255, 0.14); --hair-bright: rgba(255, 255, 255, 0.28);
+    --ink: #fcfdff; --body: rgba(252, 253, 255, 0.86); --mute: #a1a4a5; --ash: #888e90; --stone: #464a4d;
+    --red: #ff2047; --tint-red: rgba(255, 32, 71, 0.1); --edge-red: rgba(255, 32, 71, 0.36); --red-ink: #ff7a92;
+    --primary-hover: #f1f7fe;
+    --sans: Geist, Inter, -apple-system, system-ui, sans-serif;
+    --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --r: 8px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--canvas); color: var(--ink); font: 13px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
+  body { display: flex; align-items: center; justify-content: center; user-select: none; cursor: default; }
+  main { width: min(560px, 100% - 48px); display: flex; flex-direction: column; align-items: center; gap: 24px; }
+  .lockup { height: 44px; width: auto; display: block; }
+  .status { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px; color: var(--ash); min-height: 18px; }
+  .dot { width: 6px; height: 6px; border-radius: 9999px; background: var(--ash); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+  .error { display: none; width: 100%; flex-direction: column; gap: 12px; }
+  .error .head { color: var(--ink); font-size: 14px; font-weight: 500; text-align: center; }
+  .error pre {
+    margin: 0; max-height: 240px; overflow: auto; background: var(--tint-red); color: var(--red-ink);
+    border: 1px solid var(--edge-red); border-radius: var(--r); padding: 10px 13px;
+    font: 12px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text;
+  }
+  .error pre:empty { display: none; }
+  .actions { display: flex; justify-content: center; gap: 8px; }
+  button {
+    display: inline-flex; align-items: center; justify-content: center; height: 30px; padding: 0 12px;
+    border-radius: var(--r); border: 1px solid var(--hair-strong); background: var(--elev); color: var(--ink);
+    font: 500 13px var(--sans); cursor: pointer; transition: background 0.1s ease, border-color 0.1s ease;
+  }
+  button:hover { border-color: var(--hair-bright); }
+  button.primary { background: var(--ink); color: #000; border-color: var(--ink); }
+  button.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+  button:focus-visible { outline: 2px solid var(--hair-bright); outline-offset: 2px; }
+  .version { position: fixed; bottom: 16px; left: 0; right: 0; text-align: center; font: 11px var(--mono); color: var(--stone); }
+  body.failed .status { display: none; }
+  body.failed .error { display: flex; }
+</style>
+</head>
+<body>
+<main>
+  <svg class="lockup" viewBox="-10 -10 353.0 106.4" aria-label="triage" role="img">
+    <g transform="scale(1.8)" stroke="#fcfdff" stroke-width="5.5" stroke-linecap="round" fill="none">
+      <path d="M9 40 L25 12.3" /><path d="M20 40 L30 22.7" /><path d="M31 40 L36 31.3" />
+      <circle cx="42.5" cy="40" r="2.9" fill="#fcfdff" stroke="none" />
+    </g>
+    <path fill="#fcfdff" d="M137.26 74.28L137.26 74.28Q129.37 74.28 125.63 70.54Q121.89 66.80 121.89 59.33L121.89 59.33L121.89 20.86L132.56 16.91L132.56 59.58Q132.56 62.69 134.24 64.20Q135.92 65.71 139.53 65.71L139.53 65.71Q140.96 65.71 142.09 65.50Q143.23 65.29 144.24 64.96L144.24 64.96L144.24 73.19Q143.23 73.69 141.38 73.99Q139.53 74.28 137.26 74.28ZM144.24 38.92L113.66 38.92L113.66 30.60L144.24 30.60L144.24 38.92ZM160.20 73.44L149.61 73.44L149.61 30.60L159.94 30.60L159.94 40.93L160.20 40.93L160.20 73.44ZM160.20 51.10L160.20 51.10L159.10 40.93Q160.62 35.47 164.23 32.62Q167.84 29.76 172.88 29.76L172.88 29.76Q174.64 29.76 175.40 30.10L175.40 30.10L175.40 40.09Q174.98 39.92 174.22 39.88Q173.47 39.84 172.38 39.84L172.38 39.84Q166.24 39.84 163.22 42.53Q160.20 45.22 160.20 51.10ZM190.44 73.44L179.85 73.44L179.85 30.60L190.44 30.60L190.44 73.44ZM190.86 23.54L179.35 23.54L179.35 11.87L190.86 11.87L190.86 23.54ZM236.47 73.44L225.88 73.44Q225.46 71.76 225.25 69.74Q225.04 67.73 225.04 64.87L225.04 64.87L224.71 64.87L224.71 44.54Q224.71 41.18 222.82 39.46Q220.93 37.74 217.06 37.74L217.06 37.74Q213.28 37.74 211.06 39.13Q208.83 40.51 208.33 43.12L208.33 43.12L198.16 43.12Q198.84 37.15 203.88 33.46Q208.92 29.76 217.40 29.76L217.40 29.76Q226.22 29.76 230.76 33.75Q235.29 37.74 235.29 45.47L235.29 45.47L235.29 64.87Q235.29 66.89 235.59 68.99Q235.88 71.09 236.47 73.44L236.47 73.44ZM211.02 74.28L211.02 74.28Q204.55 74.28 200.73 71.05Q196.90 67.81 196.90 62.35L196.90 62.35Q196.90 56.47 201.19 53.03Q205.47 49.58 213.28 48.41L213.28 48.41L226.64 46.39L226.64 53.11L215.05 54.88Q211.27 55.46 209.38 56.98Q207.49 58.49 207.49 61.18L207.49 61.18Q207.49 63.61 209.25 64.91Q211.02 66.22 214.12 66.22L214.12 66.22Q218.66 66.22 221.68 63.95Q224.71 61.68 224.71 58.40L224.71 58.40L225.88 64.87Q224.20 69.49 220.38 71.89Q216.56 74.28 211.02 74.28ZM262.34 91.50L262.34 91.50Q253.86 91.50 248.44 87.80Q243.02 84.11 242.01 77.81L242.01 77.81L252.09 77.81Q252.85 79.99 255.41 81.21Q257.97 82.43 262.09 82.43L262.09 82.43Q268.05 82.43 270.91 79.78Q273.76 77.14 273.76 71.76L273.76 71.76L273.76 62.52L274.52 62.69Q273.51 67.39 269.40 70.21Q265.28 73.02 259.32 73.02L259.32 73.02Q253.60 73.02 249.36 70.33Q245.12 67.64 242.77 62.81Q240.42 57.98 240.42 51.52L240.42 51.52Q240.42 44.96 242.85 40.09Q245.29 35.22 249.70 32.49Q254.11 29.76 259.99 29.76L259.99 29.76Q266.04 29.76 269.94 32.66Q273.85 35.56 274.77 40.68L274.77 40.68L274.10 40.76L274.10 30.60L284.43 30.60L284.43 71.68Q284.43 80.83 278.51 86.17Q272.59 91.50 262.34 91.50ZM262.76 64.62L262.76 64.62Q267.88 64.62 270.95 61.13Q274.02 57.65 274.02 51.35L274.02 51.35Q274.02 45.05 270.91 41.60Q267.80 38.16 262.68 38.16L262.68 38.16Q257.64 38.16 254.53 41.65Q251.42 45.13 251.42 51.43L251.42 51.43Q251.42 57.73 254.53 61.18Q257.64 64.62 262.76 64.62ZM312.40 74.28L312.40 74.28Q305.60 74.28 300.52 71.42Q295.44 68.57 292.62 63.53Q289.81 58.49 289.81 51.94L289.81 51.94Q289.81 45.38 292.62 40.39Q295.44 35.39 300.48 32.57Q305.52 29.76 312.24 29.76L312.24 29.76Q318.62 29.76 323.32 32.41Q328.03 35.05 330.63 39.84Q333.24 44.63 333.24 51.01L333.24 51.01Q333.24 52.19 333.15 53.20Q333.07 54.20 332.90 55.21L332.90 55.21L296.36 55.21L296.36 47.82L324.75 47.82L322.57 49.84Q322.57 43.79 319.80 40.76Q317.02 37.74 312.07 37.74L312.07 37.74Q306.69 37.74 303.54 41.44Q300.39 45.13 300.39 52.10L300.39 52.10Q300.39 58.99 303.54 62.65Q306.69 66.30 312.49 66.30L312.49 66.30Q315.85 66.30 318.37 65.04Q320.89 63.78 322.06 61.18L322.06 61.18L332.06 61.18Q329.96 67.22 324.96 70.75Q319.96 74.28 312.40 74.28Z" />
+  </svg>
+  <div class="status"><span class="dot"></span><span id="text">Looking for triage…</span></div>
+  <div class="error" role="alert">
+    <div class="head" id="head">Couldn’t start triage</div>
+    <pre id="detail"></pre>
+    <div class="actions">
+      <button class="primary" id="retry">Retry</button>
+      <button id="log">Open log</button>
+    </div>
+  </div>
+</main>
+<div class="version" id="version"></div>
+<script>
+  const d = window.triageDesktop
+  const $ = (id) => document.getElementById(id)
+  if (d) {
+    if (d.version) $('version').textContent = 'Triage ' + d.version
+    $('retry').addEventListener('click', () => d.retry())
+    $('log').addEventListener('click', () => d.openLog())
+    d.onStatus((s) => {
+      document.body.classList.toggle('failed', s.state === 'error')
+      if (s.state === 'error') {
+        $('head').textContent = s.text
+        $('detail').textContent = s.detail || ''
+        $('retry').focus()
+      } else {
+        $('text').textContent = s.text
+      }
+    })
+  }
+</script>
+</body>
+</html>

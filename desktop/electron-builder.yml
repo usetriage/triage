@@ -1,0 +1,54 @@
+# Packaging for Triage.app. Driven by scripts/build.mjs, which stages
+# .stage/triage (the usetriage package + prod node_modules) and .stage/node
+# (official Node binary) first, passes the version from the root package.json,
+# then ad-hoc signs the app and zips it with ditto.
+appId: sh.usetriage.app
+productName: Triage
+copyright: Copyright © 2026 Triage
+
+directories:
+  output: release
+  buildResources: build
+
+# The Electron shell only: compiled main + preload + splash, and package.json.
+files:
+  - dist/**
+  - package.json
+asar: true
+
+# The daemon and its runtime live outside the asar, as plain files the bundled
+# node can execute (see ARCHITECTURE.md for the layout).
+# electron-builder always drops a source's top-level node_modules, so it gets
+# its own entry; naming node_modules in the filter keeps nested ones too.
+extraResources:
+  - from: .stage/triage
+    to: triage
+  - from: .stage/triage/node_modules
+    to: triage/node_modules
+    filter:
+      - '**/*'
+      - '**/node_modules/**/*'
+      - '!.triage-stage'
+  - from: .stage/node
+    to: node
+    filter:
+      - '**/*'
+      - '!.version'
+
+# No native modules in the shell itself.
+npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+
+mac:
+  target:
+    - dir
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  # No Developer ID: electron-builder leaves the app unsigned and build.mjs
+  # signs it ad-hoc after packing.
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  minimumSystemVersion: '12.0'
+  artifactName: Triage-${version}-mac-${arch}.${ext}
